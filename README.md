@@ -1,73 +1,76 @@
 # @microsoft/opentelemetry-browser
 
-[![Status](https://img.shields.io/badge/status-proposed-orange)](planning/IMPLEMENTATION_PLAN.md)
-[![Milestone](https://img.shields.io/badge/beta-9%20October-blue)](planning/M0_WORK_BREAKDOWN.md)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![npm version](https://img.shields.io/npm/v/@microsoft/opentelemetry-browser?label=npm&color=cb3837)](https://www.npmjs.com/package/@microsoft/opentelemetry-browser)
+[![Build](https://github.com/microsoft/opentelemetry-distro-browser/actions/workflows/pr-validation.yml/badge.svg)](https://github.com/microsoft/opentelemetry-distro-browser/actions/workflows/pr-validation.yml)
+[![Status: alpha](https://img.shields.io/badge/status-alpha-orange)](CHANGELOG.md)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Microsoft OpenTelemetry distribution for browser applications — one import, one call, page views,
-exceptions, fetch/XHR tracing and manual telemetry across Azure Monitor and OTLP-compatible
-backends.
+Microsoft's OpenTelemetry distribution for browser applications. It provides one initialization
+path for traces and logs, built-in page-view collection, optional browser instrumentations, browser
+session correlation, and direct export to Azure Monitor. Standard OpenTelemetry processors can send
+the same telemetry to OTLP or other backends.
 
-This is the browser sibling of the Microsoft distributions for
+This package is the browser sibling of the Microsoft OpenTelemetry distributions for
 [Node.js](https://github.com/microsoft/opentelemetry-distro-javascript) and
 [Python](https://github.com/microsoft/opentelemetry-distro-python).
 
-> **Not published yet.** This repository currently holds the implementation plan and a
-> working proof of concept. The package name is provisional and the beta is targeted for
-> **9 October**. Everything below describes the surface being built — see
-> [`planning/`](planning/).
+> [!IMPORTANT]
+> The package is currently an alpha release. APIs may change before the first stable release.
 
-## Getting Started
+## Getting started
 
 ### Prerequisites
 
-- A modern browser — ES2022, ESM. See [Supported environments](#supported-environments).
+- A modern browser with ES modules. See [Supported environments](#supported-environments).
 - An [Application Insights resource](https://learn.microsoft.com/azure/azure-monitor/app/app-insights-overview)
   (optional, for Azure Monitor), or any OTLP-compatible endpoint.
 
 ### Install the package
 
 ```bash
-npm install @microsoft/opentelemetry-browser
+npm install @microsoft/opentelemetry-browser@alpha
 ```
 
 ### Quick start
 
-Call `useMicrosoftOpenTelemetry()` as early as possible in your application entry point, before the
-code you want instrumented runs.
-
-**Azure Monitor:**
+Initialize and await telemetry before loading the application code that should be instrumented.
+This example exports to Azure Monitor, enables session correlation, collects page views, and turns
+on fetch, XHR, unhandled-error, user-action, and web-vitals instrumentation.
 
 ```typescript
 import { useMicrosoftOpenTelemetry } from "@microsoft/opentelemetry-browser";
+import { getInstrumentations } from "@microsoft/opentelemetry-browser/instrumentations";
+import { resourceFromAttributes } from "@opentelemetry/resources";
 
-useMicrosoftOpenTelemetry({
+const telemetry = await useMicrosoftOpenTelemetry({
   azureMonitor: {
     connectionString: "InstrumentationKey=...;IngestionEndpoint=...",
   },
+  resource: resourceFromAttributes({
+    "service.name": "shop-web",
+    "service.version": "1.0.0",
+  }),
+  session: { enabled: true },
+  instrumentations: await getInstrumentations({
+    errors: { enabled: true },
+    userAction: { enabled: true },
+    webVitals: { enabled: true },
+  }),
 });
+
+await import("./app.js");
 ```
 
-**OTLP:**
+`useMicrosoftOpenTelemetry()` is asynchronous and should normally run once per page. Page-view
+collection is enabled by default. `getInstrumentations()` loads fetch and XHR instrumentation by
+default; its other instrumentations are opt-in.
 
-```typescript
-import { useMicrosoftOpenTelemetry } from "@microsoft/opentelemetry-browser";
-
-useMicrosoftOpenTelemetry({
-  otlp: {
-    endpoint: "https://collector.example.com:4318",
-  },
-});
-```
-
-That's it — page views, SPA soft navigations, unhandled errors and promise rejections, and fetch/XHR
-spans with W3C trace context are collected automatically, with `session.id` and document context on
-both signals.
+See the runnable [Azure Monitor, console, and OTLP samples](samples/) for complete applications.
 
 ### Manual telemetry
 
-Use the standard upstream OpenTelemetry APIs. The distribution never asks you to learn a proprietary
-telemetry API, so instrumented code stays valid OpenTelemetry.
+After initialization, use the standard OpenTelemetry APIs. Instrumented application code stays
+portable and does not depend on a proprietary telemetry API.
 
 ```typescript
 import { trace } from "@opentelemetry/api";
@@ -84,9 +87,8 @@ logs.getLogger("my-app", "1.0.0").emit({
 });
 ```
 
-Browser occurrences are **log records carrying a top-level `eventName`**; spans are reserved for
-operations with real duration and backend correlation. See
-[§2 of the plan](planning/IMPLEMENTATION_PLAN.md#2-product-principles).
+Use log records with a top-level `eventName` for browser occurrences and spans for operations with
+duration or distributed-trace correlation.
 
 ### Flush and shutdown
 
@@ -94,8 +96,6 @@ Telemetry is batched and flushed automatically on `pagehide` and `visibilitychan
 returned by `useMicrosoftOpenTelemetry()` lets you do it explicitly:
 
 ```typescript
-const telemetry = useMicrosoftOpenTelemetry({ /* ... */ });
-
 await telemetry.forceFlush();
 await telemetry.shutdown();
 ```
@@ -104,81 +104,122 @@ await telemetry.shutdown();
 
 ### `MicrosoftOpenTelemetryBrowserOptions`
 
-| Option | Type | Default | Description |
-|---|---|---|---|
-| `azureMonitor` | `AzureMonitorOptions` | — | Azure Monitor destination. When provided, Azure Monitor export is enabled |
-| `otlp` | `OtlpOptions` | — | OTLP/HTTP destination for traces and logs |
-| `resource` | `Resource` | default resource | OpenTelemetry Resource. Add `browserDetector` or `userAgentDetector` to attach browser attributes |
-| `samplingRatio` | `number` | `1.0` | Ratio of traces to sample (0.0–1.0) |
-| `instrumentationOptions` | `InstrumentationOptions` | see below | Toggle built-in instrumentations |
-| `spanProcessors` | `SpanProcessor[]` | — | Additional upstream span processors |
-| `logRecordProcessors` | `LogRecordProcessor[]` | — | Additional upstream log record processors |
-| `propagator` | `TextMapPropagator` | W3C Trace Context + Baggage | Context propagator |
-| `propagateToUrls` | `(string \| RegExp)[]` | same origin | Allow list for outbound `traceparent` injection |
-| `session` | `SessionOptions` | 30 min timeout | Session ID generation, storage, timeout and renewal |
-
-Configuration is validated and normalized into an immutable snapshot before any global is registered
-or any browser API is patched. Upstream types are passed through rather than re-modelled.
+| Option                | Type                                   | Default                            | Description                                                                 |
+| --------------------- | -------------------------------------- | ---------------------------------- | --------------------------------------------------------------------------- |
+| `azureMonitor`        | `AzureMonitorOptions`                  | —                                  | Enables Azure Monitor trace and log export                                  |
+| `resource`            | `Resource`                             | OpenTelemetry default resource     | Resource attributes attached to every span and log record                   |
+| `session`             | `{ enabled?: boolean }`                | Disabled                           | Adds a persisted `session.id` with a 30-minute inactivity timeout           |
+| `traces`              | `MicrosoftOpenTelemetryBrowserTraceOptions` | Browser SDK defaults          | Replaces the browser context manager or trace propagators                    |
+| `spanProcessors`      | `SpanProcessor[]`                      | Upstream default when applicable   | Registers custom trace processors; `[]` skips trace initialization          |
+| `logRecordProcessors` | `LogRecordProcessor[]`                 | Upstream default when applicable   | Registers custom log processors; `[]` skips log initialization              |
+| `instrumentations`    | `BrowserInstrumentation[]`             | `[]`                               | Instrumentation instances owned and registered by this SDK                  |
+| `pageView`            | `PageViewInstrumentationConfig`        | Enabled                            | Configures built-in `browser.page_view` log collection                      |
 
 ### `azureMonitor` options
 
-| Option | Type | Default | Description |
-|---|---|---|---|
-| `connectionString` | `string` | — | Application Insights connection string, including sovereign clouds |
-| `disableBeacon` | `boolean` | `false` | Disable the `sendBeacon` fallback used on page unload |
+| Option            | Type      | Default | Description                                                                   |
+| ----------------- | --------- | ------- | ----------------------------------------------------------------------------- |
+| `connectionString` | `string` | —       | Application Insights connection string, including sovereign-cloud endpoints  |
+| `disableBeacon`   | `boolean` | `false` | Disables the `sendBeacon` fallback used when a page unloads                    |
 
-### `otlp` options
+### Browser instrumentations
 
-| Option | Type | Default | Description |
-|---|---|---|---|
-| `endpoint` | `string` | — | Base OTLP/HTTP endpoint |
-| `headers` | `Record<string, string>` | — | Additional headers on export requests |
-
-### `instrumentationOptions`
-
-Instrumentations are named by the occurrence they capture, not by the package that produces them,
-and each is individually enableable and individually importable — so an events-only consumer never
-pays for the tracing SDK and vice versa.
+Import `getInstrumentations()` from the dedicated subpath so its dynamic imports remain
+tree-shakeable and code-splittable. Fetch and XHR are on by default when this helper is called. The
+console, errors, navigation, navigation timing, resource timing, user action, and web vitals
+instrumentations are opt-in.
 
 ```typescript
-useMicrosoftOpenTelemetry({
-  azureMonitor: { connectionString: "..." },
-  instrumentationOptions: {
-    pageView: { enabled: true },
-    exception: { enabled: true },
-    fetch: { enabled: false },
-    xmlHttpRequest: { enabled: false },
+import { getInstrumentations } from "@microsoft/opentelemetry-browser/instrumentations";
+
+const instrumentations = await getInstrumentations({
+  fetch: { enabled: true },
+  xhr: { enabled: false },
+  errors: { enabled: true },
+  navigation: { enabled: true },
+  resourceTiming: {
+    enabled: true,
+    initiatorTypes: ["script", "link", "css", "img"],
   },
+});
+```
+
+Pass the result to `useMicrosoftOpenTelemetry({ instrumentations })`. You can also construct
+compatible upstream instrumentation instances yourself and pass them directly.
+
+### OTLP and custom exporters
+
+Use standard OpenTelemetry processors to export to OTLP or another backend. For OTLP/HTTP:
+
+```typescript
+import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
+import { BatchLogRecordProcessor } from "@opentelemetry/sdk-logs";
+import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
+
+await useMicrosoftOpenTelemetry({
+  spanProcessors: [
+    new BatchSpanProcessor(
+      new OTLPTraceExporter({ url: "https://collector.example.com/v1/traces" }),
+    ),
+  ],
+  logRecordProcessors: [
+    new BatchLogRecordProcessor({
+      exporter: new OTLPLogExporter({
+        url: "https://collector.example.com/v1/logs",
+      }),
+    }),
+  ],
+});
+```
+
+The collector must allow the application origin through CORS. Do not embed API keys, bearer tokens,
+or other secrets in browser configuration; authenticate browser traffic at a collector or gateway.
+
+### Browser resource attributes
+
+Browser and user-agent resource detectors are opt-in to avoid repeating information that many
+backends derive from request headers:
+
+```typescript
+import {
+  browserDetector,
+  useMicrosoftOpenTelemetry,
+  userAgentDetector,
+} from "@microsoft/opentelemetry-browser";
+import { detectResources } from "@opentelemetry/resources";
+
+await useMicrosoftOpenTelemetry({
+  resource: detectResources({
+    detectors: [browserDetector, userAgentDetector],
+  }),
 });
 ```
 
 ## Bundle size
 
-Bundle size is the binding constraint for a browser distribution, so it is measured on every build
-rather than argued about. From [`poc/SIZE_REPORT.md`](poc/SIZE_REPORT.md), gzipped:
+The production bundle is built and measured in CI. For `0.1.0-alpha.1`:
 
-| Layer | Gzip |
-|---|---:|
-| OpenTelemetry API only (trace + logs) | 3.70 KB |
-| + SDK (providers, batch processors, W3C propagators) | 19.56 KB |
-| + multi-instance bridge | 21.29 KB |
-| + all 9 instrumentations and both OTLP exporters | 41.50 KB |
+| Artifact                   | Size     |
+| -------------------------- | -------: |
+| Minified ESM               | 99.57 kB |
+| Minified ESM + gzip        | 28.94 kB |
+| Minified ESM + Brotli      | 25.55 kB |
 
-For comparison, Application Insights v3 ships 71.3 KB gzipped and Splunk's OpenTelemetry browser
-distribution 140.5 KB. The per-package deltas, and why per-package numbers must never be summed,
-are in [`poc/SIZE_REPORT.md`](poc/SIZE_REPORT.md), regenerated by `npm run size`.
+Run `npm run build && npm run size` to reproduce these measurements. Optional browser
+instrumentations are loaded through dynamic imports and remain outside the root bundle unless used.
 
 ## Supported environments
 
-| Runtime | Support |
-|---|---|
-| ES2022+ browsers (current Chrome, Edge, Firefox, Safari) | Full distribution |
-| ES2015 to pre-ES2020 browsers | Capability-detecting loader, planned |
-| Pre-ES2015 browsers | Not supported; separate no-op package, planned |
+| Environment                                      | Support                                      |
+| ------------------------------------------------ | -------------------------------------------- |
+| Current Chrome, Edge, Firefox, and Safari         | Supported                                    |
+| ES modules and modern browser APIs                | Required                                     |
+| CommonJS-only applications                        | Not supported                                |
+| Legacy browsers requiring ES5                     | Not supported                                |
 
-The package is ESM-only with an `exports` map and no `main`/`module` fields. Not shipping ES5 is the
-single largest bundle-size lever available, so legacy runtimes are handled by a loader rather than by
-downleveling the main bundle.
+The package is ESM-only and publishes an `exports` map. Server-rendered builds can import the
+package, but browser telemetry should be initialized in client-side code.
 
 ## Contributing
 
