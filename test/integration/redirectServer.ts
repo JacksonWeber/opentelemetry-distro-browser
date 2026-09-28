@@ -92,6 +92,7 @@ export default async function setup(project: TestProject): Promise<() => Promise
           baggage: request.headers.baggage,
           custom: request.headers["x-test-context"],
           traceparent: request.headers.traceparent,
+          tracestate: request.headers.tracestate,
         }),
       );
       return;

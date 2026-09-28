@@ -130,52 +130,83 @@ it("adds Azure Monitor batch exporters after session enrichment and before calle
   expect(upstreamHandle.shutdown).toHaveBeenCalledOnce();
 });
 
-it("forwards trace context configuration without sharing the propagator array", async () => {
-  const pipeline = createInMemoryPipeline();
-  const contextManager: ContextManager = {
-    active: () => ROOT_CONTEXT,
-    bind: (_ctx, target) => target,
-    disable() {
-      return this;
-    },
-    enable() {
-      return this;
-    },
-    with: (_ctx, callback, thisArg, ...args) => callback.apply(thisArg, args),
-  };
-  const propagator = {
-    fields: () => ["x-test-context"],
-    inject: vi.fn(),
-    extract: vi.fn((ctx) => ctx),
-  };
-  const propagators = Object.freeze([propagator]);
-  const options: MicrosoftOpenTelemetryBrowserOptions = {
-    spanProcessors: [pipeline.spanProcessor],
-    traces: Object.freeze({ contextManager, propagators }),
-  };
-  Object.freeze(options.spanProcessors);
-  const upstreamHandle = { shutdown: vi.fn(async () => {}) };
-  vi.mocked(startBrowserSdk).mockReturnValueOnce(upstreamHandle);
+it.each(["both", "context manager", "propagators", "no propagators"] as const)(
+  "forwards %s without sharing or mutating trace configuration",
+  async (configuration) => {
+    const pipeline = createInMemoryPipeline();
+    const contextManager: ContextManager = {
+      active: () => ROOT_CONTEXT,
+      bind: (_ctx, target) => target,
+      disable() {
+        return this;
+      },
+      enable() {
+        return this;
+      },
+      with: (_ctx, callback, thisArg, ...args) => callback.apply(thisArg, args),
+    };
+    const propagator = {
+      fields: () => ["x-test-context"],
+      inject: vi.fn(),
+      extract: vi.fn((ctx) => ctx),
+    };
+    const propagators = Object.freeze(configuration === "no propagators" ? [] : [propagator]);
+    const traces = Object.freeze({
+      ...(configuration === "both" || configuration === "context manager"
+        ? { contextManager }
+        : {}),
+      ...(configuration !== "context manager" ? { propagators } : {}),
+    });
+    const options: MicrosoftOpenTelemetryBrowserOptions = {
+      spanProcessors: [pipeline.spanProcessor],
+      traces,
+    };
+    Object.freeze(options.spanProcessors);
+    const upstreamHandle = { shutdown: vi.fn(async () => {}) };
+    vi.mocked(startBrowserSdk).mockReturnValueOnce(upstreamHandle);
 
-  const handle = await useMicrosoftOpenTelemetry(Object.freeze(options));
-  handles.add(handle);
+    const handle = await useMicrosoftOpenTelemetry(Object.freeze(options));
+    handles.add(handle);
 
-  expect(startBrowserSdk).toHaveBeenCalledExactlyOnceWith({
-    resourceAttributes: {
-      "telemetry.distro.name": "@microsoft/opentelemetry-browser",
-      "telemetry.distro.version": OPENTELEMETRY_BROWSER_VERSION,
-    },
-    traces: {
-      contextManager,
-      propagators: [propagator],
-      processors: [pipeline.spanProcessor],
-    },
-    logs: { processors: undefined },
-  });
-  const forwarded = vi.mocked(startBrowserSdk).mock.calls[0]?.[0]?.traces?.propagators;
-  expect(forwarded).not.toBe(propagators);
-  expect(options.traces?.propagators).toBe(propagators);
-});
+    expect(startBrowserSdk).toHaveBeenCalledExactlyOnceWith({
+      resourceAttributes: {
+        "telemetry.distro.name": "@microsoft/opentelemetry-browser",
+        "telemetry.distro.version": OPENTELEMETRY_BROWSER_VERSION,
+      },
+      traces: {
+        ...traces,
+        processors: [pipeline.spanProcessor],
+      },
+      logs: { processors: undefined },
+    });
+    const forwarded = vi.mocked(startBrowserSdk).mock.calls[0]?.[0]?.traces;
+    expect(forwarded?.propagators).not.toBe(propagators);
+    if (configuration === "both" || configuration === "context manager") {
+      expect(forwarded?.contextManager).toBe(contextManager);
+    } else {
+      expect(forwarded).not.toHaveProperty("contextManager");
+    }
+    if (configuration === "context manager") expect(forwarded).not.toHaveProperty("propagators");
+    expect(options.traces).toBe(traces);
+    expect(options.traces?.propagators).toBe(traces.propagators);
+  },
+);
+
+it.each([undefined, {}, { contextManager: undefined, propagators: undefined }])(
+  "leaves upstream context defaults untouched for %j",
+  async (traces) => {
+    vi.mocked(startBrowserSdk).mockReturnValueOnce({ shutdown: vi.fn(async () => {}) });
+    const handle = await useMicrosoftOpenTelemetry({
+      traces,
+      pageView: { enabled: false },
+    });
+    handles.add(handle);
+
+    const forwarded = vi.mocked(startBrowserSdk).mock.calls[0]?.[0]?.traces;
+    expect(forwarded).not.toHaveProperty("contextManager");
+    expect(forwarded).not.toHaveProperty("propagators");
+  },
+);
 
 it("identifies the distribution without displacing the upstream SDK defaults", async () => {
   const pipeline = createInMemoryPipeline();
