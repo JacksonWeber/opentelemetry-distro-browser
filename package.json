@@ -1,7 +1,6 @@
 {
-  "name": "@microsoft/opentelemetry-distro-browser",
-  "version": "0.0.0",
-  "private": true,
+  "name": "@microsoft/opentelemetry-browser",
+  "version": "0.1.0-alpha.1",
   "description": "OpenTelemetry distribution for the browser",
   "license": "MIT",
   "type": "module",
@@ -23,6 +22,7 @@
   },
   "files": [
     "dist/",
+    "CHANGELOG.md",
     "README.md",
     "LICENSE"
   ],
@@ -34,6 +34,10 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/microsoft/opentelemetry-distro-browser.git"
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "alpha"
   },
   "scripts": {
     "clean": "node scripts/clean.mjs",

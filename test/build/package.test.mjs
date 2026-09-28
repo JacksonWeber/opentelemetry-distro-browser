@@ -31,6 +31,16 @@ const require = createRequire(import.meta.url);
 const esmBundle = "dist/esm/index";
 const sharedApiPackages = ["@opentelemetry/api", "@opentelemetry/api-logs"];
 
+test("the package is configured for a public alpha release", () => {
+  assert.equal(pkg.name, "@microsoft/opentelemetry-browser");
+  assert.equal(pkg.version, "0.1.0-alpha.1");
+  assert.equal(Object.hasOwn(pkg, "private"), false);
+  assert.deepEqual(pkg.publishConfig, {
+    access: "public",
+    tag: "alpha",
+  });
+});
+
 async function bundleConsumer(source, external = []) {
   const input = "\0consumer";
   const bundle = await rollup({

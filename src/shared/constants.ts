@@ -5,4 +5,4 @@
  * Version of this browser distribution.
  * @public
  */
-export const OPENTELEMETRY_BROWSER_VERSION: string = "0.0.0";
+export const OPENTELEMETRY_BROWSER_VERSION: string = "0.1.0-alpha.1";

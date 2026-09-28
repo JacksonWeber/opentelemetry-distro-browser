@@ -162,7 +162,7 @@ export async function useMicrosoftOpenTelemetry(
       // Spread last: the caller's attributes win, and each call gets a fresh object because the
       // SDK mutates this one in place and shares it between the traces and logs SDKs.
       resourceAttributes: {
-        [ATTR_TELEMETRY_DISTRO_NAME]: "@microsoft/opentelemetry-distro-browser",
+        [ATTR_TELEMETRY_DISTRO_NAME]: "@microsoft/opentelemetry-browser",
         [ATTR_TELEMETRY_DISTRO_VERSION]: OPENTELEMETRY_BROWSER_VERSION,
         ...options.resource?.attributes,
       },

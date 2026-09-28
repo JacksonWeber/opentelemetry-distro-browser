@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OpenTelemetry browser console sample</title>
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">OpenTelemetry browser alpha</p>
+      <h1>Console exporter sample</h1>
+      <p>
+        Open DevTools, then use the controls to emit telemetry through standard OpenTelemetry APIs.
+      </p>
+      <div class="actions">
+        <button id="span" type="button">Create manual span</button>
+        <button id="log" type="button">Emit log record</button>
+        <button id="request" type="button">Make instrumented request</button>
+        <button id="route" type="button">Change SPA route</button>
+      </div>
+      <output id="status" aria-live="polite">Telemetry initialized.</output>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

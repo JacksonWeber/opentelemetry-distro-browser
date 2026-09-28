@@ -7,7 +7,7 @@
   },
   "apiReport": {
     "enabled": true,
-    "reportFileName": "opentelemetry-distro-browser.instrumentations.api.md",
+    "reportFileName": "opentelemetry-browser.instrumentations.api.md",
     "reportFolder": "<projectFolder>/etc",
     "reportTempFolder": "<projectFolder>/temp/api"
   },

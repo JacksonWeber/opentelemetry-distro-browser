@@ -52,7 +52,7 @@ import {
  * Instrumentation scope name for the page-view event.
  * @public
  */
-export const PAGE_VIEW_INSTRUMENTATION_NAME = "@microsoft/opentelemetry-distro-browser/page-view";
+export const PAGE_VIEW_INSTRUMENTATION_NAME = "@microsoft/opentelemetry-browser/page-view";
 
 const DEFAULT_SETTLE_TIMEOUT_MS = 10_000;
 const IDLE_TIMEOUT_MS = 1_000;
