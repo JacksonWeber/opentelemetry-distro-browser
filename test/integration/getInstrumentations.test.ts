@@ -1,7 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { context, diag, propagation, trace, type TextMapPropagator } from "@opentelemetry/api";
+import {
+  ROOT_CONTEXT,
+  context,
+  diag,
+  propagation,
+  trace,
+  type TextMapPropagator,
+} from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
 import { afterEach, describe, expect, inject, it } from "vitest";
@@ -29,6 +36,7 @@ interface PropagationHeaders {
   baggage?: string;
   custom?: string;
   traceparent?: string;
+  tracestate?: string;
 }
 
 let pipeline: ReturnType<typeof createInMemoryPipeline>;
@@ -173,15 +181,39 @@ describe("configured instrumentations in a browser", () => {
         xhr: { propagateTraceHeaderCorsUrls: allowedOrigins },
       });
 
-      const [fetchRequest, xhrRequest] = await withBaggage(() =>
-        Promise.all([
-          fetchHeaders(CROSS_ORIGIN_HEADERS_URL),
-          sendXhrForHeaders(CROSS_ORIGIN_HEADERS_URL),
-        ]),
+      const extracted = propagation.extract(ROOT_CONTEXT, {
+        traceparent: "00-1234567890abcdef1234567890abcdef-1234567890abcdef-01",
+        tracestate: "vendor=state",
+      });
+      const parent = trace.getTracer("request-parent").startSpan("parent", {}, extracted);
+      const [fetchRequest, xhrRequest] = await context.with(
+        trace.setSpan(ROOT_CONTEXT, parent),
+        () =>
+          withBaggage(() =>
+            Promise.all([
+              fetchHeaders(CROSS_ORIGIN_HEADERS_URL),
+              sendXhrForHeaders(CROSS_ORIGIN_HEADERS_URL),
+            ]),
+          ),
       );
+      parent.end();
 
       expectW3cHeaders(fetchRequest);
       expectW3cHeaders(xhrRequest);
+      const spans = await captured();
+      expect(spans).toHaveLength(3);
+      for (const headers of [fetchRequest, xhrRequest]) {
+        const requestSpan = spans.find(
+          (span) => span.spanContext().spanId === headers.traceparent?.split("-")[2],
+        );
+        expect(requestSpan?.parentSpanContext).toEqual(parent.spanContext());
+        expect(headers.traceparent).toBe(
+          `00-${parent.spanContext().traceId}-${requestSpan?.spanContext().spanId}-01`,
+        );
+        expect(headers.tracestate).toBe("vendor=state");
+      }
+      expect(context.active()).toBe(ROOT_CONTEXT);
+      expect(propagation.getBaggage(context.active())).toBeUndefined();
     });
 
     it("does not inject headers into cross-origin requests outside the allowed list", async () => {
