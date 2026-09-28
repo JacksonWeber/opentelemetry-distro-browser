@@ -19,4 +19,4 @@ export const EXCEPTION_MESSAGE = "exception.message";
 export const EXCEPTION_STACKTRACE = "exception.stacktrace";
 export const EXCEPTION_TYPE = "exception.type";
 export const NAVIGATION_DURATION = "browser.navigation.duration";
-export const PAGE_VIEW_EVENT_NAME = "browser.navigation";
+export const NAVIGATION_EVENT_NAME = "browser.navigation";

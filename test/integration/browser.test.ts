@@ -31,11 +31,25 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
   });
   const button = document.createElement("button");
   button.addEventListener("click", () => {
+    const logger = logs.getLogger("browser-ingestion-test");
     trace.getTracer("browser-ingestion-test").startSpan("checkout.click").end();
-    logs.getLogger("browser-ingestion-test").emit({
+    logger.emit({
       eventName: "checkout.clicked",
       body: runId,
       attributes: { "test.run_id": runId },
+    });
+    logger.emit({
+      eventName: "browser.page_view",
+      attributes: {
+        "browser.page_view.name": "Checkout",
+        "browser.page_view.duration": 425.25,
+        "url.full": `${location.origin}/checkout`,
+        "test.run_id": runId,
+      },
+    });
+    logger.emit({
+      eventName: "checkout.custom",
+      attributes: { "test.run_id": runId, itemCount: 2 },
     });
   });
   document.body.append(button);
@@ -65,6 +79,29 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
               properties: expect.objectContaining({ "test.run_id": runId }),
             }),
           }),
+        }),
+        expect.objectContaining({
+          name: "Microsoft.ApplicationInsights.PageView",
+          data: {
+            baseType: "PageViewData",
+            baseData: expect.objectContaining({
+              name: "Checkout",
+              url: `${location.origin}/checkout`,
+              duration: "00:00:00.4252500",
+              properties: expect.objectContaining({ "test.run_id": runId }),
+            }),
+          },
+        }),
+        expect.objectContaining({
+          name: "Microsoft.ApplicationInsights.Event",
+          data: {
+            baseType: "EventData",
+            baseData: expect.objectContaining({
+              name: "checkout.custom",
+              properties: expect.objectContaining({ "test.run_id": runId }),
+              measurements: expect.objectContaining({ itemCount: 2 }),
+            }),
+          },
         }),
       ]),
     );
