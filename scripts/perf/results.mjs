@@ -160,7 +160,7 @@ export function createPayload(run) {
             "benchmark.source": "mot-browser",
             "benchmark.profile": "mot-browser-v1",
             "vcs.ref.head.revision": run.revision,
-            "benchmark.source.dirty": run.dirty,
+            "vcs.dirty": run.dirty,
             "user_agent.synthetic.type": "test",
             "os.type": text(run.os, "os.type"),
             "host.arch": text(run.arch, "host.arch"),

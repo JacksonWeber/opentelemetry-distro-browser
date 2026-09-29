@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -150,7 +150,7 @@ test("emits named native OTLP events with exact identity, timestamp, units and t
     assert.deepEqual(resource["package.version"], { stringValue: run.package.version });
     assert.deepEqual(resource["benchmark.run_id"], { stringValue: run.runId });
     assert.deepEqual(resource["vcs.ref.head.revision"], { stringValue: run.revision });
-    assert.deepEqual(resource["benchmark.source.dirty"], { boolValue: false });
+    assert.deepEqual(resource["vcs.dirty"], { boolValue: false });
     assert.equal(resource["telemetry.sdk.version"], undefined);
     for (const event of group.scopeLogs[0].logRecords) {
       assert.equal(event.eventName, "microsoft.opentelemetry.benchmark.result");
@@ -190,6 +190,17 @@ test("emits named native OTLP events with exact identity, timestamp, units and t
   assert.deepEqual(throughput["benchmark.unit"], { stringValue: "operations/s" });
   assert.deepEqual(throughput["benchmark.value"], { doubleValue: 500000 });
   assert.equal(median([1, 4, 2, 3]), 2.5);
+});
+
+test("uses the schema dirty attribute for clean and modified checkouts", () => {
+  for (const dirty of [false, true]) {
+    const run = { ...fixture(), dirty };
+    for (const group of createPayload(run).resourceLogs) {
+      const resource = attrs(group.resource.attributes);
+      assert.deepEqual(resource["vcs.dirty"], { boolValue: dirty });
+      assert.equal(resource["benchmark.source.dirty"], undefined);
+    }
+  }
 });
 
 test("rejects invalid or invented measurements rather than exporting zeros", () => {
@@ -351,6 +362,74 @@ test("invalid endpoint or raw data causes no outbound request", async () => {
     await assert.rejects(exportResults(run, endpoint));
     assert.equal(captured.length, 0);
   });
+});
+
+test("CLI preflight failures leave saved runs exportable after correction", async () => {
+  await withCollector(async (endpoint, captured) => {
+    for (const failure of [
+      { endpoint: "not-an-endpoint", error: /Invalid URL/ },
+      { endpoint: endpoint.replace("/otlp", ""), error: /Explicit HTTPS/ },
+      { endpoint, error: /Payload exceeds 4 MiB/, oversized: true },
+    ]) {
+      const directory = await mkdtemp(join(tmpdir(), "browser-perf-preflight-"));
+      try {
+        const run = fixture();
+        const version = run.package.version;
+        if (failure.oversized) run.package.version = "x".repeat(2 * 1024 * 1024);
+        const save = async () => {
+          await writeFile(join(directory, "raw.json"), JSON.stringify(run));
+          await writeFile(join(directory, "payload.json"), JSON.stringify(createPayload(run)));
+        };
+        const command = fileURLToPath(new URL("../../scripts/perf/export.mjs", import.meta.url));
+        const invoke = (url) =>
+          promisify(execFile)(
+            process.execPath,
+            [command, "--input", directory, "--endpoint", url],
+            { env: { ...process.env, GITHUB_ACTIONS: "false" } },
+          );
+        await save();
+        const previousRequests = captured.length;
+        await assert.rejects(invoke(failure.endpoint), failure.error);
+        assert.equal(captured.length, previousRequests);
+        assert.deepEqual((await readdir(directory)).sort(), ["payload.json", "raw.json"]);
+        run.package.version = version;
+        await save();
+        await invoke(endpoint);
+        assert.equal(captured.length, previousRequests + 1);
+        assert.deepEqual(JSON.parse(captured.at(-1).data), createPayload(run));
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    }
+  });
+});
+
+test("CLI retains replay protection after an ambiguous collector response", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "browser-perf-replay-"));
+  try {
+    const run = fixture();
+    await writeFile(join(directory, "raw.json"), JSON.stringify(run));
+    await writeFile(join(directory, "payload.json"), JSON.stringify(createPayload(run)));
+    await withCollector(
+      async (endpoint, captured) => {
+        const command = fileURLToPath(new URL("../../scripts/perf/export.mjs", import.meta.url));
+        const args = [command, "--input", directory, "--endpoint", endpoint];
+        const env = { ...process.env, GITHUB_ACTIONS: "false" };
+        await assert.rejects(
+          promisify(execFile)(process.execPath, args, { env }),
+          /Malformed collector response/,
+        );
+        await assert.rejects(promisify(execFile)(process.execPath, args, { env }), /EEXIST/);
+        assert.equal(captured.length, 1);
+        const receipt = JSON.parse(await readFile(join(directory, "export-result.json"), "utf8"));
+        assert.equal(receipt.responseBody, "invalid");
+      },
+      200,
+      "invalid",
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("CLI never exports by default and rejects unmerged CI before touching network", async () => {

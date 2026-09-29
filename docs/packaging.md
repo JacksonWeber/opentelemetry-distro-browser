@@ -79,7 +79,7 @@ Each run creates `artifacts/performance/<generated-UUID>/` (outside build-cleane
 
 Resources identify the measured `package.name` and `package.version`, independently of the
 harness (`service.name`). `benchmark.run_id` is a newly generated execution UUID;
-`vcs.ref.head.revision` and `benchmark.source.dirty` describe the checkout. Size resources
+`vcs.ref.head.revision` and `vcs.dirty` describe the checkout. Size resources
 use `benchmark.environment=node-build`; runtime resources use `headless-browser` and the
 actual Chromium version. No reporting OpenTelemetry SDK identity is invented for the direct
 JSON serializer.
@@ -127,7 +127,9 @@ Manual results keep their original timestamp, source revision, and dirty status;
 pretend to be merged-PR executions. The exporter checks the saved payload against validated raw
 data before sending, requires an explicit endpoint, disables redirects, enforces bounded
 request/response sizes and timeout, and never retries. Loopback HTTP is permitted only for
-local transport tests. `export-attempt.json` is created exclusively before transmission, so
+local transport tests. Endpoint and payload-size validation happen before creating
+`export-attempt.json`, so preflight errors can be corrected without locking the saved run.
+The marker is created exclusively before transmission, so
 rerunning export on that directory fails rather than duplicating an ambiguous submission.
 `request.json` preserves the exact transmitted bytes, whose hash and length are recorded in
 `export-attempt.json`. `export-result.json` preserves the HTTP status and response, including

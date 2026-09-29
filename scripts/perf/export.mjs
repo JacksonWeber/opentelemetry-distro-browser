@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { createPayload, mergedRevision, sha256 } from "./results.mjs";
 
-export async function exportResults(run, endpoint) {
+function prepareRequest(payload, endpoint) {
   const url = new URL(endpoint);
   const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
   if (
@@ -22,8 +22,12 @@ export async function exportResults(run, endpoint) {
       "Explicit HTTPS /otlp/v1/logs endpoint required (HTTP only for loopback tests)",
     );
   }
-  const body = JSON.stringify(createPayload(run));
+  const body = JSON.stringify(payload);
   if (Buffer.byteLength(body) > 4 * 1024 * 1024) throw new Error("Payload exceeds 4 MiB");
+  return { url, body };
+}
+
+async function sendRequest({ url, body }) {
   let response;
   let responseBody = "";
   try {
@@ -60,6 +64,10 @@ export async function exportResults(run, endpoint) {
   return { status: response.status, responseBody, completedAt: new Date().toISOString() };
 }
 
+export async function exportResults(run, endpoint) {
+  return sendRequest(prepareRequest(createPayload(run), endpoint));
+}
+
 async function main() {
   const { values } = parseArgs({
     options: { input: { type: "string" }, endpoint: { type: "string" } },
@@ -83,7 +91,8 @@ async function main() {
   if (JSON.stringify(payload) !== JSON.stringify(saved)) {
     throw new Error("Saved payload differs from validated raw results");
   }
-  const body = JSON.stringify(payload);
+  const request = prepareRequest(payload, values.endpoint);
+  const { body } = request;
   // A durable exclusive marker prevents accidental replay, including after ambiguous failures.
   await writeFile(
     join(directory, "export-attempt.json"),
@@ -97,7 +106,7 @@ async function main() {
   );
   await writeFile(join(directory, "request.json"), body, { flag: "wx" });
   try {
-    const receipt = await exportResults(run, values.endpoint);
+    const receipt = await sendRequest(request);
     await writeFile(join(directory, "export-result.json"), JSON.stringify(receipt), { flag: "wx" });
     console.log(
       `Collector accepted run ${run.runId}; downstream ingestion must be verified separately.`,
