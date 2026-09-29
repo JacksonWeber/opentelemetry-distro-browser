@@ -2,7 +2,7 @@
 
 All notable changes to this package are documented in this file.
 
-## Unreleased
+## 0.1.0-alpha.2 - Unreleased
 
 ### Changed
 
@@ -10,6 +10,8 @@ All notable changes to this package are documented in this file.
   pull requests merge into `main`, including minified, gzip, and Brotli bundle sizes.
 - Replaced proposal-era README content with installation, initialization, configuration,
   instrumentation, OTLP, resource detection, bundle size, and published-alpha guidance.
+- Cover page view and custom event e2e integration
+- Enforce exporter payload limits and test unload delivery.
 
 ## 0.1.0-alpha.1 - 2026-09-28
 
