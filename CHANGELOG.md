@@ -4,6 +4,10 @@ All notable changes to this package are documented in this file.
 
 ## 0.1.0-alpha.2 - Unreleased
 
+### Added
+
+- Promote the size harness into a repository tool
+
 ### Changed
 
 - Replaced proposal-era README content with installation, initialization, configuration,
