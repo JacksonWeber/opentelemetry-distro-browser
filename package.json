@@ -59,7 +59,10 @@
     "api:update": "npm run build && api-extractor run --local && api-extractor run --local --config api-extractor.instrumentations.json",
     "size": "node scripts/measure-bundle-size.mjs",
     "size:report": "npm run size",
-    "check": "npm run format && npm run lint && npm run typecheck && npm run test:coverage && npm run build && npm run test:build && npm run test:integration && npm run api:check && npm run size",
+    "perf": "node scripts/perf/run.mjs",
+    "perf:export": "node scripts/perf/export.mjs",
+    "test:perf": "node --test test/perf/*.test.mjs",
+    "check": "npm run format && npm run lint && npm run typecheck && npm run test:perf && npm run test:coverage && npm run build && npm run test:build && npm run test:integration && npm run api:check && npm run size",
     "prepack": "npm run build"
   },
   "dependencies": {
