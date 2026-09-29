@@ -26,9 +26,17 @@ with TypeScript NodeNext and Bundler resolution, source maps, minification, and 
 transforming their contents. The `sideEffects: false` contract remains in place; importing the
 package does not initialize telemetry.
 
-`npm run size` reports minified, gzip, and Brotli sizes for `dist/esm/index.min.js`.
-`npm run size:report` writes the machine-readable report, and the production build generates
-`reports/bundle-stats.html` for dependency analysis.
+`npm run size` bundles real consumers of every published JavaScript entry point with Rollup,
+tree-shakes and minifies each scenario, and reports gzip and Brotli transfer sizes. It measures the
+API, SDK, distribution, Azure Monitor exporters, instrumentation loader, each selectable
+instrumentation, and the complete combined configuration. Marginal deltas are always shown beside
+independently measured totals. Do not add deltas because combined bundles count shared dependencies
+once.
+
+Every run regenerates `reports/bundle-size.json` and `reports/bundle-size.md`. The production build
+also generates `reports/bundle-stats.html` for dependency analysis. CI renders the Markdown report
+in each Node job's check summary and uploads all three files as build artifacts.
+`npm run size:report` remains an alias for `npm run size`.
 
 ## Performance measurements
 
