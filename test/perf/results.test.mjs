@@ -81,8 +81,8 @@ test("job summary identifies the exact report run before publishing, including o
     assert.ok(summary.includes(`**Explicit run:** <code>${run.runId}</code>`));
     assert.ok(summary.includes(`commit/${run.revision}`));
     assert.ok(summary.includes(`<code>${run.package.version}</code>`));
-    assert.match(summary, /open \*\*MOT for Browser\*\*.*\*\*Explicit run\*\*/);
-    assert.match(summary, /Generated measurements; see the publish step for collector acceptance/);
+    assert.match(summary, /After publishing, open \*\*MOT for Browser\*\*.*\*\*Explicit run\*\*/);
+    assert.match(summary, /Generated measurements only; this command does not upload results/);
     assert.match(summary, /does not confirm downstream ingestion/);
     for (const size of Object.values(run.artifact.sizes)) {
       assert.ok(summary.includes(`| ${size} |`));
@@ -293,6 +293,20 @@ test("workflow binds exact merged commit and explicit variable, without extra up
     /pull_request_target|workflow_dispatch|upload-artifact|secrets\.|push:/,
   );
   assert.equal([...workflow.matchAll(/uses: .*@[0-9a-f]{40}/g)].length, 2);
+});
+
+test("PR validation runs the offline benchmark after Chromium installation and build", async () => {
+  const workflow = await readFile(
+    new URL("../../.github/workflows/pr-validation.yml", import.meta.url),
+    "utf8",
+  );
+  const tests = workflow.slice(workflow.indexOf("\n  tests:"));
+  const install = tests.indexOf("run: npm run test:install-browsers -- --with-deps");
+  const build = tests.indexOf("run: npm run build\n");
+  const measure = tests.indexOf("run: npm run perf\n");
+  assert.ok(install >= 0 && install < build && build < measure);
+  assert.match(tests, /node-version: \["22", "24"\]/);
+  assert.doesNotMatch(tests, /perf:export|SDK_PERF_COLLECTOR_ENDPOINT|continue-on-error/);
 });
 
 async function withCollector(callback, status = 200, body = "{}") {

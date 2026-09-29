@@ -99,6 +99,9 @@ jobs:
       - name: Build and minify bundles
         run: npm run build
 
+      - name: Run offline browser performance benchmark
+        run: npm run perf
+
       - name: Verify package outputs
         run: npm run test:build
 

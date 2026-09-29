@@ -40,6 +40,10 @@ sessions, and logs are disabled, and a counting span processor verifies that eve
 and ends. Browser requests other than the harness's intercepted local modules are blocked and
 fail the measurement.
 
+PR validation runs `npm run perf` after building the bundles in the Node.js 22 and 24
+Chromium jobs. This exercises the full runner, browser measurements, and payload generation
+before merge, without publishing telemetry or requiring collector configuration.
+
 This is an **ESM size-check bundle**, also included in the package, not complete application
 bytes: `@opentelemetry/api` and `@opentelemetry/api-logs` remain external. The package export
 resolves to `dist/esm/index.js`. Unminified entry points, source maps, and declaration files are
@@ -108,8 +112,8 @@ The `Merged PR performance` workflow runs only on an actual closed-and-merged PR
 `merge_commit_sha`, including the final squash/rebase commit where applicable. Merged fork
 contributions are supported; unmerged PRs, fork repositories, direct pushes, and manual
 workflow dispatches do not publish. It uses read-only repository permissions and no
-`pull_request_target` execution. Result creation and export independently validate the merge
-event, and CI export rejects dirty or mismatched source revisions.
+`pull_request_target` execution. Offline result creation is allowed in any CI context;
+export validates the merge event and rejects dirty or mismatched source revisions.
 
 A repository administrator must configure the Actions variable
 `SDK_PERF_COLLECTOR_ENDPOINT` with the approved HTTPS collector URL ending in

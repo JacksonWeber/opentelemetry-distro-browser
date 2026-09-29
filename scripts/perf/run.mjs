@@ -11,7 +11,6 @@ import {
   artifactPath,
   createPayload,
   measureBundle,
-  mergedRevision,
   metricPrefix,
   sha256,
   writeJobSummary,
@@ -22,15 +21,6 @@ const { values } = parseArgs({
 });
 const git = (...args) => execFileSync("git", args, { encoding: "utf8" }).trim();
 const revision = git("rev-parse", "HEAD");
-if (process.env.GITHUB_ACTIONS === "true") {
-  const event = JSON.parse(await readFile(process.env.GITHUB_EVENT_PATH, "utf8"));
-  const merged = mergedRevision(
-    event,
-    process.env.GITHUB_REPOSITORY,
-    process.env.GITHUB_EVENT_NAME,
-  );
-  if (revision !== merged) throw new Error("Checkout does not match the exact merged revision");
-}
 
 const runId = randomUUID();
 const output = resolve(values.output, runId);
