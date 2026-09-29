@@ -7,6 +7,7 @@ All notable changes to this package are documented in this file.
 ### Added
 
 - Promote the size harness into a repository tool
+- Map page view ID and referrer to Azure Monitor envelopes
 
 ### Changed
 
