@@ -6,6 +6,8 @@ All notable changes to this package are documented in this file.
 
 ### Changed
 
+- Added offline browser performance measurements and explicit result publishing after upstream
+  pull requests merge into `main`, including minified, gzip, and Brotli bundle sizes.
 - Replaced proposal-era README content with installation, initialization, configuration,
   instrumentation, OTLP, resource detection, bundle size, and published-alpha guidance.
 

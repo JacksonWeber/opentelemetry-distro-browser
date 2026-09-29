@@ -66,6 +66,9 @@ jobs:
       - name: Check types
         run: npm run typecheck
 
+      - name: Test performance result schema and export safeguards
+        run: npm run test:perf
+
   tests:
     name: Browser tests, API, and bundles (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
