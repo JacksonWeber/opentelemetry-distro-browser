@@ -5,7 +5,7 @@ import { SpanKind, SpanStatusCode, type SpanContext } from "@opentelemetry/api";
 import { ExportResultCode } from "@opentelemetry/core";
 import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { setUnloading } from "../../../src/exporter/common.js";
+import { beginUnloading, endUnloading } from "../../../src/exporter/common.js";
 import { MAX_BATCH_SIZE_IN_BYTES } from "../../../src/exporter/constants.js";
 import { AzureMonitorSpanExporter } from "../../../src/exporter/trace.js";
 
@@ -280,7 +280,7 @@ describe("AzureMonitorSpanExporter", () => {
     vi.stubGlobal("fetch", fetch);
     const sendBeacon = vi.spyOn(navigator, "sendBeacon").mockReturnValue(true);
     const exporter = new AzureMonitorSpanExporter({ connectionString });
-    setUnloading(true);
+    beginUnloading();
 
     try {
       await expect(exportSpan(exporter)).resolves.toEqual({ code: ExportResultCode.SUCCESS });
@@ -288,7 +288,7 @@ describe("AzureMonitorSpanExporter", () => {
       expect(fetch.mock.calls[0][1]).toMatchObject({ keepalive: true });
       expect(sendBeacon).toHaveBeenCalledOnce();
     } finally {
-      setUnloading(false);
+      endUnloading();
     }
   });
 });

@@ -11,7 +11,7 @@ import {
   type BatchLogRecordProcessorBrowserOptions,
 } from "@opentelemetry/sdk-logs";
 import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
-import { setUnloading } from "./exporter/common.js";
+import { beginUnloading, endUnloading } from "./exporter/common.js";
 import { AzureMonitorLogRecordExporter } from "./exporter/log.js";
 import { AzureMonitorSpanExporter } from "./exporter/trace.js";
 import { PageViewInstrumentation } from "./instrumentation/pageView/index.js";
@@ -99,19 +99,20 @@ export async function useMicrosoftOpenTelemetry(
   };
 
   let shutdownPromise: Promise<void> | undefined;
-  let unloading = false;
+  let flushPromise: Promise<void> | undefined;
+  let unloadFlushPromise: Promise<void> | undefined;
   const flushForUnload = (): void => {
-    if (unloading) return;
-    unloading = true;
-    setUnloading(true);
-    void forceFlush()
+    if (unloadFlushPromise) return;
+    beginUnloading();
+    const operation = flushProcessors()
       .catch((error: unknown) => {
         diag.error("Telemetry unload flush failed", error);
       })
       .finally(() => {
-        unloading = false;
-        setUnloading(false);
+        endUnloading();
+        if (unloadFlushPromise === operation) unloadFlushPromise = undefined;
       });
+    unloadFlushPromise = operation;
   };
   const visibilityChange = (): void => {
     if (globalThis.document?.visibilityState === "hidden") flushForUnload();
@@ -119,11 +120,29 @@ export async function useMicrosoftOpenTelemetry(
   globalThis.addEventListener?.("pagehide", flushForUnload);
   globalThis.document?.addEventListener("visibilitychange", visibilityChange);
 
-  async function forceFlush(): Promise<void> {
-    await Promise.all([
-      ...(spanProcessors ?? []).map((processor) => processor.forceFlush()),
-      ...(logRecordProcessors ?? []).map((processor) => processor.forceFlush()),
-    ]);
+  async function flushProcessors(): Promise<void> {
+    const processors = [...(spanProcessors ?? []), ...(logRecordProcessors ?? [])];
+    const results = await Promise.allSettled(
+      processors.map((processor) => Promise.resolve().then(() => processor.forceFlush())),
+    );
+    const errors: unknown[] = [];
+    for (const result of results) {
+      if (result.status === "rejected") errors.push(result.reason);
+    }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) throw new AggregateError(errors, "Telemetry flush failed");
+  }
+
+  function forceFlush(): Promise<void> {
+    if (shutdownPromise) return shutdownPromise;
+    if (!flushPromise) {
+      const operation = flushProcessors();
+      const tracked = operation.finally(() => {
+        if (flushPromise === tracked) flushPromise = undefined;
+      });
+      flushPromise = tracked;
+    }
+    return flushPromise;
   }
 
   function shutdown(): Promise<void> {
@@ -142,6 +161,15 @@ export async function useMicrosoftOpenTelemetry(
           instrumentations[i].disable();
         } catch (error) {
           errors.push(error);
+        }
+      }
+      const activeFlushes = [flushPromise, unloadFlushPromise].filter(
+        (operation): operation is Promise<void> => operation !== undefined,
+      );
+      if (activeFlushes.length > 0) {
+        const flushResults = await Promise.allSettled(activeFlushes);
+        for (const result of flushResults) {
+          if (result.status === "rejected") errors.push(result.reason);
         }
       }
       try {
