@@ -1,7 +1,7 @@
 name: Merged PR performance
 
 on:
-  pull_request:
+  pull_request_target:
     types: [closed]
     branches: [main]
 
@@ -12,6 +12,7 @@ jobs:
   performance:
     if: >-
       github.repository == 'microsoft/opentelemetry-distro-browser' &&
+      github.event_name == 'pull_request_target' &&
       github.event.action == 'closed' &&
       github.event.pull_request.merged == true &&
       github.event.pull_request.base.ref == 'main' &&
@@ -24,6 +25,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.merge_commit_sha }}
+          # Checkout v7 also guards already-merged fork SHAs; this job only runs after merge.
+          allow-unsafe-pr-checkout: ${{ github.event.pull_request.merged == true }}
           persist-credentials: false
 
       - name: Set up Node.js

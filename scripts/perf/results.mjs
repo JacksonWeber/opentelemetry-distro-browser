@@ -225,7 +225,7 @@ export function createPayload(run) {
 export function mergedRevision(event, repository, eventName) {
   const pr = event?.pull_request;
   if (
-    eventName !== "pull_request" ||
+    eventName !== "pull_request_target" ||
     repository !== "microsoft/opentelemetry-distro-browser" ||
     event.repository?.full_name !== repository ||
     event.action !== "closed" ||

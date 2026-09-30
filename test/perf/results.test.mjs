@@ -251,10 +251,13 @@ function mergeEvent() {
 
 test("only exact upstream merged revisions qualify, including reviewed fork, squash and rebase merges", () => {
   const repository = "microsoft/opentelemetry-distro-browser";
-  for (const sha of ["a", "c", "d"]) {
-    const event = mergeEvent();
-    event.pull_request.merge_commit_sha = sha.repeat(40);
-    assert.equal(mergedRevision(event, repository, "pull_request"), sha.repeat(40));
+  for (const headRepository of ["contributor/fork", repository]) {
+    for (const sha of ["a", "c", "d"]) {
+      const event = mergeEvent();
+      event.pull_request.head.repo.full_name = headRepository;
+      event.pull_request.merge_commit_sha = sha.repeat(40);
+      assert.equal(mergedRevision(event, repository, "pull_request_target"), sha.repeat(40));
+    }
   }
   for (const change of [
     (e) => (e.action = "opened"),
@@ -268,12 +271,12 @@ test("only exact upstream merged revisions qualify, including reviewed fork, squ
   ]) {
     const event = mergeEvent();
     change(event);
-    assert.throws(() => mergedRevision(event, repository, "pull_request"));
+    assert.throws(() => mergedRevision(event, repository, "pull_request_target"));
   }
-  for (const name of ["push", "workflow_dispatch", "pull_request_target"]) {
+  for (const name of ["push", "workflow_dispatch", "pull_request", "workflow_run"]) {
     assert.throws(() => mergedRevision(mergeEvent(), repository, name));
   }
-  assert.throws(() => mergedRevision(mergeEvent(), "contributor/fork", "pull_request"));
+  assert.throws(() => mergedRevision(mergeEvent(), "contributor/fork", "pull_request_target"));
 });
 
 test("workflow binds exact merged commit and explicit variable, without extra uploads or broad triggers", async () => {
@@ -281,16 +284,30 @@ test("workflow binds exact merged commit and explicit variable, without extra up
     new URL("../../.github/workflows/performance.yml", import.meta.url),
     "utf8",
   );
+  assert.match(workflow, /on:\s+pull_request_target:/);
   assert.match(workflow, /types: \[closed\]/);
   assert.match(workflow, /branches: \[main\]/);
+  assert.match(workflow, /github\.repository == 'microsoft\/opentelemetry-distro-browser'/);
+  assert.match(workflow, /github\.event_name == 'pull_request_target'/);
+  assert.match(workflow, /github\.event\.action == 'closed'/);
   assert.match(workflow, /github\.event\.pull_request\.merged == true/);
+  assert.match(workflow, /github\.event\.pull_request\.base\.ref == 'main'/);
+  assert.match(
+    workflow,
+    /github\.event\.pull_request\.base\.repo\.full_name == 'microsoft\/opentelemetry-distro-browser'/,
+  );
+  assert.match(workflow, /github\.event\.pull_request\.merge_commit_sha != ''/);
   assert.match(workflow, /ref: \$\{\{ github\.event\.pull_request\.merge_commit_sha \}\}/);
+  assert.match(
+    workflow,
+    /allow-unsafe-pr-checkout: \$\{\{ github\.event\.pull_request\.merged == true \}\}/,
+  );
   assert.match(workflow, /persist-credentials: false/);
-  assert.match(workflow, /contents: read/);
+  assert.match(workflow, /permissions:\s+contents: read\s+jobs:/);
   assert.match(workflow, /vars.SDK_PERF_COLLECTOR_ENDPOINT/);
   assert.doesNotMatch(
     workflow,
-    /pull_request_target|workflow_dispatch|upload-artifact|secrets\.|push:/,
+    /pull_request:|workflow_dispatch|upload-artifact|secrets\.|push:|pull_request\.head|refs\/pull\//,
   );
   assert.equal([...workflow.matchAll(/uses: .*@[0-9a-f]{40}/g)].length, 2);
 });
@@ -475,7 +492,7 @@ test("CLI never exports by default and rejects unmerged CI before touching netwo
               env: {
                 ...process.env,
                 GITHUB_ACTIONS: "true",
-                GITHUB_EVENT_NAME: "pull_request",
+                GITHUB_EVENT_NAME: "pull_request_target",
                 GITHUB_REPOSITORY: "microsoft/opentelemetry-distro-browser",
                 GITHUB_EVENT_PATH: eventFile,
               },
@@ -513,6 +530,51 @@ test("CLI never exports by default and rejects unmerged CI before touching netwo
         });
       } finally {
         await rm(directory, { recursive: true, force: true });
+      }
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("CLI publishes a merged fork target event only for clean results at the exact merged SHA", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "browser-perf-merged-"));
+  try {
+    const eventFile = join(directory, "event.json");
+    await writeFile(eventFile, JSON.stringify(mergeEvent()));
+    const command = fileURLToPath(new URL("../../scripts/perf/export.mjs", import.meta.url));
+    const env = {
+      ...process.env,
+      GITHUB_ACTIONS: "true",
+      GITHUB_EVENT_NAME: "pull_request_target",
+      GITHUB_REPOSITORY: "microsoft/opentelemetry-distro-browser",
+      GITHUB_EVENT_PATH: eventFile,
+    };
+    await withCollector(async (endpoint, captured) => {
+      const args = [command, "--input", directory, "--endpoint", endpoint];
+      for (const changes of [{ dirty: true }, { revision: "b".repeat(40) }, {}]) {
+        const run = { ...fixture(), ...changes };
+        const payload = createPayload(run);
+        await writeFile(join(directory, "raw.json"), JSON.stringify(run));
+        await writeFile(join(directory, "payload.json"), JSON.stringify(payload));
+        if (run.dirty || run.revision !== mergeEvent().pull_request.merge_commit_sha) {
+          await assert.rejects(
+            promisify(execFile)(process.execPath, args, { env }),
+            /CI publishing requires clean results from the exact merged revision/,
+          );
+          assert.equal(captured.length, 0);
+          assert.deepEqual((await readdir(directory)).sort(), [
+            "event.json",
+            "payload.json",
+            "raw.json",
+          ]);
+        } else {
+          await promisify(execFile)(process.execPath, args, { env });
+          assert.equal(captured.length, 1);
+          assert.deepEqual(JSON.parse(captured[0].data), payload);
+          const receipt = JSON.parse(await readFile(join(directory, "export-result.json"), "utf8"));
+          assert.equal(receipt.status, 200);
+        }
       }
     });
   } finally {
