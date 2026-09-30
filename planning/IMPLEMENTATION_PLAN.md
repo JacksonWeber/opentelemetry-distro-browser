@@ -2,7 +2,7 @@
 
 **Status:** Proposed
 **Approach:** Greenfield browser distribution built on upstream OpenTelemetry APIs
-**Near-term commitment:** Milestone M0 - Fabric (Rayfin) beta, pre-Ignite
+**Shipped:** Milestone M0, published as `@microsoft/opentelemetry-browser@0.1.0-alpha.1`
 **Prior evidence:** Multi-instance browser PoC in [`../poc/`](../poc/)
 **Upstream alignment verified:** 2026-09-10 against
 [`open-telemetry/opentelemetry-browser`](https://github.com/open-telemetry/opentelemetry-browser)
@@ -13,9 +13,10 @@ This document holds the *why*. Everything else has its own document.
 | Document | What it covers |
 |---|---|
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Global bridge, instance model, routing provider, instrumentation bridge, context, export, package layout, public API |
-| [`MILESTONES.md`](MILESTONES.md) | M1 onward: multi-instance routing, isolation, lifecycle, and the GA criteria |
 | [`REQUIREMENTS.md`](REQUIREMENTS.md) | The requirement set: lifecycle, correctness, configuration, performance, packaging, security, diagnostics, testing |
-| [`M0_WORK_BREAKDOWN.md`](M0_WORK_BREAKDOWN.md) | The committed milestone, as a list of work items |
+| [`M0_PLANNING.md`](M0_PLANNING.md) | The shipped alpha: what landed, what remains, and the M0 decisions |
+| [`M1_PLANNING.md`](M1_PLANNING.md) | Multiple instances, isolation, lifecycle, context, coexistence, modern browser support |
+| [`M2_PLANNING.md`](M2_PLANNING.md) | Application Insights parity, CDN distribution, and SDK stats |
 | [`../poc/SIZE_REPORT.md`](../poc/SIZE_REPORT.md) | Generated bundle size measurements |
 
 ## 1. Goal
@@ -68,7 +69,7 @@ overwritten.
 **Constraint, not solved.** Instrumentations that patch a browser global cannot
 run in more than one instance - two instances both enabling fetch report one
 request twice - so a shared patch needs a designated owner until
-[M4](MILESTONES.md#m4---instrumentation-interoperability). In
+[M1](M1_PLANNING.md). In
 `@opentelemetry/browser-instrumentation` the shared-patch modules are
 `navigation`, `console`, `fetch` and `xhr`; the rest attach isolated listeners or
 observers and route cleanly.
@@ -113,7 +114,8 @@ track.
 
 ## 5. Scope
 
-M0 (Section 6) is a single-instance subset of the initial release.
+M0 ([`M0_PLANNING.md`](M0_PLANNING.md)) is a single-instance subset of the initial
+release, and it has shipped.
 
 **Initial release.** A global multi-instance routing layer over
 `@opentelemetry/api`, with isolated per-instance tracing **and logging**
@@ -142,52 +144,19 @@ instrumentation in the first release, or claiming arbitrary multi-instance
 auto-instrumentation is safe before shared patch behavior is proven. Hiding
 unavoidable global OTel constraints from users.
 
-## 6. Milestone M0 - the committed beta
+## 6. Open Decisions
 
-Rayfin, in the Fabric team, needs something consumable before Ignite. The date is
-external and fixed; scope is the only variable.
+Milestone-scoped decisions live in the milestone that owns them:
+[`M0_PLANNING.md`](M0_PLANNING.md),
+[`M1_PLANNING.md`](M1_PLANNING.md) and
+[`M2_PLANNING.md`](M2_PLANNING.md). What remains here is owned by no single milestone.
 
-Ship a thin, honest distribution first - compose the upstream browser packages,
-add an Azure Monitor exporter, add web analytics coverage - then build the
-routing, isolation and lifecycle architecture in
-[`ARCHITECTURE.md`](ARCHITECTURE.md) on top. **M0 is a subset of this plan
-brought forward, not a parallel product**, and the public surface it ships is the
-one M2 keeps.
-
-Two constraints shape it. **M0 composes upstream packages; it does not
-reimplement them** - our own SDK, the multi-instance provider and the instance
-registry already proven in [`../poc/`](../poc/) are the follow-up. And **the
-binding constraint is the approval queue, not engineering effort** - legal,
-security, privacy and naming approvals are multi-week, owned outside the team,
-and gate publication after the code is done, so they are filed on day one.
-
-**The itemized work is in
-[`M0_WORK_BREAKDOWN.md`](M0_WORK_BREAKDOWN.md)**, which is the source of truth
-for the milestone. This section only places it in the plan.
-
-## 7. Open Decisions
-
-**Blocking M0.** Whether page view and page view performance are built on top of
-the adopted upstream modules, and how closely the click content model tracks
-`clickanalytics-js`. The
-exact upstream package and version range including the `0.x` logs packages. The
-browser bundle cost of the new exporter against the budget. Final package names
-and organizational scope.
-
-**Multi-instance architecture, Phases 0-4.** Missing-instance behavior during
-`getTracer()` / `getLogger()`, and stale bound-tracer behavior after shutdown.
-Whether one optional default instance is allowed. Browser context manager and the
-supported async matrix. Ownership model for shared fetch/XHR patches and for
-observer-based instrumentation shared across instances. Whether we ship a thin
-event-emission facade over the Logs API. Internal semantic conventions mapping
-scope and upgrade policy.
-
-**Later phases and GA.** Per-signal batch, flush-on-unload and page-hide export
-behavior. Absolute gzipped budgets per entry point, allowed per-change growth,
-and whether the size gate blocks or reports. Scope of dynamic configuration and
-the transform/filter contract. Metrics inclusion. Session and page view as
-resource entities versus processor-injected attributes. Whether server-provided
-`traceparent` page-trace correlation is supported. CDN loader and legacy-browser
-policy, and whether a prebuilt CDN/IIFE bundle is published at all given upstream
-publishes none. Whether property mangling is revisited, and on what threshold.
-Runtime statistics fields and stability guarantees.
+- **Whether we ship a thin event-emission facade over the Logs API.** The product principle says
+  applications call the upstream API directly and there is no
+  proprietary event API. A convenience facade is not automatically a violation of that, but it is a
+  vendor-neutrality decision that outlives any one milestone and has never been settled on the
+  record.
+- **Whether property mangling is revisited, and on what threshold.** The current answer is no:
+  readable source and safe property access outrank the bytes. It is reopened only against a measured
+  threshold, and it would affect every published artifact at once, including the
+  [M2 CDN bundle](M2_PLANNING.md).

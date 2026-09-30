@@ -1,7 +1,8 @@
 # Browser package output
 
-The [M0 build requirements](../planning/M0_WORK_BREAKDOWN.md#repository-build-and-tooling)
-require ES2022 ESM-only output. `npm run build` cleans previous artifacts and emits:
+The [M0 planning document](../planning/M0_PLANNING.md) requires ES2022 ESM-only output, and
+[M1](../planning/M1_PLANNING.md) owns declaring that target explicitly.
+`npm run build` cleans previous artifacts and emits:
 
 | Artifact                 | Purpose                                     |
 | ------------------------ | ------------------------------------------- |

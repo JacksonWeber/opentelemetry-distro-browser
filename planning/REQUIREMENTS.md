@@ -160,8 +160,10 @@ M1 baselines:
 
 ### Browser and loader policy
 
-The previous browser targets remain provisional requirements until M8
-validates current customer and platform data:
+The previous browser targets remain provisional requirements until
+[M1](M1_PLANNING.md) declares the npm target and publishes the
+matrix, and [M2](M2_PLANNING.md) settles the CDN and
+loader policy:
 
 | Runtime | Planned treatment |
 |---|---|
