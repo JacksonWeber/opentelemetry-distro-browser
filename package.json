@@ -58,6 +58,7 @@
     "api:check": "api-extractor run && api-extractor run --config api-extractor.instrumentations.json",
     "api:update": "npm run build && api-extractor run --local && api-extractor run --local --config api-extractor.instrumentations.json",
     "size": "node scripts/measure-bundle-size.mjs",
+    "size:compare": "node scripts/compare-bundle-size.mjs",
     "size:report": "npm run size",
     "perf": "node scripts/perf/run.mjs",
     "perf:export": "node scripts/perf/export.mjs",

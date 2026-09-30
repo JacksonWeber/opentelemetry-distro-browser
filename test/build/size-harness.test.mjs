@@ -5,6 +5,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { VERSION as rollupVersion } from "rollup";
 import {
+  compareBundleSizeReports,
+  createBundleSizeComparisonMarkdown,
+} from "../../scripts/compare-bundle-size.mjs";
+import {
   addDeltas,
   createMarkdownReport,
   createReport,
@@ -137,4 +141,39 @@ test("records the resolved Rollup runtime version", () => {
   const report = createReport([]);
   assert.equal(report.bundler.version, rollupVersion);
   assert.doesNotMatch(report.bundler.version, /^[~^<>=]/);
+});
+
+test("compares bundle reports by scenario without enforcing a threshold", () => {
+  const scenario = (id, label, rawBytes, gzipBytes, brotliBytes) => ({
+    id,
+    label,
+    rawBytes,
+    gzipBytes,
+    brotliBytes,
+  });
+  const base = {
+    schemaVersion: 1,
+    scenarios: [
+      scenario("root", "Root", 2_000, 1_000, 800),
+      scenario("removed", "Removed", 4, 3, 2),
+    ],
+  };
+  const current = {
+    schemaVersion: 1,
+    scenarios: [scenario("root", "Root", 2_200, 1_100, 760), scenario("added", "Added", 5, 4, 3)],
+  };
+
+  assert.deepEqual(
+    compareBundleSizeReports(base, current).map(({ id, status }) => ({ id, status })),
+    [
+      { id: "root", status: "compared" },
+      { id: "added", status: "added" },
+      { id: "removed", status: "removed" },
+    ],
+  );
+  const markdown = createBundleSizeComparisonMarkdown(base, current);
+  assert.match(markdown, /Report-only comparison/);
+  assert.match(markdown, /Root .* \+0\.10 kB \(\+10\.00%\).* -0\.04 kB \(-5\.00%\)/);
+  assert.match(markdown, /Added .* new/);
+  assert.match(markdown, /Removed .* removed/);
 });

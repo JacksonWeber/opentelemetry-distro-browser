@@ -20,6 +20,7 @@ All notable changes to this package are documented in this file.
 - Cover page view and custom event e2e integration
 - Enforce exporter payload limits and test unload delivery.
 - Coalesce concurrent `forceFlush()` calls across trace and log processors.
+- Report bundle size changes against PR base
 
 ## 0.1.0-alpha.1 - 2026-09-28
 

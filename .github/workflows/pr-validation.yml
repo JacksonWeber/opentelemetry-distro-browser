@@ -114,8 +114,33 @@ jobs:
       - name: Measure browser bundle sizes and generate reports
         run: npm run size
 
+      - name: Check out the pull request base revision
+        if: github.event_name == 'pull_request' && matrix.node-version == '24'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: .bundle-size-base
+          persist-credentials: false
+
+      - name: Measure bundle sizes at the pull request base revision
+        if: github.event_name == 'pull_request' && matrix.node-version == '24'
+        working-directory: .bundle-size-base
+        run: npm ci && npm run build && npm run size
+
+      - name: Compare bundle sizes with the pull request base revision
+        if: github.event_name == 'pull_request' && matrix.node-version == '24'
+        run: >-
+          npm run size:compare --
+          .bundle-size-base/reports/bundle-size.json
+          reports/bundle-size.json
+          reports/bundle-size-comparison.md
+
       - name: Publish bundle sizes to the check summary
         run: cat reports/bundle-size.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish bundle-size comparison to the check summary
+        if: github.event_name == 'pull_request' && matrix.node-version == '24'
+        run: cat reports/bundle-size-comparison.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Check package contents
         run: npm pack --dry-run --ignore-scripts
@@ -127,6 +152,7 @@ jobs:
           path: |
             reports/bundle-size.json
             reports/bundle-size.md
+            reports/bundle-size-comparison.md
             reports/bundle-stats.html
           if-no-files-found: error
           retention-days: 14
