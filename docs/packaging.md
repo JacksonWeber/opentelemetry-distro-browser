@@ -117,15 +117,11 @@ publish step fails; generated results are not a claim of collector acceptance or
 
 The `Merged PR performance` workflow runs only on an actual closed-and-merged PR targeting
 `main` in `microsoft/opentelemetry-distro-browser`. It checks out the immutable
-`merge_commit_sha`, including the final squash/rebase commit where applicable. Its
-`pull_request_target: closed` trigger uses the upstream repository's Actions variables even
-for merged fork contributions; a fork's `pull_request` event cannot access that configuration.
-Unmerged PRs, fork repositories, direct pushes, and manual workflow dispatches do not publish.
-The job requires a confirmed merge into upstream `main`, uses read-only repository permissions,
-and never checks out the PR head. Checkout v7 requires an explicit fork-checkout opt-in even for
-the already-merged SHA; this opt-in is restricted to the merged-only job and credentials are not
-persisted. Offline result creation is allowed in any CI context; export requires the same
-`pull_request_target` merge event and rejects dirty or mismatched source revisions.
+`merge_commit_sha`, including the final squash/rebase commit where applicable. Merged fork
+contributions are supported; unmerged PRs, fork repositories, direct pushes, and manual
+workflow dispatches do not publish. It uses read-only repository permissions and no
+`pull_request_target` execution. Offline result creation is allowed in any CI context;
+export validates the merge event and rejects dirty or mismatched source revisions.
 
 A repository administrator must configure the Actions variable
 `SDK_PERF_COLLECTOR_ENDPOINT` with the approved HTTPS collector URL ending in
