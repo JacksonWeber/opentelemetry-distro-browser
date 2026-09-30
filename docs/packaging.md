@@ -49,10 +49,6 @@ sessions, and logs are disabled, and a counting span processor verifies that eve
 and ends. Browser requests other than the harness's intercepted local modules are blocked and
 fail the measurement.
 
-PR validation runs `npm run perf` after building the bundles in the Node.js 22 and 24
-Chromium jobs. This exercises the full runner, browser measurements, and payload generation
-before merge, without publishing telemetry or requiring collector configuration.
-
 This is an **ESM size-check bundle**, also included in the package, not complete application
 bytes: `@opentelemetry/api` and `@opentelemetry/api-logs` remain external. The package export
 resolves to `dist/esm/index.js`. Unminified entry points, source maps, and declaration files are
@@ -108,27 +104,7 @@ Every observation carries `benchmark.artifact.path`, `.format`, and `.sha256`,
 Size observations include `benchmark.compression.method` (`none`, `gzip`, or `brotli`);
 compressed observations include `benchmark.compression.level` (9 or 11).
 
-### Publishing merged-PR measurements
-
-The measurement step writes a GitHub job summary when `GITHUB_STEP_SUMMARY` is available.
-Copy its **Explicit run** UUID into the **MOT for Browser** page's **Explicit run** selector
-to find the matching measurements. The summary also links the measured commit and shows the
-SDK version and bundle sizes. It is written before publishing, so it remains available if the
-publish step fails; generated results are not a claim of collector acceptance or report refresh.
-
-The `Merged PR performance` workflow runs only on an actual closed-and-merged PR targeting
-`main` in `microsoft/opentelemetry-distro-browser`. It checks out the immutable
-`merge_commit_sha`, including the final squash/rebase commit where applicable. Merged fork
-contributions are supported; unmerged PRs, fork repositories, direct pushes, and manual
-workflow dispatches do not publish. It uses read-only repository permissions and no
-`pull_request_target` execution. Offline result creation is allowed in any CI context;
-export validates the merge event and rejects dirty or mismatched source revisions.
-
-A repository administrator must configure the Actions variable
-`SDK_PERF_COLLECTOR_ENDPOINT` with the approved HTTPS collector URL ending in
-`/otlp/v1/logs`. The endpoint is intentionally not hardcoded in source. Missing configuration,
-measurement failures, and export failures fail this post-merge job explicitly; they cannot
-block a PR that has already merged. The workflow does not add remote artifact uploads.
+### Publishing measurements
 
 For an explicitly authorized manual integration test, retain the offline run directory and use:
 
@@ -136,9 +112,9 @@ For an explicitly authorized manual integration test, retain the offline run dir
 npm run perf:export -- --input artifacts/performance/<run-UUID> --endpoint <approved-HTTPS-OTLP-logs-URL>
 ```
 
-Manual results keep their original timestamp, source revision, and dirty status; they do not
-pretend to be merged-PR executions. The exporter checks the saved payload against validated raw
-data before sending, requires an explicit endpoint, disables redirects, enforces bounded
+Manual results keep their original timestamp, source revision, and dirty status.
+The exporter checks the saved payload against validated raw data before sending, requires an
+explicit endpoint, disables redirects, enforces bounded
 request/response sizes and timeout, and never retries. Loopback HTTP is permitted only for
 local transport tests. Endpoint and payload-size validation happen before creating
 `export-attempt.json`, so preflight errors can be corrected without locking the saved run.
@@ -151,5 +127,4 @@ HTTP acceptance alone does not prove downstream ingestion. Verify the actual run
 values in the collector's destination before claiming end-to-end success.
 
 `npm run test:perf` tests byte measurements, native event typing and identity, invalid-data
-rejection, merge gating, and local-only HTTP export behavior. It is part of `npm run check`
-and PR validation.
+rejection, and local-only HTTP export behavior. It is part of `npm run check`.

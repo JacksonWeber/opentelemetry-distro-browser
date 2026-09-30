@@ -679,8 +679,11 @@ describe("Sender", () => {
       delay,
     });
 
+    const dateNow = vi.spyOn(Date, "now").mockReturnValue(0);
     await expect(
-      sender.send({ body: new TextEncoder().encode("telemetry"), contentType: "application/json" }),
+      sender
+        .send({ body: new TextEncoder().encode("telemetry"), contentType: "application/json" })
+        .finally(() => dateNow.mockRestore()),
     ).resolves.toMatchObject({ statusCode: 200 });
     expect(fetch).toHaveBeenCalledTimes(2);
     expect(delay).toHaveBeenCalledWith(2_000);

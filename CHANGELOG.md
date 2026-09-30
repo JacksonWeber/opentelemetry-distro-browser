@@ -11,6 +11,8 @@ All notable changes to this package are documented in this file.
 
 ### Changed
 
+- Fixed post-merge performance publishing for fork contributions by using the upstream
+  workflow context while retaining merged-commit-only checkout and export safeguards.
 - Added offline browser performance measurements and explicit result publishing after upstream
   pull requests merge into `main`, including minified, gzip, and Brotli bundle sizes.
 - Replaced proposal-era README content with installation, initialization, configuration,
