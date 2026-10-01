@@ -181,6 +181,7 @@ describe("configured instrumentations in a browser", () => {
         xhr: { propagateTraceHeaderCorsUrls: allowedOrigins },
       });
 
+      const pageOperation = trace.getSpanContext(context.active());
       const extracted = propagation.extract(ROOT_CONTEXT, {
         traceparent: "00-1234567890abcdef1234567890abcdef-1234567890abcdef-01",
         tracestate: "vendor=state",
@@ -212,8 +213,24 @@ describe("configured instrumentations in a browser", () => {
         );
         expect(headers.tracestate).toBe("vendor=state");
       }
-      expect(context.active()).toBe(ROOT_CONTEXT);
+      expect(trace.getSpanContext(context.active())).toEqual(pageOperation);
       expect(propagation.getBaggage(context.active())).toBeUndefined();
+    });
+
+    it("uses the page operation in fetch and XHR headers without an explicit parent", async () => {
+      const allowedOrigins = [/^http:\/\/127\.0\.0\.1:\d+\//];
+      await start({
+        fetch: { propagateTraceHeaderCorsUrls: allowedOrigins },
+        xhr: { propagateTraceHeaderCorsUrls: allowedOrigins },
+      });
+      const operationId = trace.getSpanContext(context.active())!.traceId;
+      const [fetchRequest, xhrRequest] = await Promise.all([
+        fetchHeaders(CROSS_ORIGIN_HEADERS_URL),
+        sendXhrForHeaders(CROSS_ORIGIN_HEADERS_URL),
+      ]);
+
+      expect(fetchRequest.traceparent?.split("-")[1]).toBe(operationId);
+      expect(xhrRequest.traceparent?.split("-")[1]).toBe(operationId);
     });
 
     it("does not inject headers into cross-origin requests outside the allowed list", async () => {

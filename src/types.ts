@@ -92,9 +92,9 @@ export interface BrowserInstrumentation {
  * Advanced configuration for browser trace context and propagation.
  *
  * @remarks
- * When omitted, the upstream browser SDK installs its default browser context manager and W3C
- * Trace Context and Baggage propagators. Supplying either setting replaces that upstream default
- * when the trace pipeline starts.
+ * Uses W3C Trace Context and Baggage by default. Page-view correlation delegates to the supplied
+ * context manager (or an upstream synchronous stack manager) and supplies the page operation only
+ * when there is no active span. Pass explicit context across asynchronous boundaries.
  *
  * The OpenTelemetry global context and propagation APIs are page-lifetime registrations. Like the
  * tracer and logger providers, they are not unregistered by `shutdown`; initialize this
@@ -105,7 +105,7 @@ export interface BrowserInstrumentation {
 export interface MicrosoftOpenTelemetryBrowserTraceOptions {
   /**
    * Context manager used to track the active span across browser callbacks.
-   * Omit this setting to use the upstream browser SDK default when traces are initialized.
+   * Explicit span contexts take precedence over the page operation.
    */
   contextManager?: ContextManager;
   /**
@@ -164,9 +164,12 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
    *
    * @remarks
    * Emits one `browser.page_view` log record per navigation, covering the initial document load
-   * and subsequent route changes, and mints a per-navigation correlation id.
+   * and subsequent route changes. The page-view ID is its operation trace ID. Otherwise
+   * unparented spans and logs share that operation; explicit span contexts are preserved.
+   * Page URL and descriptive attributes stay on the page-view record, not on other telemetry.
    *
-   * Collection is on by default; set `enabled: false` to turn it off. Doing so stops collection
+   * Collection and operation correlation are on by default; set `enabled: false` to turn both off.
+   * Doing so stops collection
    * but does not remove the implementation from the bundle, because a bundler resolves imports
    * long before this object exists.
    */

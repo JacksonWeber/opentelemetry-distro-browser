@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+import { diag, isValidTraceId } from "@opentelemetry/api";
+import { RandomIdGenerator } from "@opentelemetry/sdk-trace-base";
 import { type PageView, type PageViewContext, type PageViewListener } from "./types.js";
 
 /**
@@ -60,9 +62,10 @@ const HEX = "0123456789abcdef";
  *
  * @remarks
  * Uses `crypto.getRandomValues` where available and falls back to `Math.random` on browsers that
- * do not expose it. The value is a correlation key, not a security token.
+ * do not expose it. Invalid results fall back to the SDK's non-zero trace ID generator.
+ * The value is a correlation key, not a security token.
  *
- * @returns A 32-character lowercase hexadecimal identifier.
+ * @returns A valid, non-zero 32-character lowercase hexadecimal trace identifier.
  * @public
  */
 export function generatePageViewId(): string {
@@ -82,5 +85,7 @@ export function generatePageViewId(): string {
     id += HEX[byte >> 4];
     id += HEX[byte & 0x0f];
   }
-  return id;
+  if (isValidTraceId(id)) return id;
+  diag.error("Invalid page-view trace id; using SDK generator");
+  return new RandomIdGenerator().generateTraceId();
 }
