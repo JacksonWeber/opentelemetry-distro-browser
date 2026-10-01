@@ -78,7 +78,7 @@ export function logToEnvelope(
   );
   const tags = createTags(
     logRecord.spanContext?.traceId,
-    logRecord.spanContext?.spanId,
+    logRecord.spanContext,
     logRecord.resource.attributes["service.name"],
   );
   const severityLevel = mapSeverity(logRecord.severityNumber);
@@ -108,7 +108,9 @@ export function logToEnvelope(
   } else if (isPageView(logRecord.eventName)) {
     const duration =
       logRecord.attributes[ATTR_PAGE_VIEW_DURATION] ?? logRecord.attributes[NAVIGATION_DURATION];
-    const pageViewId = logRecord.attributes[ATTR_PAGE_VIEW_ID];
+    const explicitId = logRecord.attributes[ATTR_PAGE_VIEW_ID];
+    const pageViewId =
+      explicitId === undefined || explicitId === "" ? logRecord.spanContext?.traceId : explicitId;
     const referrer = logRecord.attributes[ATTR_PAGE_VIEW_REFERRER];
     name = "Microsoft.ApplicationInsights.PageView";
     baseType = "PageViewData";

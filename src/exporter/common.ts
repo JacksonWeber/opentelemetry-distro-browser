@@ -1,8 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import type { Attributes, HrTime } from "@opentelemetry/api";
+import type { Attributes, HrTime, SpanContext } from "@opentelemetry/api";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../shared/constants.js";
+import { syntheticPageContexts } from "../shared/pageOperationContext.js";
 import type { AzureMonitorBaseData, AzureMonitorEnvelope } from "./telemetryModels.js";
 
 let unloadingCount = 0;
@@ -85,14 +86,16 @@ export function mapAttributes(
 
 export function createTags(
   traceId: string | undefined,
-  parentId: string | undefined,
+  parentContext: SpanContext | undefined,
   serviceName: unknown,
 ): Record<string, string> {
   const tags: Record<string, string> = {
     "ai.internal.sdkVersion": `mot${OPENTELEMETRY_BROWSER_VERSION}`,
   };
   if (traceId) tags["ai.operation.id"] = traceId;
-  if (parentId) tags["ai.operation.parentId"] = parentId;
+  if (parentContext?.spanId && !syntheticPageContexts.has(parentContext)) {
+    tags["ai.operation.parentId"] = parentContext.spanId;
+  }
   if (serviceName) tags["ai.cloud.role"] = serializeAttribute(serviceName);
   return tags;
 }

@@ -47,7 +47,7 @@ export function spanToEnvelope(
   const customFields = mapAttributes(span.attributes, promotedSpanAttributes);
   const tags = createTags(
     spanContext.traceId,
-    span.parentSpanContext?.spanId,
+    span.parentSpanContext,
     span.resource.attributes["service.name"],
   );
 

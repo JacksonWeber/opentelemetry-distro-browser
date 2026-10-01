@@ -55,15 +55,13 @@ export type PageViewNavigationType =
  *
  * @remarks
  * Published as soon as the navigation is observed, which is well before the log record is emitted.
- * That ordering is deliberate: a processor stamping {@link PageView.id} onto other signals must see
- * the id while the page is still loading, not after it has settled.
+ * Its operation is available to other telemetry while the page is loading, not after it settles.
  *
  * @internal
  */
 export interface PageView {
   /**
-   * Correlation id minted for this navigation. Opaque, currently 32 lowercase hexadecimal
-   * characters. It is not a trace id and must not be parsed or used as one.
+   * Operation trace ID for this navigation, also used as the default Application Insights page-view ID.
    */
   readonly id: string;
   /** Zero-based ordinal of this page view within the document's lifetime. */
@@ -197,11 +195,8 @@ export interface PageViewInstrumentationConfig {
  * Configuration including the seams that are not part of the public API.
  *
  * @remarks
- * Kept internal because neither field is usable from outside the distribution yet: sharing a
- * context is only meaningful to a correlation processor, which does not exist, and overriding id
- * generation exists for tests. Exposing either would drag {@link PageViewContext} and its whole
- * type chain into the public surface for no consumer benefit. Widen deliberately once a processor
- * ships.
+ * Context sharing and ID generation are internal seams. An injected generator must return a
+ * valid OpenTelemetry trace ID.
  *
  * @internal
  */

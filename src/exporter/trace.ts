@@ -8,6 +8,11 @@ import { spanToEnvelope } from "./spanUtils.js";
 
 /**
  * Exports OpenTelemetry spans to Azure Monitor.
+ *
+ * @remarks
+ * Synthetic page-operation contexts supply an operation ID, but not a parent ID.
+ * Application and inherited span contexts retain their parent-ID mapping.
+ *
  * @public
  */
 export class AzureMonitorSpanExporter implements SpanExporter {

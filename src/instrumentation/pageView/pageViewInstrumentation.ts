@@ -1,9 +1,20 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+import {
+  ROOT_CONTEXT,
+  context,
+  trace,
+  isSpanContextValid,
+  isValidTraceId,
+  type Context,
+  type SpanContext,
+} from "@opentelemetry/api";
 import { type LogRecord } from "@opentelemetry/api-logs";
+import { RandomIdGenerator } from "@opentelemetry/sdk-trace-base";
 import { InstrumentationBase, safeExecuteInTheMiddle } from "@opentelemetry/instrumentation";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../shared/constants.js";
+import { syntheticPageContexts } from "../../shared/pageOperationContext.js";
 import { createPageViewContext, generatePageViewId } from "./pageViewContext.js";
 import {
   ATTR_PAGE_VIEW_DURATION,
@@ -61,6 +72,7 @@ type SoftNavigationTrigger =
   "pushState" | "replaceState" | "popstate" | "hashchange" | "currententrychange";
 
 interface PendingPageView {
+  readonly operation: SpanContext;
   /**
    * Mutable so a late {@link PageViewInstrumentation.setPageName} can correct the name in place.
    * Callbacks scheduled for this navigation hold the pending object by identity, so replacing it
@@ -75,6 +87,7 @@ interface PendingPageView {
   /** Monotonic start, from `performance.now()`. */
   readonly startedAt: number;
   capTimerId?: number;
+  taskTimerId?: number;
 }
 
 /**
@@ -135,6 +148,8 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
   private readonly ownsContext: boolean;
 
   private pending: PendingPageView | undefined;
+  private operation: SpanContext | undefined;
+  private operationUrl = "";
   private pageViewIndex = 0;
   private lastUrl = "";
   /**
@@ -155,7 +170,10 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
   /** The target the `currententrychange` listener was attached to, so it can always be removed. */
   private navigationApiTarget: NavigationApiLike | undefined;
 
-  public constructor(config: InternalPageViewInstrumentationConfig = {}) {
+  public constructor(
+    config: InternalPageViewInstrumentationConfig = {},
+    private initialContext?: Context,
+  ) {
     // `InstrumentationBase` calls `enable()` from its own constructor, which runs before this
     // subclass's field initializers. That would observe an undefined page-view context, and the
     // initializers would then overwrite the state `enable()` had just set. Start disabled, finish
@@ -176,12 +194,34 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
    * Read-only page-view seam.
    *
    * @remarks
-   * A correlation processor reads the current page-view id from here and stamps it onto the
-   * signals it sees. Exposed as {@link PageViewSource} rather than the writable context, so a
+   * Exposes page metadata without adding it to other telemetry. Uses {@link PageViewSource}
+   * rather than the writable context, so a
    * consumer cannot mint or mutate page views.
    */
   public get pageViews(): PageViewSource {
     return this.context;
+  }
+
+  /**
+   * Current operation, also available inside an earlier-installed navigation wrapper.
+   * URL changes are checked here so callback ordering cannot assign the previous page's ID.
+   */
+  public getOperationContext(): SpanContext | undefined {
+    return this.enabledState ? this.currentOperation() : undefined;
+  }
+
+  private currentOperation(): SpanContext {
+    const url = this.getNavigationApi()?.currentEntry?.url ?? location.href;
+    if (!this.operation || this.operationUrl !== url) {
+      this.operation = {
+        traceId: this.mintId(this.getConfig().generatePageViewId),
+        spanId: new RandomIdGenerator().generateSpanId(),
+        traceFlags: 1,
+      };
+      syntheticPageContexts.add(this.operation);
+      this.operationUrl = url;
+    }
+    return this.operation;
   }
 
   /**
@@ -216,6 +256,12 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
   public override enable(): void {
     if (this.enabledState) {
       return;
+    }
+    const active = trace.getSpanContext(this.initialContext ?? context.active());
+    this.initialContext = undefined;
+    if (active && isSpanContextValid(active)) {
+      this.operation = active;
+      this.operationUrl = this.getNavigationApi()?.currentEntry?.url ?? location.href;
     }
     this.enabledState = true;
     this.lastUrl = location.href;
@@ -275,6 +321,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       return;
     }
     this.enabledState = false;
+    this.operation = undefined;
 
     if (this.onLoad) {
       window.removeEventListener("load", this.onLoad);
@@ -353,14 +400,14 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     if (document.readyState === "complete") {
       this.scheduleMacrotask(() => {
         this.finalizeHardNavigation(documentNavigation);
-      });
+      }, documentNavigation);
       return;
     }
     this.onLoad = (): void => {
       // `loadEventEnd` is populated only after the load event finishes dispatching.
       this.scheduleMacrotask(() => {
         this.finalizeHardNavigation(documentNavigation);
-      });
+      }, documentNavigation);
     };
     window.addEventListener("load", this.onLoad, { once: true });
   }
@@ -483,6 +530,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
   private handleBackForwardRestore(): void {
     // The page was hidden on the way into the cache, which already settled anything in flight.
     this.settle(DURATION_SOURCE_PAGE_HIDE);
+    this.operation = undefined;
 
     this.begin({
       navigationType: PAGE_VIEW_TYPE_BACK_FORWARD,
@@ -591,8 +639,12 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     this.scheduleMacrotask(callback);
   }
 
-  private scheduleMacrotask(callback: () => void): void {
-    window.setTimeout(callback, 0);
+  private scheduleMacrotask(callback: () => void, pending = this.pending): void {
+    if (!pending || this.pending !== pending) return;
+    pending.taskTimerId = window.setTimeout(() => {
+      pending.taskTimerId = undefined;
+      callback();
+    }, 0);
   }
 
   /** Starts a new page view and publishes it. Returns the pending record callbacks should target. */
@@ -604,12 +656,12 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     startTimeUnixMs: number;
     startedAt: number;
   }): PendingPageView {
-    const config = this.getConfig();
     const rawUrl = input.url ?? location.href;
     const resolved = this.resolveName();
+    const operation = this.currentOperation();
 
     const pageView: PageView = {
-      id: this.mintId(config.generatePageViewId),
+      id: operation.traceId,
       index: this.pageViewIndex++,
       name: resolved.name,
       nameSource: resolved.source,
@@ -621,7 +673,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     };
 
     this.lastUrl = rawUrl;
-    const pending: PendingPageView = { pageView, rawUrl, startedAt: input.startedAt };
+    const pending: PendingPageView = { pageView, operation, rawUrl, startedAt: input.startedAt };
     this.pending = pending;
     // Publish before the record is emitted, so signals produced during the navigation correlate.
     this.context.setCurrentPageView(pageView);
@@ -670,7 +722,9 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       },
       true,
     );
-    return typeof result === "string" && result ? result : generatePageViewId();
+    if (typeof result === "string" && isValidTraceId(result)) return result;
+    this._diag.error("generatePageViewId must return a valid trace id");
+    return generatePageViewId();
   }
 
   /**
@@ -804,6 +858,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       eventName: EVENT_BROWSER_PAGE_VIEW,
       severityNumber: SEVERITY_NUMBER_INFO,
       timestamp: pageView.startTimeUnixMs,
+      context: trace.setSpanContext(ROOT_CONTEXT, pending.operation),
       attributes: {
         // Omitted when the sanitizer dropped it, rather than reported as an empty string.
         ...(pageView.url ? { [ATTR_URL_FULL]: pageView.url } : {}),
@@ -856,6 +911,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     if (pending.capTimerId !== undefined) {
       clearTimeout(pending.capTimerId);
     }
+    if (pending.taskTimerId !== undefined) clearTimeout(pending.taskTimerId);
     this.pending = undefined;
   }
 }

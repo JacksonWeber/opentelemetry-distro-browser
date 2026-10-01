@@ -8,6 +8,11 @@ import { logToEnvelope } from "./logUtils.js";
 
 /**
  * Exports OpenTelemetry log records to Azure Monitor.
+ *
+ * @remarks
+ * Synthetic page-operation contexts supply an operation ID, but not a parent ID.
+ * Application and inherited span contexts retain their parent-ID mapping.
+ *
  * @public
  */
 export class AzureMonitorLogRecordExporter implements LogRecordExporter {

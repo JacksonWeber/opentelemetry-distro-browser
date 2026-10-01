@@ -12,6 +12,8 @@ All notable changes to this package are documented in this file.
 
 ### Changed
 
+- Correlate page views, spans, and logs through shared operation IDs while preserving explicit
+  application span contexts.
 - Fixed post-merge performance publishing for fork contributions by using the upstream
   workflow context while retaining merged-commit-only checkout and export safeguards.
 - Added offline browser performance measurements and explicit result publishing after upstream
