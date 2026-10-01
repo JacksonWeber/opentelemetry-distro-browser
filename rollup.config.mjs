@@ -22,6 +22,18 @@ export default [
     },
   },
   {
+    // A separate entry point, so an application that never configures instrumentations does not
+    // pay for them. Its on-demand imports stay external here, leaving the consumer's bundler to
+    // split out the instrumentations they enable.
+    input: "src/instrumentation/browserInstrumentation/index.ts",
+    external: (id) => id.startsWith("@opentelemetry/"),
+    plugins: [typescript({ tsconfig: "./tsconfig.src.json" })],
+    output: {
+      ...esmOutput,
+      file: "dist/esm/instrumentations.js",
+    },
+  },
+  {
     input: "src/index.ts",
     // Retain the application's API singletons, including pre-initialization handles.
     external: ["@opentelemetry/api", "@opentelemetry/api-logs"],
@@ -51,6 +63,14 @@ export default [
     plugins: [dts({ tsconfig: "./tsconfig.src.json" })],
     output: {
       file: "dist/esm/index.d.ts",
+      format: "es",
+    },
+  },
+  {
+    input: "src/instrumentation/browserInstrumentation/index.ts",
+    plugins: [dts({ tsconfig: "./tsconfig.src.json" })],
+    output: {
+      file: "dist/esm/instrumentations.d.ts",
       format: "es",
     },
   },

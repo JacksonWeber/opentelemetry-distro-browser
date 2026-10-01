@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OpenTelemetry browser Azure Monitor sample</title>
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">OpenTelemetry browser alpha</p>
+      <h1>Azure Monitor sample</h1>
+      <p>
+        This app exports traces and logs to the Application Insights resource configured by
+        <code>VITE_APPLICATIONINSIGHTS_CONNECTION_STRING</code>.
+      </p>
+      <div class="actions">
+        <button id="checkout" type="button">Trace checkout</button>
+        <button id="route" type="button">Change SPA route</button>
+        <button id="flush" type="button">Flush telemetry</button>
+      </div>
+      <output id="status" aria-live="polite">Telemetry initialized.</output>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

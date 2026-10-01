@@ -1,0 +1,67 @@
+name: Merged PR performance
+
+on:
+  pull_request_target:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  performance:
+    if: >-
+      github.repository == 'microsoft/opentelemetry-distro-browser' &&
+      github.event_name == 'pull_request_target' &&
+      github.event.action == 'closed' &&
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'main' &&
+      github.event.pull_request.base.repo.full_name == 'microsoft/opentelemetry-distro-browser' &&
+      github.event.pull_request.merge_commit_sha != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the exact merged commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          # Checkout v7 also guards already-merged fork SHAs; this job only runs after merge.
+          allow-unsafe-pr-checkout: ${{ github.event.pull_request.merged == true }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Check collector configuration
+        env:
+          SDK_PERF_COLLECTOR_ENDPOINT: ${{ vars.SDK_PERF_COLLECTOR_ENDPOINT }}
+        run: |
+          if [ -z "$SDK_PERF_COLLECTOR_ENDPOINT" ]; then
+            echo "::error::Configure the SDK_PERF_COLLECTOR_ENDPOINT Actions variable before publishing performance results."
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Chromium
+        run: npm run test:install-browsers -- --with-deps
+
+      - name: Test performance result schema and export safeguards
+        run: npm run test:perf
+
+      - name: Build exact production artifacts
+        run: npm run build && npm run size
+
+      - name: Measure bundle and browser performance without exporting workload telemetry
+        id: measure
+        run: npm run perf
+
+      - name: Publish measured performance results
+        env:
+          SDK_PERF_COLLECTOR_ENDPOINT: ${{ vars.SDK_PERF_COLLECTOR_ENDPOINT }}
+          BENCHMARK_RUN_ID: ${{ steps.measure.outputs.run-id }}
+        run: npm run perf:export -- --input "artifacts/performance/$BENCHMARK_RUN_ID" --endpoint "$SDK_PERF_COLLECTOR_ENDPOINT"

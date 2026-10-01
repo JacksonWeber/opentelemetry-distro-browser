@@ -9,6 +9,9 @@ Do not create summary, planning, progress, or implementation-note Markdown files
 
 ## README changes
 
+Do not add `README.md` files inside source folders. This repository has one root `README.md`.
+Document code in TSDoc on the declarations themselves.
+
 Do not modify the root `README.md` during general updates unless the user explicitly requests
 README changes. This includes feature work, bug fixes, dependency updates, tooling changes, and
 formatting. Do not replace the existing README with generated summaries or generic project scaffolding.

@@ -104,8 +104,8 @@ export function assertAzureMonitorEnvelope(value: unknown): asserts value is Azu
       break;
     case "PageViewData":
       suffix = "PageView";
-      expect(baseData.name).toEqual(expect.any(String));
-      assertOptionalStrings(baseData, ["url"]);
+      expect(baseData).toMatchObject({ id: expect.any(String), name: expect.any(String) });
+      assertOptionalStrings(baseData, ["url", "referredUri"]);
       if (baseData.duration !== undefined) assertDuration(baseData.duration);
       break;
     case "EventData":
@@ -140,6 +140,7 @@ interface MockIngestionOptions {
 /**
  * Inject senderOptions into Sender. Both transports stay in memory and reject
  * unexpected URLs or malformed envelopes without delegating to browser networking.
+ * For exporters, use connectionString and stub global fetch with this fixture's fetch.
  * Accepts one JSON envelope or a nonempty JSON array, plus gzip for fetch.
  * Await flush() to observe queued beacon validation. It also runs at test cleanup.
  * Await fetch calls before finishing the test. Custom responders own their pending work.
@@ -147,7 +148,8 @@ interface MockIngestionOptions {
  * @see https://github.com/microsoft/ApplicationInsights-JS/blob/main/common/Tests/Framework/src/AITestClass.ts
  */
 export function createMockIngestionEndpoint(options: MockIngestionOptions = {}) {
-  const endpoint = "https://ingestion.example.test/v2.1/track";
+  const ingestionEndpoint = "https://ingestion.example.test";
+  const endpoint = `${ingestionEndpoint}/v2/track`;
   const requests: IngestionRequest[] = [];
   const beacons: Promise<PromiseSettledResult<IngestionRequest>>[] = [];
 
@@ -210,6 +212,7 @@ export function createMockIngestionEndpoint(options: MockIngestionOptions = {}) 
   }
   onTestFinished(flush);
   return {
+    connectionString: `InstrumentationKey=${TEST_INSTRUMENTATION_KEY};IngestionEndpoint=${ingestionEndpoint}`,
     senderOptions: { endpoint, fetch, sendBeacon } satisfies SenderOptions,
     fetch,
     sendBeacon,

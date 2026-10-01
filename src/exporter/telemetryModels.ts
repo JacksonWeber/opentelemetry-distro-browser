@@ -45,9 +45,11 @@ export interface ExceptionData extends EnvelopeData {
 }
 
 export interface PageViewData extends EnvelopeData {
+  readonly id: string;
   readonly name: string;
   readonly url?: string;
   readonly duration?: string;
+  readonly referredUri?: string;
 }
 
 export interface CustomEventData extends EnvelopeData {

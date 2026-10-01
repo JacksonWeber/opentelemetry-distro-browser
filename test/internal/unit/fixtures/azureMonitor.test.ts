@@ -11,6 +11,8 @@ import {
   createMockIngestionEndpoint,
   TEST_INSTRUMENTATION_KEY,
 } from "../../../fixtures/azureMonitor.js";
+import { installFakeClock } from "../../../fixtures/clock.js";
+import { createDeterministicIdGenerator } from "../../../fixtures/ids.js";
 import { createReadableLogRecord, createReadableSpan } from "../../../fixtures/telemetry.js";
 
 const message = logToEnvelope(
@@ -27,7 +29,10 @@ const exception = logToEnvelope(
   TEST_INSTRUMENTATION_KEY,
 );
 const pageView = logToEnvelope(
-  createReadableLogRecord({ eventName: "browser.navigation" }),
+  createReadableLogRecord({
+    eventName: "browser.page_view",
+    attributes: { "browser.page_view.id": createDeterministicIdGenerator().generateTraceId() },
+  }),
   TEST_INSTRUMENTATION_KEY,
 );
 const event = logToEnvelope(
@@ -62,8 +67,13 @@ describe("Azure Monitor envelope assertions", () => {
     assertAzureMonitorEnvelope(
       logToEnvelope(
         createReadableLogRecord({
-          eventName: "browser.navigation",
-          attributes: { "url.full": "https://example.test", "browser.navigation.duration": 1 },
+          eventName: "browser.page_view",
+          attributes: {
+            "browser.page_view.id": createDeterministicIdGenerator().generateTraceId(),
+            "browser.page_view.referrer": "https://example.test/previous",
+            "url.full": "https://example.test",
+            "browser.page_view.duration": 1,
+          },
         }),
         TEST_INSTRUMENTATION_KEY,
       ),
@@ -121,6 +131,8 @@ describe("Azure Monitor envelope assertions", () => {
     ["dependency result", dependency, { resultCode: 200 }],
     ["dependency target", dependency, { target: 123 }],
     ["page duration", pageView, { duration: 1 }],
+    ["page ID", pageView, { id: undefined }],
+    ["page referrer", pageView, { referredUri: 42 }],
     ["page URL", pageView, { url: false }],
     ["event name", event, { name: null }],
   ])("rejects invalid %s fields", (_name, envelope, fields) => {
@@ -134,7 +146,7 @@ describe("Azure Monitor envelope assertions", () => {
 });
 
 describe("in-memory Azure Monitor endpoint", () => {
-  it("keeps request validation when scripting partial success and retry responses", async () => {
+  it("validates partial success and the retried subset before scripted responses", async () => {
     const partial = {
       itemsReceived: 2,
       itemsAccepted: 1,
@@ -143,20 +155,22 @@ describe("in-memory Azure Monitor endpoint", () => {
     const respond = vi
       .fn()
       .mockReturnValueOnce(new Response(JSON.stringify(partial), { status: 206 }))
-      .mockReturnValueOnce(new Response("busy", { status: 503, headers: { "retry-after": "2" } }));
+      .mockReturnValueOnce(new Response("", { status: 200 }));
     const ingestion = createMockIngestionEndpoint({ respond });
-    const sender = new Sender(ingestion.senderOptions);
+    const delay = vi.fn(async () => {});
+    const sender = new Sender({ ...ingestion.senderOptions, delay, random: () => 0 });
     const body = new TextEncoder().encode(JSON.stringify([message, dependency]));
 
-    await expect(sender.send({ body, contentType: "application/json" })).resolves.toMatchObject({
-      statusCode: 206,
-      result: JSON.stringify(partial),
-    });
-    await expect(sender.send({ body, contentType: "application/json" })).resolves.toMatchObject({
-      statusCode: 503,
-      retryAfterMs: 2000,
-    });
+    await expect(
+      sender.send({
+        body,
+        envelopes: [message, dependency],
+        contentType: "application/json",
+      }),
+    ).resolves.toMatchObject({ statusCode: 200 });
     expect(ingestion.requests).toHaveLength(2);
+    expect(ingestion.requests[1].envelopes).toEqual(JSON.parse(JSON.stringify([dependency])));
+    expect(delay).toHaveBeenCalledExactlyOnceWith(500);
     expect(respond.mock.calls[0][0]).toBe(ingestion.requests[0]);
     await expect(
       sender.send({
@@ -165,6 +179,25 @@ describe("in-memory Azure Monitor endpoint", () => {
       }),
     ).rejects.toThrow();
     expect(respond).toHaveBeenCalledTimes(2);
+  });
+
+  it("honors a scripted retry header using the fake clock", async () => {
+    const clock = installFakeClock();
+    const respond = vi
+      .fn()
+      .mockReturnValueOnce(new Response("busy", { status: 503, headers: { "retry-after": "2" } }))
+      .mockReturnValueOnce(new Response("", { status: 200 }));
+    const ingestion = createMockIngestionEndpoint({ respond });
+    const delay = vi.fn((milliseconds: number) => clock.advance(milliseconds));
+    const sender = new Sender({ ...ingestion.senderOptions, delay });
+    await expect(
+      sender.send({
+        body: new TextEncoder().encode(JSON.stringify(message)),
+        contentType: "application/json",
+      }),
+    ).resolves.toMatchObject({ statusCode: 200 });
+    expect(delay).toHaveBeenCalledExactlyOnceWith(2000);
+    expect(ingestion.requests).toHaveLength(2);
   });
 
   it("captures a request before controlled response completion", async () => {
@@ -192,21 +225,23 @@ describe("in-memory Azure Monitor endpoint", () => {
     expect(completed).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 202 }));
   });
 
-  it("captures validated attempts when the responder rejects", async () => {
+  it("captures every validated retry when the responder rejects", async () => {
     const failure = new TypeError("offline");
     const ingestion = createMockIngestionEndpoint({
       respond: async () => {
         throw failure;
       },
     });
-    const sender = new Sender(ingestion.senderOptions);
+    const delay = vi.fn(async () => {});
+    const sender = new Sender({ ...ingestion.senderOptions, delay, random: () => 0 });
     await expect(
       sender.send({
         body: new TextEncoder().encode(JSON.stringify(message)),
         contentType: "application/json",
       }),
     ).rejects.toBe(failure);
-    expect(ingestion.requests).toHaveLength(1);
+    expect(ingestion.requests).toHaveLength(4);
+    expect(delay.mock.calls).toEqual([[500], [1000], [2000]]);
   });
 
   it.each([false, true])(

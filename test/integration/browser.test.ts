@@ -3,7 +3,7 @@
 
 import { ROOT_CONTEXT, context, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, expect, inject, it, vi } from "vitest";
 import { version } from "../../package.json";
 import { createInMemoryPipeline } from "../fixtures/telemetry.js";
 
@@ -16,6 +16,101 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+it("sends telemetry from a browser interaction to Azure Monitor ingestion", async () => {
+  const runId = crypto.randomUUID();
+  const ingestionEndpoint = `${inject("ingestionEndpoint")}${encodeURIComponent(runId)}`;
+  const telemetry = await (
+    await import(/* @vite-ignore */ new URL("../../dist/esm/index.js", import.meta.url).href)
+  ).useMicrosoftOpenTelemetry({
+    azureMonitor: {
+      connectionString:
+        `InstrumentationKey=00000000-0000-0000-0000-000000000000;` +
+        `IngestionEndpoint=${ingestionEndpoint}`,
+    },
+    pageView: { enabled: false },
+  });
+  const button = document.createElement("button");
+  button.addEventListener("click", () => {
+    const logger = logs.getLogger("browser-ingestion-test");
+    trace.getTracer("browser-ingestion-test").startSpan("checkout.click").end();
+    logger.emit({
+      eventName: "checkout.clicked",
+      body: runId,
+      attributes: { "test.run_id": runId },
+    });
+    logger.emit({
+      eventName: "browser.page_view",
+      attributes: {
+        "browser.page_view.name": "Checkout",
+        "browser.page_view.duration": 425.25,
+        "url.full": `${location.origin}/checkout`,
+        "test.run_id": runId,
+      },
+    });
+    logger.emit({
+      eventName: "checkout.custom",
+      attributes: { "test.run_id": runId, itemCount: 2 },
+    });
+  });
+  document.body.append(button);
+
+  try {
+    button.click();
+    await telemetry.forceFlush();
+
+    const captured = await fetch(
+      `${new URL(ingestionEndpoint).origin}/captured?runId=${encodeURIComponent(runId)}`,
+    ).then((response) => response.json());
+    expect(captured).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "Microsoft.ApplicationInsights.RemoteDependency",
+          data: expect.objectContaining({
+            baseType: "RemoteDependencyData",
+            baseData: expect.objectContaining({ name: "checkout.click" }),
+          }),
+        }),
+        expect.objectContaining({
+          name: "Microsoft.ApplicationInsights.Message",
+          data: expect.objectContaining({
+            baseType: "MessageData",
+            baseData: expect.objectContaining({
+              message: runId,
+              properties: expect.objectContaining({ "test.run_id": runId }),
+            }),
+          }),
+        }),
+        expect.objectContaining({
+          name: "Microsoft.ApplicationInsights.PageView",
+          data: {
+            baseType: "PageViewData",
+            baseData: expect.objectContaining({
+              name: "Checkout",
+              url: `${location.origin}/checkout`,
+              duration: "00:00:00.4252500",
+              properties: expect.objectContaining({ "test.run_id": runId }),
+            }),
+          },
+        }),
+        expect.objectContaining({
+          name: "Microsoft.ApplicationInsights.Event",
+          data: {
+            baseType: "EventData",
+            baseData: expect.objectContaining({
+              name: "checkout.custom",
+              properties: expect.objectContaining({ "test.run_id": runId }),
+              measurements: expect.objectContaining({ itemCount: 2 }),
+            }),
+          },
+        }),
+      ]),
+    );
+  } finally {
+    button.remove();
+    await telemetry.shutdown();
+  }
+});
+
 it.each(["index.js", "index.min.js"])(
   "exports manual telemetry from application APIs through %s",
   async (file) => {
@@ -24,6 +119,8 @@ it.each(["index.js", "index.min.js"])(
     const url = new URL(path, import.meta.url);
     const distro: typeof import("../../src/index.js") = await import(/* @vite-ignore */ url.href);
     expect(Object.keys(distro).sort()).toEqual([
+      "AzureMonitorLogRecordExporter",
+      "AzureMonitorSpanExporter",
       "BrowserDetector",
       "OPENTELEMETRY_BROWSER_VERSION",
       "UserAgentDetector",
@@ -36,7 +133,10 @@ it.each(["index.js", "index.min.js"])(
     const pipeline = createInMemoryPipeline();
     const tracer = trace.getTracer("browser-consumer");
     const logger = logs.getLogger("browser-consumer");
-    const telemetry = distro.useMicrosoftOpenTelemetry(pipeline.options);
+    const telemetry = await distro.useMicrosoftOpenTelemetry({
+      ...pipeline.options,
+      session: { enabled: true },
+    });
     try {
       const span = tracer.startSpan("before-init");
       logger.emit({
@@ -52,6 +152,27 @@ it.each(["index.js", "index.min.js"])(
       expect(spans.map((record) => record.name)).toEqual(["before-init", "after-init"]);
       expect(records.map((record) => record.eventName)).toEqual(["before-init", "after-init"]);
       expect(records[0].spanContext).toEqual(spans[0].spanContext());
+      const sessionId = spans[0].attributes["session.id"];
+      expect(sessionId).toMatch(/^[0-9a-f]{32}$/);
+      for (const record of [...spans, ...records]) {
+        expect(record.attributes["session.id"]).toBe(sessionId);
+      }
+      tracer
+        .startSpan("application-session", {
+          attributes: { "session.id": "application-span" },
+        })
+        .end();
+      logger.emit({
+        eventName: "application-session",
+        attributes: { "session.id": "application-log" },
+      });
+      await pipeline.forceFlush();
+      expect(pipeline.spanExporter.getFinishedSpans().at(-1)?.attributes["session.id"]).toBe(
+        "application-span",
+      );
+      expect(pipeline.logExporter.getFinishedLogRecords().at(-1)?.attributes["session.id"]).toBe(
+        "application-log",
+      );
     } finally {
       await telemetry.shutdown();
     }

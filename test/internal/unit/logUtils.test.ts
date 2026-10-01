@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 import { logToEnvelope } from "../../../src/exporter/logUtils.js";
+import { OPENTELEMETRY_BROWSER_VERSION } from "../../../src/shared/constants.js";
 import { TEST_INSTRUMENTATION_KEY as instrumentationKey } from "../../fixtures/azureMonitor.js";
 import { createReadableLogRecord as makeLog } from "../../fixtures/telemetry.js";
 
@@ -25,6 +26,7 @@ describe("Azure Monitor log envelope mapping", () => {
     );
 
     expect(envelope.name).toBe("Microsoft.ApplicationInsights.Exception");
+    expect(envelope.tags["ai.internal.sdkVersion"]).toBe(`mot${OPENTELEMETRY_BROWSER_VERSION}`);
     expect(envelope.data).toEqual({
       baseType: "ExceptionData",
       baseData: {
@@ -69,7 +71,38 @@ describe("Azure Monitor log envelope mapping", () => {
     });
   });
 
-  it("maps browser.navigation to PageViewData", () => {
+  it("maps browser.page_view to PageViewData", () => {
+    const envelope = logToEnvelope(
+      makeLog({
+        eventName: "browser.page_view",
+        attributes: {
+          "browser.page_view.id": "0123456789abcdef0123456789abcdef",
+          "browser.page_view.name": "Cart",
+          "browser.page_view.duration": 425.25,
+          "browser.page_view.referrer": "https://shop.example.test/products",
+          "url.full": "https://shop.example.test/cart",
+          "browser.page_view.same_document": true,
+        },
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.data).toEqual({
+      baseType: "PageViewData",
+      baseData: {
+        ver: 2,
+        id: "0123456789abcdef0123456789abcdef",
+        name: "Cart",
+        url: "https://shop.example.test/cart",
+        duration: "00:00:00.4252500",
+        referredUri: "https://shop.example.test/products",
+        properties: { "browser.page_view.same_document": "true" },
+        measurements: undefined,
+      },
+    });
+  });
+
+  it("maps legacy browser.navigation to PageViewData", () => {
     const envelope = logToEnvelope(
       makeLog({
         eventName: "browser.navigation",
@@ -86,6 +119,7 @@ describe("Azure Monitor log envelope mapping", () => {
       baseType: "PageViewData",
       baseData: {
         ver: 2,
+        id: expect.stringMatching(/^[0-9a-f]{32}$/),
         name: "https://shop.example.test/cart",
         url: "https://shop.example.test/cart",
         duration: "00:00:00.4252500",

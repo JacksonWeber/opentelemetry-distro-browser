@@ -437,5 +437,7 @@ coverage/
 reports/
 temp/api/
 test/**/__screenshots__/
+# Vitest browser mode writes failure screenshots and other attachments here.
+.vitest/
 *.tsbuildinfo
 *.tgz

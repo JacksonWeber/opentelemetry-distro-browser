@@ -16,6 +16,7 @@ import { createDeterministicIdGenerator } from "./ids.js";
  * before use. Timers are stopped automatically when the test finishes.
  * Pass the same store and ID generator to simulate reloads without resetting the sequence.
  * Renewal follows OpenTelemetry's activity semantics, not the AI cookie implementation.
+ * This does not emulate the distro's persisted last-activity or browser-storage policy.
  *
  * @see https://github.com/microsoft/ApplicationInsights-JS/blob/main/extensions/applicationinsights-properties-js/Tests/Unit/src/SessionManager.Tests.ts
  */

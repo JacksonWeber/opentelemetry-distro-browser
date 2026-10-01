@@ -1,0 +1,34 @@
+{
+  "name": "@microsoft/opentelemetry-browser-samples",
+  "version": "0.1.0-alpha.1",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+    "npm": ">=10"
+  },
+  "scripts": {
+    "build": "npm run build:azure-monitor && npm run build:console && npm run build:otlp",
+    "build:azure-monitor": "vite build azure-monitor",
+    "build:console": "vite build console",
+    "build:otlp": "vite build otlp",
+    "dev:azure-monitor": "vite azure-monitor",
+    "dev:console": "vite console",
+    "dev:otlp": "vite otlp",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@microsoft/opentelemetry-browser": "0.1.0-alpha.1",
+    "@opentelemetry/api": "1.9.1",
+    "@opentelemetry/api-logs": "0.222.0",
+    "@opentelemetry/exporter-logs-otlp-http": "0.222.0",
+    "@opentelemetry/exporter-trace-otlp-http": "0.222.0",
+    "@opentelemetry/resources": "2.11.0",
+    "@opentelemetry/sdk-logs": "0.222.0",
+    "@opentelemetry/sdk-trace-base": "2.11.0"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.3",
+    "vite": "8.2.2"
+  }
+}

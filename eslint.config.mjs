@@ -13,6 +13,7 @@ export default defineConfig([
     "**/playwright-report/",
     "**/test-results/",
     "reports/",
+    "artifacts/",
     "temp/api/",
     "poc/",
   ]),

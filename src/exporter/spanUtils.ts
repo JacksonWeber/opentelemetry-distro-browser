@@ -20,7 +20,7 @@ import {
 } from "./constants.js";
 import type { AzureMonitorEnvelope, RemoteDependencyData, RequestData } from "./telemetryModels.js";
 
-const promotedSpanAttributes = new Set([
+const promotedSpanAttributes = /* @__PURE__ */ new Set([
   HTTP_METHOD,
   HTTP_STATUS_CODE,
   SERVER_ADDRESS,

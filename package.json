@@ -1,7 +1,6 @@
 {
-  "name": "@microsoft/opentelemetry-distro-browser",
-  "version": "0.0.0",
-  "private": true,
+  "name": "@microsoft/opentelemetry-browser",
+  "version": "0.1.0-alpha.1",
   "description": "OpenTelemetry distribution for the browser",
   "license": "MIT",
   "type": "module",
@@ -13,10 +12,17 @@
         "default": "./dist/esm/index.js"
       }
     },
+    "./instrumentations": {
+      "import": {
+        "types": "./dist/esm/instrumentations.d.ts",
+        "default": "./dist/esm/instrumentations.js"
+      }
+    },
     "./package.json": "./package.json"
   },
   "files": [
     "dist/",
+    "CHANGELOG.md",
     "README.md",
     "LICENSE"
   ],
@@ -28,6 +34,10 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/microsoft/opentelemetry-distro-browser.git"
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "alpha"
   },
   "scripts": {
     "clean": "node scripts/clean.mjs",
@@ -44,13 +54,17 @@
     "test:install-browsers": "playwright install chromium",
     "test:watch": "vitest",
     "test:coverage": "npm run test:unit -- --coverage",
-    "test:build": "node --test test/build/package.test.mjs",
+    "test:build": "node --test test/build/package.test.mjs test/build/size-harness.test.mjs",
     "test:report": "node --test test/report/coverage.test.mjs",
-    "api:check": "api-extractor run",
-    "api:update": "npm run build && api-extractor run --local",
-    "size": "size-limit",
-    "size:report": "size-limit --json > reports/bundle-size.json",
-    "check": "npm run format && npm run lint && npm run typecheck && npm run test:report && npm run test:coverage && npm run build && npm run test:build && npm run test:integration && npm run api:check && npm run size && npm run size:report",
+    "api:check": "api-extractor run && api-extractor run --config api-extractor.instrumentations.json",
+    "api:update": "npm run build && api-extractor run --local && api-extractor run --local --config api-extractor.instrumentations.json",
+    "size": "node scripts/measure-bundle-size.mjs",
+    "size:compare": "node scripts/compare-bundle-size.mjs",
+    "size:report": "npm run size",
+    "perf": "node scripts/perf/run.mjs",
+    "perf:export": "node scripts/perf/export.mjs",
+    "test:perf": "node --test test/perf/*.test.mjs",
+    "check": "npm run format && npm run lint && npm run typecheck && npm run test:report && npm run test:perf && npm run test:coverage && npm run build && npm run test:build && npm run test:integration && npm run api:check && npm run size",
     "prepack": "npm run build"
   },
   "dependencies": {
@@ -78,7 +92,6 @@
     "@rollup/plugin-node-resolve": "^16.0.3",
     "@rollup/plugin-terser": "^1.0.0",
     "@rollup/plugin-typescript": "^12.3.0",
-    "@size-limit/file": "13.0.3",
     "@types/node": "^22.20.2",
     "@vitest/browser-playwright": "5.0.0",
     "@vitest/coverage-v8": "5.0.0",
@@ -91,7 +104,6 @@
     "rollup": "^4.63.1",
     "rollup-plugin-dts": "^6.5.1",
     "rollup-plugin-visualizer": "^7.1.1",
-    "size-limit": "13.0.3",
     "tslib": "^2.8.1",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.70.0",

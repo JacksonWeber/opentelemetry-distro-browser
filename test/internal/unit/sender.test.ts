@@ -3,6 +3,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { Sender } from "../../../src/exporter/sender.js";
+import type { AzureMonitorEnvelope } from "../../../src/exporter/telemetryModels.js";
 import { installFakeClock } from "../../fixtures/clock.js";
 
 describe("Sender", () => {
@@ -62,6 +63,135 @@ describe("Sender", () => {
       keepalive: false,
     });
     await expect(decompress(init?.body as Uint8Array<ArrayBuffer>)).resolves.toEqual(body);
+  });
+
+  it.each([
+    [
+      "https://dc.services.visualstudio.com/v2.1/track",
+      "https://eastus-8.in.applicationinsights.azure.com/v2.1/track",
+    ],
+    [
+      "https://westus.monitor.azure.com/v2.1/track",
+      "https://eastus-8.in.applicationinsights.azure.com/v2.1/track",
+    ],
+    [
+      "https://usgovvirginia.monitor.azure.us/v2.1/track",
+      "https://usgovvirginia.dc.applicationinsights.azure.us/v2.1/track",
+    ],
+    [
+      "https://chinaeast2.monitor.azure.cn/v2.1/track",
+      "https://chinaeast2.dc.applicationinsights.azure.cn/v2.1/track",
+    ],
+    ["https://custom.example.test/v2.1/track", "https://custom.example.test/redirected"],
+  ])(
+    "remembers a trusted redirected endpoint for later sends: %s -> %s",
+    async (endpoint, redirectedEndpoint) => {
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValueOnce(redirectedResponse(redirectedEndpoint))
+        .mockResolvedValueOnce(new Response(null, { status: 200 }));
+      const sender = new Sender({ endpoint, fetch });
+      const request = {
+        body: new TextEncoder().encode("telemetry"),
+        contentType: "application/json",
+      };
+
+      await sender.send(request);
+      await sender.send(request);
+
+      expect(fetch.mock.calls[1][0]).toBe(redirectedEndpoint);
+    },
+  );
+
+  it.each([
+    [
+      "https://dc.services.visualstudio.com/v2.1/track",
+      "http://eastus-8.in.applicationinsights.azure.com/v2.1/track",
+    ],
+    [
+      "https://dc.services.visualstudio.com/v2.1/track",
+      "https://applicationinsights.azure.com.example.test/v2.1/track",
+    ],
+    [
+      "https://dc.services.visualstudio.com/v2.1/track",
+      "https://usgovvirginia.dc.applicationinsights.azure.us/v2.1/track",
+    ],
+    [
+      "https://dc.services.visualstudio.com/v2.1/track",
+      "https://germanywestcentral.dc.applicationinsights.azure.de/v2.1/track",
+    ],
+    ["https://original.test/v2.1/track", "https://example.test/v2.1/track"],
+    ["https://original.test/v2.1/track", "not a URL"],
+  ])(
+    "does not remember an untrusted redirected endpoint: %s -> %s",
+    async (endpoint, redirectedEndpoint) => {
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValueOnce(redirectedResponse(redirectedEndpoint))
+        .mockResolvedValueOnce(new Response(null, { status: 200 }));
+      const sender = new Sender({ endpoint, fetch });
+      const request = {
+        body: new TextEncoder().encode("telemetry"),
+        contentType: "application/json",
+      };
+
+      await sender.send(request);
+      await sender.send(request);
+
+      expect(fetch.mock.calls[1][0]).toBe(endpoint);
+    },
+  );
+
+  it("continues remembering trusted changes across separate sends", async () => {
+    const redirectedEndpoints = Array.from(
+      { length: 11 },
+      (_, index) => `https://redirect-${index}.in.applicationinsights.azure.com/v2.1/track`,
+    );
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    for (const endpoint of redirectedEndpoints) {
+      fetch.mockResolvedValueOnce(redirectedResponse(endpoint));
+    }
+    fetch.mockResolvedValueOnce(new Response(null, { status: 200 }));
+    const sender = new Sender({
+      endpoint: "https://dc.services.visualstudio.com/v2.1/track",
+      fetch,
+    });
+    const request = {
+      body: new TextEncoder().encode("telemetry"),
+      contentType: "application/json",
+    };
+
+    for (const _endpoint of redirectedEndpoints) {
+      await sender.send(request);
+    }
+    await sender.send(request);
+
+    expect(fetch.mock.calls.at(-1)?.[0]).toBe(redirectedEndpoints.at(-1));
+  });
+
+  it("uses the remembered endpoint for beacon fallback", async () => {
+    const redirectedEndpoint = "https://eastus-8.in.applicationinsights.azure.com/v2.1/track";
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(redirectedResponse(redirectedEndpoint));
+    const sendBeacon = vi.fn<typeof globalThis.navigator.sendBeacon>().mockReturnValue(true);
+    const sender = new Sender({
+      endpoint: "https://dc.services.visualstudio.com/v2.1/track",
+      fetch,
+      sendBeacon,
+    });
+
+    await sender.send({
+      body: new TextEncoder().encode("telemetry"),
+      contentType: "application/json",
+    });
+    await sender.send({
+      body: new Uint8Array(60 * 1024 + 1),
+      contentType: "application/json",
+      unloading: true,
+    });
+
+    expect(sendBeacon.mock.calls[0][0]).toBe(redirectedEndpoint);
   });
 
   it("uses an uncompressed payload when CompressionStream is unavailable", async () => {
@@ -520,9 +650,360 @@ describe("Sender", () => {
       }
     }
   });
+
+  it("retries a retriable response with bounded exponential jitter", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(new Response("unavailable", { status: 503 }))
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+    const delay = vi.fn<(delayMs: number) => Promise<void>>().mockResolvedValue(undefined);
+    const sender = new Sender({
+      endpoint: "https://example.test/v2.1/track",
+      fetch,
+      delay,
+      random: () => 0.5,
+    });
+
+    await expect(
+      sender.send({ body: new TextEncoder().encode("telemetry"), contentType: "application/json" }),
+    ).resolves.toMatchObject({ statusCode: 200 });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(delay).toHaveBeenCalledWith(750);
+  });
+
+  it("retries a browser transport failure", async () => {
+    const fetchError = new TypeError("Failed to fetch");
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockRejectedValueOnce(fetchError)
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+    const delay = vi.fn<(delayMs: number) => Promise<void>>().mockResolvedValue(undefined);
+    const sender = new Sender({
+      endpoint: "https://example.test/v2.1/track",
+      fetch,
+      delay,
+      random: () => 0,
+    });
+
+    await expect(
+      sender.send({ body: new TextEncoder().encode("telemetry"), contentType: "application/json" }),
+    ).resolves.toMatchObject({ statusCode: 200 });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(delay).toHaveBeenCalledOnce();
+  });
+
+  it("retries a response body transport failure using Retry-After", async () => {
+    const response = new Response(null, {
+      status: 503,
+      headers: { "retry-after": "2" },
+    });
+    vi.spyOn(response, "text").mockRejectedValue(new TypeError("network error"));
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(response)
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+    const delay = vi.fn<(delayMs: number) => Promise<void>>().mockResolvedValue(undefined);
+    const sender = new Sender({
+      endpoint: "https://example.test/v2.1/track",
+      fetch,
+      delay,
+    });
+
+    const dateNow = vi.spyOn(Date, "now").mockReturnValue(0);
+    await expect(
+      sender
+        .send({ body: new TextEncoder().encode("telemetry"), contentType: "application/json" })
+        .finally(() => dateNow.mockRestore()),
+    ).resolves.toMatchObject({ statusCode: 200 });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(delay).toHaveBeenCalledWith(2_000);
+  });
+
+  it.each([200, 400])(
+    "does not retry a response body transport failure for status %i",
+    async (statusCode) => {
+      const bodyError = new TypeError("network error");
+      const response = new Response(null, { status: statusCode });
+      vi.spyOn(response, "text").mockRejectedValue(bodyError);
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response);
+      const delay = vi.fn<(delayMs: number) => Promise<void>>().mockResolvedValue(undefined);
+      const sender = new Sender({
+        endpoint: "https://example.test/v2.1/track",
+        fetch,
+        delay,
+      });
+
+      await expect(
+        sender.send({
+          body: new TextEncoder().encode("telemetry"),
+          contentType: "application/json",
+        }),
+      ).rejects.toBe(bodyError);
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(delay).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not retry an arbitrary fetch exception", async () => {
+    const fetchError = new Error("serialization failed");
+    const fetch = vi.fn<typeof globalThis.fetch>().mockRejectedValue(fetchError);
+    const delay = vi.fn<(delayMs: number) => Promise<void>>().mockResolvedValue(undefined);
+    const sender = new Sender({
+      endpoint: "https://example.test/v2.1/track",
+      fetch,
+      delay,
+    });
+
+    await expect(
+      sender.send({ body: new TextEncoder().encode("telemetry"), contentType: "application/json" }),
+    ).rejects.toBe(fetchError);
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(delay).not.toHaveBeenCalled();
+  });
+
+  it("honors Retry-After for a retriable response", async () => {
+    const dateNow = vi.spyOn(Date, "now").mockReturnValue(0);
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(new Response(null, { status: 429, headers: { "retry-after": "2" } }))
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+    const delay = vi.fn<(delayMs: number) => Promise<void>>().mockResolvedValue(undefined);
+    const sender = new Sender({
+      endpoint: "https://example.test/v2.1/track",
+      fetch,
+      delay,
+    });
+
+    await sender
+      .send({
+        body: new TextEncoder().encode("telemetry"),
+        contentType: "application/json",
+      })
+      .finally(() => dateNow.mockRestore());
+
+    expect(delay).toHaveBeenCalledWith(2_000);
+  });
+
+  it("honors a Retry-After throttle deadline across sends", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(new Response(null, { status: 429, headers: { "retry-after": "2" } }))
+      .mockResolvedValue(new Response(null, { status: 200 }));
+    const releaseDelays: Array<() => void> = [];
+    const delay = vi.fn(() => new Promise<void>((resolve) => releaseDelays.push(resolve)));
+    const sender = new Sender({
+      endpoint: "https://example.test/v2.1/track",
+      fetch,
+      delay,
+    });
+    const request = {
+      body: new TextEncoder().encode("telemetry"),
+      contentType: "application/json",
+    };
+
+    const firstSend = sender.send(request);
+    await vi.waitFor(() => expect(delay).toHaveBeenCalledTimes(1));
+
+    const secondSend = sender.send(request);
+    await vi.waitFor(() => expect(delay).toHaveBeenCalledTimes(2));
+    expect(fetch).toHaveBeenCalledOnce();
+
+    for (const release of releaseDelays) release();
+    await expect(Promise.all([firstSend, secondSend])).resolves.toEqual([
+      expect.objectContaining({ statusCode: 200 }),
+      expect.objectContaining({ statusCode: 200 }),
+    ]);
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("rechecks an extended throttle deadline before retrying", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockResolvedValueOnce(new Response(null, { status: 429, headers: { "retry-after": "120" } }))
+      .mockResolvedValue(new Response(null, { status: 200 }));
+    const releaseDelays: Array<() => void> = [];
+    const delay = vi.fn<(delayMs: number) => Promise<void>>(
+      () => new Promise<void>((resolve) => releaseDelays.push(resolve)),
+    );
+    const sender = new Sender({
+      endpoint: "https://example.test/v2.1/track",
+      fetch,
+      delay,
+      random: () => 0,
+    });
+    const request = {
+      body: new TextEncoder().encode("telemetry"),
+      contentType: "application/json",
+    };
+
+    const firstSend = sender.send(request);
+    await vi.waitFor(() => expect(delay).toHaveBeenCalledTimes(1));
+    const secondSend = sender.send(request);
+    await vi.waitFor(() => expect(delay).toHaveBeenCalledTimes(2));
+
+    releaseDelays[0]();
+    await vi.waitFor(() => expect(delay).toHaveBeenCalledTimes(3));
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(delay.mock.calls[2][0]).toBeGreaterThan(119_000);
+    expect(delay.mock.calls[2][0]).toBeLessThanOrEqual(120_000);
+
+    releaseDelays[1]();
+    releaseDelays[2]();
+    await expect(Promise.all([firstSend, secondSend])).resolves.toEqual([
+      expect.objectContaining({ statusCode: 200 }),
+      expect.objectContaining({ statusCode: 200 }),
+    ]);
+    expect(fetch).toHaveBeenCalledTimes(4);
+  });
+
+  it("retries only retriable envelopes from a partial response", async () => {
+    const envelopes = [createEnvelope("first"), createEnvelope("second"), createEnvelope("third")];
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            itemsReceived: 3,
+            itemsAccepted: 0,
+            errors: [
+              { index: 0, statusCode: 500, message: "Server error" },
+              { index: 1, statusCode: 400, message: "Invalid envelope" },
+              { index: 2, statusCode: 500, message: "Telemetry sampled out." },
+            ],
+          }),
+          { status: 206 },
+        ),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+    const sender = new Sender({
+      endpoint: "https://example.test/v2.1/track",
+      fetch,
+      delay: () => Promise.resolve(),
+      random: () => 0,
+    });
+
+    await sender.send({
+      body: new TextEncoder().encode(JSON.stringify(envelopes)),
+      contentType: "application/json",
+      envelopes,
+    });
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const retryInit = fetch.mock.calls[1][1];
+    await expect(decompress(retryInit?.body as Uint8Array<ArrayBuffer>)).resolves.toEqual(
+      new TextEncoder().encode(JSON.stringify([envelopes[0]])),
+    );
+  });
+
+  it("does not retry a non-retriable response", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(new Response("invalid", { status: 400 }));
+    const delay = vi.fn<(delayMs: number) => Promise<void>>().mockResolvedValue(undefined);
+    const sender = new Sender({
+      endpoint: "https://example.test/v2.1/track",
+      fetch,
+      delay,
+    });
+
+    await expect(
+      sender.send({ body: new TextEncoder().encode("telemetry"), contentType: "application/json" }),
+    ).resolves.toMatchObject({ statusCode: 400 });
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(delay).not.toHaveBeenCalled();
+  });
+
+  it("does not retry a malformed partial response", async () => {
+    const envelopes = [createEnvelope("first")];
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(new Response("invalid response", { status: 206 }));
+    const delay = vi.fn<(delayMs: number) => Promise<void>>().mockResolvedValue(undefined);
+    const sender = new Sender({
+      endpoint: "https://example.test/v2.1/track",
+      fetch,
+      delay,
+    });
+
+    await expect(
+      sender.send({
+        body: new TextEncoder().encode(JSON.stringify(envelopes)),
+        contentType: "application/json",
+        envelopes,
+      }),
+    ).resolves.toMatchObject({ statusCode: 206 });
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(delay).not.toHaveBeenCalled();
+  });
+
+  it("stops after the maximum retry count", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockImplementation(() => Promise.resolve(new Response("unavailable", { status: 503 })));
+    const delay = vi.fn<(delayMs: number) => Promise<void>>().mockResolvedValue(undefined);
+    const sender = new Sender({
+      endpoint: "https://example.test/v2.1/track",
+      fetch,
+      delay,
+      random: () => 0,
+    });
+
+    await expect(
+      sender.send({ body: new TextEncoder().encode("telemetry"), contentType: "application/json" }),
+    ).resolves.toMatchObject({ statusCode: 503 });
+    expect(fetch).toHaveBeenCalledTimes(4);
+    expect(delay).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not schedule a retry during unload", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(new Response("unavailable", { status: 503 }));
+    const delay = vi.fn<(delayMs: number) => Promise<void>>().mockResolvedValue(undefined);
+    const sender = new Sender({
+      endpoint: "https://example.test/v2.1/track",
+      fetch,
+      delay,
+    });
+
+    await expect(
+      sender.send({
+        body: new TextEncoder().encode("telemetry"),
+        contentType: "application/json",
+        unloading: true,
+      }),
+    ).resolves.toMatchObject({ statusCode: 503 });
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(delay).not.toHaveBeenCalled();
+  });
 });
+
+function createEnvelope(name: string): AzureMonitorEnvelope {
+  return {
+    name,
+    time: "2026-09-23T00:00:00.000Z",
+    iKey: "00000000-0000-0000-0000-000000000000",
+    sampleRate: 100,
+    tags: {},
+    ver: 1,
+    data: {
+      baseType: "EventData",
+      baseData: { ver: 2, name },
+    },
+  };
+}
 
 async function decompress(body: Uint8Array<ArrayBuffer>): Promise<Uint8Array<ArrayBuffer>> {
   const stream = new Blob([body]).stream().pipeThrough(new DecompressionStream("gzip"));
   return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+function redirectedResponse(url: string): Response {
+  const response = new Response(null, { status: 200 });
+  Object.defineProperties(response, {
+    redirected: { value: true },
+    url: { value: url },
+  });
+  return response;
 }
