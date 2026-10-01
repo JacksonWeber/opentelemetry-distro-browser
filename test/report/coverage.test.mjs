@@ -113,6 +113,32 @@ test("recomputes percentages and does not render untrusted artifact text", () =>
   assert.doesNotMatch(report, /injected|example\.test|malicious|@someone/);
 });
 
+test("truncates percentages exactly across the supported integer range", () => {
+  for (const [covered, total, percentage] of [
+    [57, 100, "57.00"],
+    [29, 100, "29.00"],
+    [0, 100, "0.00"],
+    [Number.MAX_SAFE_INTEGER - 1, Number.MAX_SAFE_INTEGER, "99.99"],
+  ]) {
+    const report = renderCoverageReport(summary(covered, total), summary(covered, total));
+    const cell = `${percentage}% (${covered}/${total})`;
+    for (const metric of ["Statements", "Branches", "Functions", "Lines"]) {
+      assert.ok(report.includes(`| ${metric} | ${cell} | ${cell} | 0.00 pp | Unchanged |`));
+    }
+  }
+});
+
+test("does not report a decrease when truncated percentages are equal", () => {
+  const report = renderCoverageReport(summary(570001, 1000000), summary(57, 100));
+  for (const metric of ["Statements", "Branches", "Functions", "Lines"]) {
+    assert.ok(
+      report.includes(
+        `| ${metric} | 57.00% (570001/1000000) | 57.00% (57/100) | 0.00 pp | Unchanged |`,
+      ),
+    );
+  }
+});
+
 for (const value of [
   null,
   {},

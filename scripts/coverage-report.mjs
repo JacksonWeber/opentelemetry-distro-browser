@@ -28,7 +28,7 @@ function totals(summary) {
     );
     // Match Istanbul's two-decimal truncation instead of trusting artifact percentages.
     const percentage =
-      entry.total === 0 ? 10000 : Math.floor((entry.covered / entry.total) * 10000);
+      entry.total === 0 ? 10000 : Number((BigInt(entry.covered) * 10000n) / BigInt(entry.total));
     return { covered: entry.covered, total: entry.total, percentage };
   });
 }
