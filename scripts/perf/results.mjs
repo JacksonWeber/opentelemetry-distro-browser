@@ -17,9 +17,19 @@ const profiles = {
   "span.record.duration": ["recording_span", "ms", "median", "browser"],
   "span.record.throughput": ["recording_span", "operations/s", "median", "browser"],
 };
+const scenarioSizes = {
+  minified: "rawBytes",
+  gzip: "gzipBytes",
+  brotli: "brotliBytes",
+};
 
 export function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+function validateSha256(value, name) {
+  if (!/^[0-9a-f]{64}$/.test(value)) throw new Error(`Invalid ${name}`);
+  return value;
 }
 
 export function measureBundle(bytes) {
@@ -38,6 +48,44 @@ export function measureBundle(bytes) {
       }).length,
     },
   };
+}
+
+function bundleScenarios(report) {
+  if (report?.schemaVersion !== 1 || !Array.isArray(report.scenarios)) {
+    throw new Error("Invalid bundle-size report");
+  }
+  const ids = new Set();
+  for (const scenario of report.scenarios) {
+    if (
+      !/^[a-z0-9-]+$/.test(scenario?.id) ||
+      typeof scenario.label !== "string" ||
+      !scenario.label.trim() ||
+      typeof scenario.group !== "string" ||
+      !scenario.group.trim() ||
+      typeof scenario.entryPoint !== "string" ||
+      !scenario.entryPoint.trim() ||
+      Object.values(scenarioSizes).some(
+        (field) => !Number.isSafeInteger(scenario[field]) || scenario[field] <= 0,
+      )
+    ) {
+      throw new Error("Invalid bundle-size scenario");
+    }
+    if (ids.has(scenario.id)) throw new Error(`Duplicate bundle-size scenario ${scenario.id}`);
+    ids.add(scenario.id);
+  }
+  return report.scenarios;
+}
+
+export function createBundleScenarioResults(report, timeUnixNano) {
+  return bundleScenarios(report).flatMap((scenario) =>
+    Object.entries(scenarioSizes).map(([size, field]) => ({
+      metric: `${metricPrefix}bundle.scenario.${scenario.id}.${size}.size`,
+      samples: [scenario[field]],
+      operationsPerSample: 1,
+      warmupCount: 0,
+      timeUnixNano,
+    })),
+  );
 }
 
 export function median(samples) {
@@ -81,11 +129,34 @@ export function createPayload(run) {
   if (run.artifact?.path !== artifactPath || run.artifact.format !== "esm") {
     throw new Error("Unexpected measured artifact");
   }
-  if (!/^[0-9a-f]{64}$/.test(run.artifact.sha256)) throw new Error("Invalid artifact hash");
+  validateSha256(run.artifact.sha256, "artifact hash");
+  validateSha256(run.provenance?.rollupConfigSha256, "Rollup config hash");
+  validateSha256(run.provenance?.bundleSizeReportSha256, "bundle-size report hash");
+  validateSha256(run.provenance?.bundleSizeConfigSha256, "bundle-size config hash");
   if (JSON.stringify(run.artifact.compression) !== JSON.stringify(compression)) {
     throw new Error("Unexpected compression configuration");
   }
-  if (run.results?.length !== Object.keys(profiles).length) throw new Error("Incomplete results");
+  const scenarios = bundleScenarios(run.bundleSizeReport);
+  if (
+    run.bundleSizeReport.package?.name !== run.package.name ||
+    run.bundleSizeReport.package?.version !== run.package.version ||
+    run.bundleSizeReport.bundler?.name !== "rollup" ||
+    run.bundleSizeReport.bundler?.version !== run.provenance?.rollup ||
+    run.bundleSizeReport.bundler?.version !== run.provenance?.rollupLock
+  ) {
+    throw new Error("Bundle-size report does not match the measured build");
+  }
+  const scenarioByMetric = new Map(
+    scenarios.flatMap((scenario) =>
+      Object.entries(scenarioSizes).map(([size, field]) => [
+        `bundle.scenario.${scenario.id}.${size}.size`,
+        { scenario, size, value: scenario[field] },
+      ]),
+    ),
+  );
+  if (run.results?.length !== Object.keys(profiles).length + scenarioByMetric.size) {
+    throw new Error("Incomplete results");
+  }
   const spans = run.results.find(
     (result) => result.metric === metricPrefix + "span.record.duration",
   );
@@ -117,7 +188,12 @@ export function createPayload(run) {
     const shortMetric = result.metric.startsWith(metricPrefix)
       ? result.metric.slice(metricPrefix.length)
       : "";
-    const profile = profiles[shortMetric];
+    const scenarioProfile = scenarioByMetric.get(shortMetric);
+    const profile =
+      profiles[shortMetric] ??
+      (scenarioProfile
+        ? [`bundle_${scenarioProfile.scenario.id}`, "By", "value", "node"]
+        : undefined);
     if (!profile || seen.has(result.metric)) throw new Error("Unknown or duplicate metric");
     seen.add(result.metric);
     const [testCase, unit, statistic, environment] = profile;
@@ -134,12 +210,15 @@ export function createPayload(run) {
     }
     if (BigInt(result.timeUnixNano) > 18446744073709551615n) throw new Error("Timestamp overflow");
     if (environment === "node") {
+      const expectedValue = scenarioProfile
+        ? scenarioProfile.value
+        : run.artifact.sizes[shortMetric];
       if (
         sampleCount !== 1 ||
         operations !== 1 ||
         warmup !== 0 ||
         !Number.isSafeInteger(value) ||
-        value !== run.artifact.sizes[shortMetric]
+        value !== expectedValue
       ) {
         throw new Error("Size result does not match artifact measurement");
       }
@@ -190,25 +269,43 @@ export function createPayload(run) {
           "benchmark.operations_per_sample": operations,
           "benchmark.operation_count": sampleCount * operations,
           "benchmark.warmup_count": warmup,
-          "benchmark.artifact.path": run.artifact.path,
-          "benchmark.artifact.format": run.artifact.format,
-          "benchmark.artifact.sha256": run.artifact.sha256,
+          "benchmark.artifact.path": scenarioProfile
+            ? "reports/bundle-size.json"
+            : run.artifact.path,
+          "benchmark.artifact.format": scenarioProfile
+            ? "rollup-esm-scenario"
+            : run.artifact.format,
+          "benchmark.artifact.sha256": scenarioProfile
+            ? text(run.provenance?.bundleSizeReportSha256, "bundle-size report hash")
+            : run.artifact.sha256,
           "benchmark.build.config.sha256": text(
-            run.provenance?.rollupConfigSha256,
+            scenarioProfile
+              ? run.provenance?.bundleSizeConfigSha256
+              : run.provenance?.rollupConfigSha256,
             "build config hash",
           ),
           "benchmark.minifier.name": "terser",
           "benchmark.minifier.version": text(run.provenance?.terser, "minifier version"),
+          ...(scenarioProfile
+            ? {
+                "benchmark.bundle.scenario.id": scenarioProfile.scenario.id,
+                "benchmark.bundle.scenario.label": scenarioProfile.scenario.label,
+                "benchmark.bundle.scenario.group": scenarioProfile.scenario.group,
+                "benchmark.bundle.entry_point": scenarioProfile.scenario.entryPoint,
+              }
+            : {}),
           ...(environment === "node"
             ? {
-                "benchmark.compression.method": shortMetric.includes(".gzip.")
+                "benchmark.compression.method": (scenarioProfile?.size ?? shortMetric).includes(
+                  "gzip",
+                )
                   ? "gzip"
-                  : shortMetric.includes(".brotli.")
+                  : (scenarioProfile?.size ?? shortMetric).includes("brotli")
                     ? "brotli"
                     : "none",
-                ...(shortMetric.includes(".gzip.")
+                ...((scenarioProfile?.size ?? shortMetric).includes("gzip")
                   ? { "benchmark.compression.level": compression.gzipLevel }
-                  : shortMetric.includes(".brotli.")
+                  : (scenarioProfile?.size ?? shortMetric).includes("brotli")
                     ? { "benchmark.compression.level": compression.brotliQuality }
                     : {}),
               }
