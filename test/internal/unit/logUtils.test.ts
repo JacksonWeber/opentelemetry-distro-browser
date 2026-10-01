@@ -1,31 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import type { SpanContext } from "@opentelemetry/api";
-import type { ReadableLogRecord } from "@opentelemetry/sdk-logs";
 import { describe, expect, it } from "vitest";
 import { logToEnvelope } from "../../../src/exporter/logUtils.js";
-
-const instrumentationKey = "00000000-0000-0000-0000-000000000000";
-const spanContext: SpanContext = {
-  traceId: "0123456789abcdef0123456789abcdef",
-  spanId: "0123456789abcdef",
-  traceFlags: 1,
-};
-const resource = { attributes: { "service.name": "browser-store" } };
-
-function makeLog(overrides: Partial<ReadableLogRecord> = {}): ReadableLogRecord {
-  return {
-    hrTime: [1_735_689_600, 0],
-    hrTimeObserved: [1_735_689_600, 0],
-    spanContext,
-    resource,
-    instrumentationScope: { name: "test" },
-    attributes: {},
-    droppedAttributesCount: 0,
-    ...overrides,
-  } as unknown as ReadableLogRecord;
-}
+import { TEST_INSTRUMENTATION_KEY as instrumentationKey } from "../../fixtures/azureMonitor.js";
+import { createReadableLogRecord as makeLog } from "../../fixtures/telemetry.js";
 
 describe("Azure Monitor log envelope mapping", () => {
   it("maps exception semantic attributes and severity", () => {

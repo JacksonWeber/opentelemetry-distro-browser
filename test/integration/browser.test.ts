@@ -46,7 +46,7 @@ it.each(["index.js", "index.min.js"])(
       span.end();
       trace.getTracer("after-init").startSpan("after-init").end();
       logs.getLogger("after-init").emit({ eventName: "after-init" });
-      await Promise.all([pipeline.spanProcessor.forceFlush(), pipeline.logProcessor.forceFlush()]);
+      await pipeline.forceFlush();
       const spans = pipeline.spanExporter.getFinishedSpans();
       const records = pipeline.logExporter.getFinishedLogRecords();
       expect(spans.map((record) => record.name)).toEqual(["before-init", "after-init"]);
