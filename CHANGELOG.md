@@ -22,6 +22,9 @@ All notable changes to this package are documented in this file.
 - Enforce exporter payload limits and test unload delivery.
 - Coalesce concurrent `forceFlush()` calls across trace and log processors.
 - Report bundle size changes against PR base
+- Populate empty Azure Monitor message bodies with `n/a` before ingestion.
+- Publish minified, gzip, and Brotli measurements for every bundle-size scenario after merged
+  pull requests so scenario regressions can be tracked over time.
 
 ## 0.1.0-alpha.1 - 2026-09-28
 

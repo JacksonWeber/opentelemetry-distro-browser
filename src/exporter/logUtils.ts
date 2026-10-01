@@ -26,6 +26,7 @@ import {
   NAVIGATION_DURATION,
   NAVIGATION_EVENT_NAME,
   URL_FULL,
+  DEFAULT_LOG_MESSAGE,
 } from "./constants.js";
 import type {
   AzureMonitorEnvelope,
@@ -143,9 +144,13 @@ export function logToEnvelope(
   } else {
     name = "Microsoft.ApplicationInsights.Message";
     baseType = "MessageData";
+    const message =
+      logRecord.body === undefined || logRecord.body === null
+        ? DEFAULT_LOG_MESSAGE
+        : serializeAttribute(logRecord.body) || DEFAULT_LOG_MESSAGE;
     baseData = {
       ver: 2,
-      message: serializeAttribute(logRecord.body ?? ""),
+      message,
       severityLevel,
       ...customFields,
     };

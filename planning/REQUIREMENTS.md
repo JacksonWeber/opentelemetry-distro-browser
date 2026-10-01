@@ -30,9 +30,10 @@ produces it.
 - Build on `BasicTracerProvider`; `WebTracerProvider` is deprecated.
 - Do not use Zone.js or any equivalent global async-context patch. Async parenting
   is explicit.
-- Route every browser event name and attribute key through an internal semantic
-  conventions mapping layer rather than hard-coding them at call sites, so an
-  upstream convention change is a table edit.
+- Route distribution-owned browser instrumentation event names and attribute
+  keys through an internal semantic-conventions mapping layer rather than
+  hard-coding them at call sites. Application-supplied standard OpenTelemetry
+  telemetry is not remapped by this layer.
 
 ### Vendor neutrality and layering
 
@@ -42,16 +43,16 @@ produces it.
 - Core routing must not know about backend envelopes. Transform and filter hooks
   operate on OTel-native signal data; any backend envelope mutation belongs to
   that exporter package.
-- Keep no Application Insights configuration or tracking-API compatibility mapping
-  in core. If a legacy bridge is required, it is separately designed, packaged,
-  versioned and tested.
+- Keep no Application Insights configuration or tracking-API compatibility
+  mapping in core. Legacy Application Insights tracking APIs are out of scope.
 - Import supported public upstream packages directly and expose upstream types.
   Do not reimplement parallel OTel-shaped interfaces, and do not wrap
   `getTracer`, `getLogger` or `getMeter` in proprietary getters — applications
   call the upstream API.
 - Expose the minimum standard upstream objects needed for composition; keep
   distribution internals encapsulated. Distribution-specific interfaces exist only
-  for routing, ownership, lifecycle, diagnostics and loader behavior.
+  for routing, ownership, lifecycle and diagnostics and, if selected by M3,
+  loader behavior.
 - Compose upstream samplers, processors, propagators, resources, baggage and ID
   generators rather than reimplementing them.
 - Register exactly one minimal distribution-owned global for routing and context.
@@ -60,11 +61,13 @@ produces it.
 ### Lifecycle
 
 - Startup is transactional and rolls back partial work.
-- Every resource is owned by either the distribution or one instance.
+- Every distribution-created resource is owned by the distribution or one
+  instance. Ownership of application-supplied resources is explicit.
 - Instance shutdown does not affect unrelated instances.
 - Distribution shutdown disables owned instrumentations before providers.
 - `forceFlush()` and `shutdown()` have explicit timeout and error contracts.
-- No spans are accepted after the owning instance reaches shutdown.
+- No spans or log records are accepted after the owning instance reaches
+  shutdown.
 
 ### Correctness
 
@@ -87,15 +90,15 @@ produces it.
 - Inject resources, samplers, processors, exporters, propagators, context
   policy, diagnostics, clocks, and platform capabilities.
 - Publish defaults and distinguish omitted values from invalid values.
-- Define the mutable field set explicitly; all other changes require instance
-  replacement or a documented provider restart.
-- Apply runtime updates atomically: validate, prepare, commit, then dispose
-  replaced resources. Roll back on failure.
-- Return a removal/disposal handle for every configuration subscription and
-  release it during instance shutdown.
+- M3 defines any runtime-mutable field set explicitly; all other changes require
+  instance replacement or a documented provider restart.
+- M3 runtime updates apply atomically: validate, prepare, commit, then dispose
+  replaced resources. They roll back on failure.
+- Every M3 configuration subscription returns a removal/disposal handle that is
+  released during instance shutdown.
 - Never expose mutable processor, exporter, instrumentation, or resource arrays
   through configuration snapshots.
-- Test concurrent update, update-during-flush, update-during-shutdown, failed
+- M3 tests concurrent update, update-during-flush, update-during-shutdown, failed
   update rollback, and subscription cleanup.
 
 ### Performance
@@ -117,12 +120,15 @@ M1 baselines:
 | Idle work | No continuous distribution-owned timers |
 | Bundle size | Separate budgets for router, distribution core, and instrumentation presets |
 
-- Establish gzip and Brotli byte baselines in M1 for the router alone,
-  minimum manual-tracing distribution, default tracing preset, each
-  instrumentation preset, loader, and no-op package.
-- Set blocking absolute budgets and permitted percentage growth in M1
-  before feature implementation. Every release reports raw, gzip, and Brotli
-  sizes and identifies dependency contributors.
+- Establish minified, gzip, and Brotli byte baselines in M1 for the router alone,
+  minimum manual-tracing distribution, default tracing preset, and each
+  instrumentation preset.
+- If M3 selects advanced loader or no-op artifacts, establish separate minified,
+  gzip, and Brotli baselines and budgets for them before implementation.
+- Each milestone sets blocking absolute budgets and permitted percentage growth
+  before declaring its owned artifacts complete. After those budgets are
+  established, releases of the owned artifacts report minified, gzip, and
+  Brotli sizes and identify dependency contributors.
 - Test tree shaking with representative Vite, webpack, Rollup, and esbuild
   applications. Importing the router must not pull instrumentations, exporters,
   loaders, or backend bridges into the bundle. Traces and logs must be
@@ -147,7 +153,8 @@ M1 baselines:
 - Publish ESM-first packages with explicit `exports`, type declarations, source
   maps, license data, and verified side-effect metadata.
 - Keep router, distribution core, instrumentation presets, testing utilities,
-  loader/no-op, and backend integrations in separate entry points or packages.
+  and backend integrations in separate entry points or packages. If M3 selects
+  loader or no-op artifacts, package them separately from the full distribution.
 - Do not duplicate upstream API or SDK implementations to avoid version and byte
   cost.
 - Run dependency duplication checks, especially for `@opentelemetry/api`.
@@ -161,27 +168,31 @@ M1 baselines:
 ### Browser and loader policy
 
 The previous browser targets remain provisional requirements until
-[M1](M1_PLANNING.md) declares the npm target and publishes the
-matrix, and [M2](M2_PLANNING.md) settles the CDN and
-loader policy:
+[M1](M1_PLANNING.md) declares the npm target and publishes the browser matrix.
+[M2](M2_PLANNING.md) owns the supported browser bundle, immutable versioned CDN
+publication, and asynchronous initialization snippet. [M3](M3_PLANNING.md) owns
+any capability-detecting loader, no-op or unsupported-browser package,
+alternate-domain fallback, and other advanced loader behavior.
 
 | Runtime | Planned treatment |
 |---|---|
-| ES2020+ supported browsers | Full distribution |
-| ES2015 to pre-ES2020 browsers | Small capability-detecting loader only, if required |
-| Pre-ES2015 browsers | Skip the full download or load a separate ES5-compatible no-op package, if required |
+| Browsers in the M1 support matrix | npm distribution and M2 browser bundle |
+| Browsers outside the M1 support matrix | Unsupported by default; an optional M3 loader or no-op package only if selected |
 
-- Publish an exact Chrome, Edge, Firefox, and Safari version matrix for every
-  release.
-- Capability detection happens before downloading the full distribution.
+- M1 publishes an exact Chrome, Edge, Firefox, and Safari version matrix; each
+  subsequent release publishes its applicable matrix.
 - The full distribution contains no legacy no-op branches.
-- A no-op package, if shipped, is API-compatible only with the distribution
-  lifecycle surface and makes its disabled state observable.
-- CDN initialization is asynchronous and uses callbacks or promises for success
-  and failure. Consumers must not rely on a synchronous return while a script is
-  loading.
-- Loader, no-op, npm, and CDN paths receive separate integration, CSP, integrity,
-  caching, and failure tests.
+- If M3 selects a capability-detecting loader, detection happens before
+  downloading the full distribution.
+- If M3 selects a no-op or unsupported-browser package, it is API-compatible
+  only with the distribution lifecycle surface and makes its disabled state
+  observable.
+- The M2 snippet initializes asynchronously and reports success or failure;
+  consumers do not rely on a synchronous return while the browser bundle loads.
+- M1 validates npm and current bundles against their declared browser and
+  packaging contracts. M2 validates the supported CDN and snippet path for CSP,
+  integrity, caching, cross-origin loading, and load failures. M3 validates any
+  advanced loader, no-op, unsupported-browser, or fallback paths it selects.
 
 ### Security and privacy
 
@@ -216,10 +227,11 @@ loader policy:
   cleanup, and report its type, owner instance, and allocation site when
   available.
 - Collect and publish code coverage for every production package.
-- Unit tests for routing, state transitions, rollback, caching, and conflicts.
+- Unit tests for routing, startup state transitions and rollback, caching, and
+  conflicts.
 - Contract tests against supported upstream OTel versions.
 - Real-browser tests for supported Chrome, Edge, Firefox, and Safari versions.
-- Alpha/Beta overlapping-operation tests derived from the PoC.
+- Two-instance overlapping-operation tests derived from the PoC.
 - Multi-instance tests using identical instrumentation scope names.
 - Multi-instance tests asserting log records with identical `eventName` values
   stay in their own pipelines.
@@ -231,8 +243,9 @@ loader policy:
 - Duplicate-package, module-federation, iframe, and worker tests.
 - OTLP collector integration tests.
 - Performance and bundle-size regression gates.
-- Dynamic configuration success, rollback, concurrency, and cleanup tests for
-  every runtime-mutable field.
+- M3 dynamic configuration success, validation and invalid updates,
+  failed-update rollback, concurrency, and cleanup tests for every
+  runtime-mutable field.
 - Failure tests for invalid configuration, prior global registration, exporter
   rejection, partial startup, unload during export, and stale tracer use.
 
@@ -247,4 +260,3 @@ loader policy:
 - Public API changes require review; experimental APIs are labeled and isolated
   from stable entry points.
 - Document unsupported behavior directly rather than relying on no-op fallbacks.
-

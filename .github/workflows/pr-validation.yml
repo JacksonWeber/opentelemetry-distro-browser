@@ -112,6 +112,9 @@ jobs:
       - name: Build and minify bundles
         run: npm run build
 
+      - name: Measure browser bundle sizes and generate reports
+        run: npm run size
+
       - name: Run offline browser performance benchmark
         run: npm run perf
 
@@ -123,9 +126,6 @@ jobs:
 
       - name: Check public API report
         run: npm run api:check
-
-      - name: Measure browser bundle sizes and generate reports
-        run: npm run size
 
       - name: Check out the pull request base revision
         if: github.event_name == 'pull_request' && matrix.node-version == '24'

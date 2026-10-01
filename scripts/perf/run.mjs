@@ -9,6 +9,7 @@ import { parseArgs } from "node:util";
 import { measureBrowser } from "./browser.mjs";
 import {
   artifactPath,
+  createBundleScenarioResults,
   createPayload,
   measureBundle,
   metricPrefix,
@@ -29,6 +30,9 @@ const writeJson = (name, value) =>
   writeFile(join(output, name), `${JSON.stringify(value, null, 2)}\n`, { flag: "wx" });
 const packageJson = JSON.parse(await readFile("package.json", "utf8"));
 const lock = JSON.parse(await readFile("package-lock.json", "utf8"));
+const bundleSizeReportBytes = await readFile("reports/bundle-size.json");
+const bundleSizeReport = JSON.parse(bundleSizeReportBytes);
+const bundleSizeConfig = await readFile("scripts/measure-bundle-size.mjs", "utf8");
 const status = git("status", "--porcelain");
 const diff = git("diff", "--binary", "HEAD");
 await writeFile(join(output, "source.diff"), `${diff}\n`, { flag: "wx" });
@@ -53,13 +57,17 @@ const provenance = {
   node: process.version,
   zlib: process.versions.zlib,
   brotli: process.versions.brotli,
-  rollup: lock.packages["node_modules/rollup"].version,
+  rollup: bundleSizeReport.bundler.version,
+  rollupLock: lock.packages["node_modules/rollup"].version,
   terser: lock.packages["node_modules/terser"].version,
   terserPlugin: lock.packages["node_modules/@rollup/plugin-terser"].version,
   playwright: lock.packages["node_modules/playwright"].version,
   rollupConfig: await readFile("rollup.config.mjs", "utf8"),
   rollupConfigSha256: sha256(await readFile("rollup.config.mjs")),
+  bundleSizeConfig,
+  bundleSizeConfigSha256: sha256(bundleSizeConfig),
   packageLockSha256: sha256(await readFile("package-lock.json")),
+  bundleSizeReportSha256: sha256(bundleSizeReportBytes),
   externalImports: ["@opentelemetry/api", "@opentelemetry/api-logs"],
 };
 await writeJson("provenance.json", provenance);
@@ -96,11 +104,13 @@ const run = {
     browser: browser.environment,
   },
   artifact,
+  bundleSizeReport,
   provenance,
   workload: { startedSpans: browser.started, endedSpans: browser.ended },
   results: [
     ...sizeResults,
     ...browser.results.map((result) => ({ ...result, metric: metricPrefix + result.metric })),
+    ...createBundleScenarioResults(bundleSizeReport, timeUnixNano),
   ],
 };
 await writeJson("raw.json", run);

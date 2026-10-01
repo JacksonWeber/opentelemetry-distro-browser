@@ -4,7 +4,8 @@ Ship a thin distribution: configure the upstream `@opentelemetry/browser-sdk`, a
 Azure Monitor exporter, adopt the upstream browser instrumentations, and publish. M0 is
 single-instance and ES2022 ESM-only, and does not build its own SDK.
 
-Status: published as `@microsoft/opentelemetry-browser`. Three engineering items remain.
+Status: published as `@microsoft/opentelemetry-browser`. Three engineering items remain, and #29
+is in flight.
 
 ## Remaining
 
@@ -19,7 +20,6 @@ Status: published as `@microsoft/opentelemetry-browser`. Three engineering items
 | Pull request | Work |
 | --- | --- |
 | #29 | Page view and browser telemetry correlation through operation IDs |
-| #38 | Browser performance telemetry collection |
 
 ## Shipped
 
@@ -41,6 +41,7 @@ Status: published as `@microsoft/opentelemetry-browser`. Three engineering items
 | Page views | Page view instrumentation, on by default (#17) |
 | Instrumentation entry point | `getInstrumentations()` on `./instrumentations`, each module dynamically imported (#21) |
 | Size harness | `scripts/measure-bundle-size.mjs` (#37) |
+| PR performance harness | Pull-request performance regression reporting and comparison (#38) |
 | Changelog check | CI changelog gate (#35) |
 | Test coverage | End-to-end page view and custom event (#32), context handling (#33) |
 | Release | First alpha published, package renamed (#31, #36) |
@@ -50,7 +51,8 @@ Status: published as `@microsoft/opentelemetry-browser`. Three engineering items
 
 - Remaining upstream instrumentation modules (`navigation-timing`, `resource-timing`, `web-vitals`,
   `user-action`, `console`) stay constructible but opt-in.
-- Offline persistence and sampling go to [M2](M2_PLANNING.md).
+- Sampling goes to [M1](M1_PLANNING.md); offline persistence is owned by
+  [M3](M3_PLANNING.md).
 - Tree-shaking verification and size tuning, gated on the blocking budgets in
   [M1](M1_PLANNING.md).
 - Package provenance and signing, and a release runbook covering rollback, deprecation and hotfix.
@@ -59,4 +61,4 @@ Status: published as `@microsoft/opentelemetry-browser`. Three engineering items
   and browser matrix, plus a telemetry volume and cost review. Owned outside this repository.
 
 Open question: whether page view performance telemetry is built on the upstream `navigation-timing`
-module or emitted from the page view instrumentation (#38 is the in-flight attempt).
+module or emitted from the page view instrumentation.

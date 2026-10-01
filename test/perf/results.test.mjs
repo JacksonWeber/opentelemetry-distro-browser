@@ -14,6 +14,7 @@ import { promisify } from "node:util";
 import { brotliDecompressSync, constants, gzipSync, brotliCompressSync } from "node:zlib";
 import { exportResults } from "../../scripts/perf/export.mjs";
 import {
+  createBundleScenarioResults,
   createPayload,
   measureBundle,
   median,
@@ -49,13 +50,47 @@ function fixture() {
       samples: [20, 30, 10].map((ms) => 10000000 / ms),
     },
   );
+  const bundleSizeReport = {
+    schemaVersion: 1,
+    package: { name: "@microsoft/opentelemetry-browser", version: "0.1.0-test" },
+    bundler: { name: "rollup", version: "4.0.0-test" },
+    scenarios: [
+      {
+        id: "published-root",
+        label: "Published root",
+        group: "entry-point",
+        entryPoint: ".",
+        rawBytes: 4000,
+        gzipBytes: 1500,
+        brotliBytes: 1300,
+      },
+      {
+        id: "everything",
+        label: "Everything",
+        group: "total",
+        entryPoint: ". + ./instrumentations",
+        rawBytes: 8000,
+        gzipBytes: 3000,
+        brotliBytes: 2600,
+      },
+    ],
+  };
+  results.push(...createBundleScenarioResults(bundleSizeReport, timeUnixNano));
   return {
     package: { name: "@microsoft/opentelemetry-browser", version: "0.1.0-test" },
     runId: randomUUID(),
     revision: "a".repeat(40),
     dirty: false,
     artifact,
-    provenance: { rollupConfigSha256: "b".repeat(64), terser: "5.0.0-test" },
+    bundleSizeReport,
+    provenance: {
+      rollupConfigSha256: "b".repeat(64),
+      bundleSizeReportSha256: "c".repeat(64),
+      bundleSizeConfigSha256: "d".repeat(64),
+      rollup: "4.0.0-test",
+      rollupLock: "4.0.0-test",
+      terser: "5.0.0-test",
+    },
     environments: {
       node: { name: "Node.js", version: "24.0.0-test" },
       browser: { name: "Chromium", version: "145.0.0-test" },
@@ -113,6 +148,7 @@ test("job summary escapes freeform metadata and does nothing without a summary p
     const run = fixture();
     run.package.version =
       'test</code><script>alert("x")</script>\n| [link](https://example.com) ` &';
+    run.bundleSizeReport.package.version = run.package.version;
     const path = join(directory, "summary.md");
     await writeJobSummary(run, path);
     const summary = await readFile(path, "utf8");
@@ -158,8 +194,18 @@ test("emits named native OTLP events with exact identity, timestamp, units and t
       assert.equal(event.body, undefined);
       const fields = attrs(event.attributes);
       assert.deepEqual(fields["test.suite.name"], { stringValue: "mot-browser" });
-      assert.deepEqual(fields["benchmark.artifact.sha256"], { stringValue: run.artifact.sha256 });
-      assert.deepEqual(fields["benchmark.artifact.format"], { stringValue: "esm" });
+      const scenario = fields["benchmark.bundle.scenario.id"] !== undefined;
+      assert.deepEqual(fields["benchmark.artifact.sha256"], {
+        stringValue: scenario ? run.provenance.bundleSizeReportSha256 : run.artifact.sha256,
+      });
+      assert.deepEqual(fields["benchmark.artifact.format"], {
+        stringValue: scenario ? "rollup-esm-scenario" : "esm",
+      });
+      assert.deepEqual(fields["benchmark.build.config.sha256"], {
+        stringValue: scenario
+          ? run.provenance.bundleSizeConfigSha256
+          : run.provenance.rollupConfigSha256,
+      });
       assert.ok(Number.isFinite(fields["benchmark.value"].doubleValue));
       assert.match(fields["benchmark.sample_count"].intValue, /^[1-9]\d*$/);
       assert.match(fields["benchmark.operation_count"].intValue, /^[1-9]\d*$/);
@@ -190,6 +236,24 @@ test("emits named native OTLP events with exact identity, timestamp, units and t
   assert.deepEqual(throughput["benchmark.unit"], { stringValue: "operations/s" });
   assert.deepEqual(throughput["benchmark.value"], { doubleValue: 500000 });
   assert.equal(median([1, 4, 2, 3]), 2.5);
+
+  const scenarioRecords = sizes.scopeLogs[0].logRecords.slice(3);
+  assert.equal(scenarioRecords.length, run.bundleSizeReport.scenarios.length * 3);
+  const scenarioFields = attrs(scenarioRecords[1].attributes);
+  assert.deepEqual(scenarioFields["test.case.name"], { stringValue: "bundle_published-root" });
+  assert.deepEqual(scenarioFields["benchmark.metric"], {
+    stringValue: `${metricPrefix}bundle.scenario.published-root.gzip.size`,
+  });
+  assert.deepEqual(scenarioFields["benchmark.value"], { doubleValue: 1500 });
+  assert.deepEqual(scenarioFields["benchmark.bundle.scenario.id"], {
+    stringValue: "published-root",
+  });
+  assert.deepEqual(scenarioFields["benchmark.bundle.entry_point"], { stringValue: "." });
+  assert.deepEqual(scenarioFields["benchmark.compression.method"], { stringValue: "gzip" });
+  assert.deepEqual(scenarioFields["benchmark.compression.level"], { intValue: "9" });
+  assert.deepEqual(scenarioFields["benchmark.artifact.path"], {
+    stringValue: "reports/bundle-size.json",
+  });
 });
 
 test("uses the schema dirty attribute for clean and modified checkouts", () => {
@@ -228,6 +292,13 @@ test("rejects invalid or invented measurements rather than exporting zeros", () 
     (r) => (r.artifact.sha256 = ""),
     (r) => (r.artifact.compression = {}),
     (r) => (r.environments.browser.name = "Node.js"),
+    (r) => (r.bundleSizeReport.scenarios[0].gzipBytes += 1),
+    (r) => (r.bundleSizeReport.scenarios[0].id = "invalid/id"),
+    (r) => (r.bundleSizeReport.bundler.version = "different"),
+    (r) => (r.provenance.rollupLock = "different"),
+    (r) => (r.provenance.rollupConfigSha256 = "B".repeat(64)),
+    (r) => (r.provenance.bundleSizeReportSha256 = "not-a-hash"),
+    (r) => (r.provenance.bundleSizeConfigSha256 = "D".repeat(64)),
   ];
   for (const mutate of mutations) {
     const run = fixture();
@@ -312,7 +383,7 @@ test("workflow binds exact merged commit and explicit variable, without extra up
   assert.equal([...workflow.matchAll(/uses: .*@[0-9a-f]{40}/g)].length, 2);
 });
 
-test("PR validation runs the offline benchmark after Chromium installation and build", async () => {
+test("PR validation runs the offline benchmark after Chromium installation, build, and size", async () => {
   const workflow = await readFile(
     new URL("../../.github/workflows/pr-validation.yml", import.meta.url),
     "utf8",
@@ -320,8 +391,9 @@ test("PR validation runs the offline benchmark after Chromium installation and b
   const tests = workflow.slice(workflow.indexOf("\n  tests:"));
   const install = tests.indexOf("run: npm run test:install-browsers -- --with-deps");
   const build = tests.indexOf("run: npm run build\n");
+  const size = tests.indexOf("run: npm run size\n");
   const measure = tests.indexOf("run: npm run perf\n");
-  assert.ok(install >= 0 && install < build && build < measure);
+  assert.ok(install >= 0 && install < build && build < size && size < measure);
   assert.match(tests, /node-version: \["22", "24"\]/);
   assert.doesNotMatch(tests, /perf:export|SDK_PERF_COLLECTOR_ENDPOINT|continue-on-error/);
 });
@@ -406,7 +478,10 @@ test("CLI preflight failures leave saved runs exportable after correction", asyn
       try {
         const run = fixture();
         const version = run.package.version;
-        if (failure.oversized) run.package.version = "x".repeat(2 * 1024 * 1024);
+        if (failure.oversized) {
+          run.package.version = "x".repeat(2 * 1024 * 1024);
+          run.bundleSizeReport.package.version = run.package.version;
+        }
         const save = async () => {
           await writeFile(join(directory, "raw.json"), JSON.stringify(run));
           await writeFile(join(directory, "payload.json"), JSON.stringify(createPayload(run)));
@@ -424,6 +499,7 @@ test("CLI preflight failures leave saved runs exportable after correction", asyn
         assert.equal(captured.length, previousRequests);
         assert.deepEqual((await readdir(directory)).sort(), ["payload.json", "raw.json"]);
         run.package.version = version;
+        run.bundleSizeReport.package.version = version;
         await save();
         await invoke(endpoint);
         assert.equal(captured.length, previousRequests + 1);
@@ -502,35 +578,33 @@ test("CLI never exports by default and rejects unmerged CI before touching netwo
       );
       assert.equal(captured.length, 0);
     });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
-    test("CLI preserves exact request bytes and receipt, and prevents a second submission", async () => {
-      const directory = await mkdtemp(join(tmpdir(), "browser-perf-"));
-      try {
-        const run = fixture();
-        await writeFile(join(directory, "raw.json"), JSON.stringify(run));
-        await writeFile(join(directory, "payload.json"), JSON.stringify(createPayload(run)));
-        await withCollector(async (endpoint, captured) => {
-          const command = fileURLToPath(new URL("../../scripts/perf/export.mjs", import.meta.url));
-          const args = [command, "--input", directory, "--endpoint", endpoint];
-          const env = { ...process.env, GITHUB_ACTIONS: "false" };
-          await promisify(execFile)(process.execPath, args, { env });
-          assert.equal(captured.length, 1);
-          const body = await readFile(join(directory, "request.json"), "utf8");
-          const attempt = JSON.parse(
-            await readFile(join(directory, "export-attempt.json"), "utf8"),
-          );
-          const receipt = JSON.parse(await readFile(join(directory, "export-result.json"), "utf8"));
-          assert.equal(body, captured[0].data);
-          assert.equal(attempt.requestBytes, Buffer.byteLength(body));
-          assert.equal(attempt.requestSha256, sha256(body));
-          assert.equal(receipt.status, 200);
-          assert.equal(receipt.responseBody, "{}");
-          await assert.rejects(promisify(execFile)(process.execPath, args, { env }), /EEXIST/);
-          assert.equal(captured.length, 1);
-        });
-      } finally {
-        await rm(directory, { recursive: true, force: true });
-      }
+test("CLI preserves exact request bytes and receipt, and prevents a second submission", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "browser-perf-"));
+  try {
+    const run = fixture();
+    await writeFile(join(directory, "raw.json"), JSON.stringify(run));
+    await writeFile(join(directory, "payload.json"), JSON.stringify(createPayload(run)));
+    await withCollector(async (endpoint, captured) => {
+      const command = fileURLToPath(new URL("../../scripts/perf/export.mjs", import.meta.url));
+      const args = [command, "--input", directory, "--endpoint", endpoint];
+      const env = { ...process.env, GITHUB_ACTIONS: "false" };
+      await promisify(execFile)(process.execPath, args, { env });
+      assert.equal(captured.length, 1);
+      const body = await readFile(join(directory, "request.json"), "utf8");
+      const attempt = JSON.parse(await readFile(join(directory, "export-attempt.json"), "utf8"));
+      const receipt = JSON.parse(await readFile(join(directory, "export-result.json"), "utf8"));
+      assert.equal(body, captured[0].data);
+      assert.equal(attempt.requestBytes, Buffer.byteLength(body));
+      assert.equal(attempt.requestSha256, sha256(body));
+      assert.equal(receipt.status, 200);
+      assert.equal(receipt.responseBody, "{}");
+      await assert.rejects(promisify(execFile)(process.execPath, args, { env }), /EEXIST/);
+      assert.equal(captured.length, 1);
     });
   } finally {
     await rm(directory, { recursive: true, force: true });

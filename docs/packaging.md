@@ -57,14 +57,15 @@ not added to the minified byte count.
 Results use the following application-defined metric names under the
 `microsoft.opentelemetry.benchmark.` prefix and the `mot-browser` suite:
 
-| Metric suffix            | Test case        | Unit         | Measurement                                                  |
-| ------------------------ | ---------------- | ------------ | ------------------------------------------------------------ |
-| `bundle.minified.size`   | `bundle_esm`     | By           | Exact file bytes                                             |
-| `bundle.gzip.size`       | `bundle_esm`     | By           | Node zlib gzip, level 9                                      |
-| `bundle.brotli.size`     | `bundle_esm`     | By           | Node Brotli, quality 11                                      |
-| `sdk.init.duration`      | `sdk_init`       | ms           | Median awaited initialization call, after module loading     |
-| `span.record.duration`   | `recording_span` | ms           | Median time for a batch of 10,000 start/end operations       |
-| `span.record.throughput` | `recording_span` | operations/s | Median of each batch's operations divided by elapsed seconds |
+| Metric suffix                                        | Test case        | Unit         | Measurement                                                  |
+| ---------------------------------------------------- | ---------------- | ------------ | ------------------------------------------------------------ |
+| `bundle.minified.size`                               | `bundle_esm`     | By           | Exact file bytes                                             |
+| `bundle.gzip.size`                                   | `bundle_esm`     | By           | Node zlib gzip, level 9                                      |
+| `bundle.brotli.size`                                 | `bundle_esm`     | By           | Node Brotli, quality 11                                      |
+| `bundle.scenario.<id>.<minified\|gzip\|brotli>.size` | `bundle_<id>`    | By           | Independent scenario bytes from `reports/bundle-size.json`   |
+| `sdk.init.duration`                                  | `sdk_init`       | ms           | Median awaited initialization call, after module loading     |
+| `span.record.duration`                               | `recording_span` | ms           | Median time for a batch of 10,000 start/end operations       |
+| `span.record.throughput`                             | `recording_span` | operations/s | Median of each batch's operations divided by elapsed seconds |
 
 Runtime measurements use 15 samples after 5 warmup samples. Initialization excludes SDK module
 loading and shutdown; each iteration shuts down and resets global providers outside the timed
@@ -103,6 +104,10 @@ Every observation carries `benchmark.artifact.path`, `.format`, and `.sha256`,
 `benchmark.build.config.sha256`, and `benchmark.minifier.name`/`.version`.
 Size observations include `benchmark.compression.method` (`none`, `gzip`, or `brotli`);
 compressed observations include `benchmark.compression.level` (9 or 11).
+Scenario observations also carry `benchmark.bundle.scenario.id`, `.label`, and `.group`, plus
+`benchmark.bundle.entry_point`. Their artifact is `reports/bundle-size.json` with format
+`rollup-esm-scenario`; `benchmark.artifact.sha256` identifies that report and
+`benchmark.build.config.sha256` identifies `scripts/measure-bundle-size.mjs`.
 
 ### Publishing measurements
 
