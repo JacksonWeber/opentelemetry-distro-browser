@@ -27,6 +27,8 @@ All notable changes to this package are documented in this file.
 - Populate empty Azure Monitor message bodies with `n/a` before ingestion.
 - Publish minified, gzip, and Brotli measurements for every bundle-size scenario after merged
   pull requests so scenario regressions can be tracked over time.
+- Add absolute size budgets for each published entry point, reported during alpha and
+  enforced starting with beta.
 
 ## 0.1.0-alpha.1 - 2026-09-28
 

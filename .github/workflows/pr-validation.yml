@@ -149,16 +149,18 @@ jobs:
           reports/bundle-size-comparison.md
 
       - name: Publish bundle sizes to the check summary
+        if: ${{ !cancelled() && hashFiles('reports/bundle-size.md') != '' }}
         run: cat reports/bundle-size.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish bundle-size comparison to the check summary
-        if: github.event_name == 'pull_request' && matrix.node-version == '24'
+        if: ${{ !cancelled() && github.event_name == 'pull_request' && matrix.node-version == '24' && hashFiles('reports/bundle-size-comparison.md') != '' }}
         run: cat reports/bundle-size-comparison.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Check package contents
         run: npm pack --dry-run --ignore-scripts
 
       - name: Upload bundle-size reports
+        if: ${{ !cancelled() && hashFiles('reports/bundle-size.json') != '' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bundle-reports-node-${{ matrix.node-version }}

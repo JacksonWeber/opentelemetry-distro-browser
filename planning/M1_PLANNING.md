@@ -38,6 +38,6 @@ milestone.
 | Lifecycle and cleanup | Transactional startup and rollback, per-instance flush and idempotent shutdown, coordinated distribution shutdown, and leak tests for hooks, observers, listeners, timers and subscriptions. | Not started |
 | Coexistence | Diagnose foreign global providers rather than overwriting them, and test duplicate API copies, module federation, iframes, workers and multiple distribution copies. | Not started |
 | Browser support | Declare the npm target and exact supported Chrome, Edge, Firefox and Safari versions, with real-browser acceptance tests. The npm package remains ES2022. | Not started |
-| Bundle constraints | Work item `39720153` owns size reporting and gating. #46 provides report-only base comparison without enforcing thresholds; blocking minified, gzip and Brotli budgets, enforcement, tree-shaking completion, and isolation of optional instrumentations and exporters remain under `39720153`. | In progress |
+| Bundle constraints | Work item `39720153` owns size reporting and gating. #46 provides report-only base comparison. Absolute minified, gzip and Brotli budgets are report-only during alpha and become blocking starting with beta; tree-shaking completion and isolation of optional instrumentations and exporters remain under `39720153`. | In progress |
 
 Open question: whether a server-issued `traceparent` may root the page trace.
