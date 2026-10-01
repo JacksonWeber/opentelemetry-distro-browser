@@ -52,6 +52,7 @@ function harness() {
     { id: 1, name: `coverage-base-${baseSha}`, size_in_bytes: 1000, expired: false },
     { id: 2, name: `coverage-candidate-${headSha}`, size_in_bytes: 1000, expired: false },
   ];
+  const pullRequests = [pr];
   const comments = [];
   const outputs = new Map();
   const core = {
@@ -62,8 +63,15 @@ function harness() {
   const github = {
     paginate: mock.fn(async (route, params) => route(params)),
     rest: {
-      pulls: { get: mock.fn(async () => ({ data: pr })) },
-      repos: { listPullRequestsAssociatedWithCommit: mock.fn(async () => [pr]) },
+      pulls: {
+        get: mock.fn(async ({ pull_number }) => {
+          const data = pullRequests.find((candidate) => candidate.number === pull_number);
+          assert.ok(data, `Unexpected PR number ${pull_number}`);
+          return { data };
+        }),
+        list: mock.fn(async () => pullRequests),
+      },
+      repos: { listPullRequestsAssociatedWithCommit: mock.fn(async () => []) },
       actions: { listWorkflowRunArtifacts: mock.fn(async () => artifacts) },
       issues: {
         listComments: mock.fn(async () => comments),
@@ -77,6 +85,7 @@ function harness() {
     context,
     core,
     pr,
+    pullRequests,
     artifacts,
     comments,
     outputs,
@@ -185,18 +194,82 @@ test("resolves artifact IDs only from the triggering run and current PR commits"
     state.github.rest.actions.listWorkflowRunArtifacts.mock.calls[0].arguments[0].run_id,
     200,
   );
+  assert.equal(state.github.rest.pulls.list.mock.callCount(), 0);
 });
 
-test("resolves fork and Dependabot runs with an empty workflow PR list through GitHub", async () => {
+for (const [name, linked] of [
+  ["empty", []],
+  ["missing", undefined],
+]) {
+  test(`resolves fork PRs when the workflow PR list is ${name}`, async () => {
+    const state = harness();
+    state.context.payload.workflow_run.pull_requests = linked;
+    state.pullRequests.unshift({
+      ...state.pr,
+      number: 41,
+      head: { ...state.pr.head, sha: "c".repeat(40) },
+    });
+    await resolveCoverageReport(state);
+    assert.deepEqual(Object.fromEntries(state.outputs), {
+      "base-artifact": 1,
+      "candidate-artifact": 2,
+      "base-sha": baseSha,
+      "pr-number": 42,
+    });
+    assert.equal(state.github.paginate.mock.calls[0].arguments[0], state.github.rest.pulls.list);
+    assert.deepEqual(state.github.rest.pulls.list.mock.calls[0].arguments[0], {
+      owner: "owner",
+      repo: "browser",
+      state: "open",
+      per_page: 100,
+    });
+    assert.equal(state.github.rest.repos.listPullRequestsAssociatedWithCommit.mock.callCount(), 0);
+    assert.equal(state.github.rest.pulls.get.mock.callCount(), 1);
+    assert.equal(state.github.rest.pulls.get.mock.calls[0].arguments[0].pull_number, 42);
+    assert.equal(state.core.warning.mock.callCount(), 0);
+  });
+}
+
+for (const [name, change] of [
+  ["no matching head", (state) => (state.pr.head.sha = "c".repeat(40))],
+  ["closed PR", (state) => (state.pr.state = "closed")],
+  ["wrong base repository", (state) => (state.pr.base.repo.full_name = "other/browser")],
+  ["multiple matching PRs", (state) => state.pullRequests.push({ ...state.pr, number: 43 })],
+]) {
+  test(`skips the open-PR fallback with a diagnostic for ${name}`, async () => {
+    const state = harness();
+    state.context.payload.workflow_run.pull_requests = [];
+    change(state);
+    await resolveCoverageReport(state);
+    assert.equal(state.outputs.size, 0);
+    assert.equal(state.core.warning.mock.callCount(), 1);
+    assert.match(state.core.warning.mock.calls[0].arguments[0], /no unique open PR/);
+    assert.equal(state.github.rest.actions.listWorkflowRunArtifacts.mock.callCount(), 0);
+  });
+}
+
+test("rechecks the PR head after listing open PRs", async () => {
   const state = harness();
   state.context.payload.workflow_run.pull_requests = [];
+  state.github.rest.pulls.get = mock.fn(async () => ({
+    data: { ...state.pr, head: { ...state.pr.head, sha: "c".repeat(40) } },
+  }));
   await resolveCoverageReport(state);
-  assert.equal(state.outputs.get("pr-number"), 42);
-  assert.equal(
-    state.github.rest.repos.listPullRequestsAssociatedWithCommit.mock.calls[0].arguments[0]
-      .commit_sha,
-    headSha,
-  );
+  assert.equal(state.outputs.size, 0);
+  assert.equal(state.github.rest.pulls.get.mock.callCount(), 1);
+  assert.equal(state.core.warning.mock.callCount(), 1);
+  assert.equal(state.github.rest.actions.listWorkflowRunArtifacts.mock.callCount(), 0);
+});
+
+test("propagates open-PR lookup failures", async () => {
+  const state = harness();
+  state.context.payload.workflow_run.pull_requests = [];
+  state.github.rest.pulls.list = mock.fn(async () => {
+    throw new Error("permission denied");
+  });
+  await assert.rejects(resolveCoverageReport(state), /permission denied/);
+  assert.equal(state.outputs.size, 0);
+  assert.equal(state.github.rest.actions.listWorkflowRunArtifacts.mock.callCount(), 0);
 });
 
 for (const [name, change] of [
@@ -245,6 +318,7 @@ for (const [name, change] of [
   [
     "ambiguous PR association",
     (state) => {
+      state.pullRequests.push({ ...state.pr, number: 43 });
       state.context.payload.workflow_run.pull_requests.push({ number: 43 });
     },
   ],

@@ -83,16 +83,21 @@ function isCurrentPullRequest(pr, run, context) {
   );
 }
 
-/** Resolve PR identity from GitHub, never from PR-produced artifact contents. */
+/**
+ * Resolve PR identity from GitHub, never from PR-produced artifact contents.
+ * Missing workflow PR links are resolved by matching open base-repository PRs by head SHA.
+ */
 export async function resolveCoverageReport({ github, context, core }) {
   const run = validateRun(context);
   const linked = run.pull_requests?.length
     ? run.pull_requests
-    : await github.paginate(github.rest.repos.listPullRequestsAssociatedWithCommit, {
-        ...context.repo,
-        commit_sha: run.head_sha,
-        per_page: 100,
-      });
+    : (
+        await github.paginate(github.rest.pulls.list, {
+          ...context.repo,
+          state: "open",
+          per_page: 100,
+        })
+      ).filter((pr) => isCurrentPullRequest(pr, run, context));
   const matches = [];
   for (const number of new Set(linked.map((pr) => pr.number))) {
     assert(Number.isSafeInteger(number) && number > 0, "Invalid associated PR number");
