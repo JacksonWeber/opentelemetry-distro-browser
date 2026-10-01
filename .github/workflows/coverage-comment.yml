@@ -41,7 +41,8 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ steps.report.outputs.base-artifact }}
-          path: coverage-input/base
+          path: ${{ runner.temp }}/coverage-archives/base
+          skip-decompress: true
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -50,9 +51,16 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ steps.report.outputs.candidate-artifact }}
-          path: coverage-input/candidate
+          path: ${{ runner.temp }}/coverage-archives/candidate
+          skip-decompress: true
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate archives and read bounded summaries
+        if: steps.report.outputs.pr-number != ''
+        run: |
+          python scripts/coverage_artifact.py "$RUNNER_TEMP/coverage-archives/base" "$RUNNER_TEMP/coverage-input/base"
+          python scripts/coverage_artifact.py "$RUNNER_TEMP/coverage-archives/candidate" "$RUNNER_TEMP/coverage-input/candidate"
 
       - name: Render and post coverage comparison
         if: steps.report.outputs.pr-number != ''
@@ -67,6 +75,6 @@ jobs:
               github, context, core,
               prNumber: Number(process.env.COVERAGE_PR_NUMBER),
               baseSha: process.env.COVERAGE_BASE_SHA,
-              baseline: await readCoverageSummary("coverage-input/base/coverage-summary.json"),
-              candidate: await readCoverageSummary("coverage-input/candidate/coverage-summary.json")
+              baseline: await readCoverageSummary(`${process.env.RUNNER_TEMP}/coverage-input/base/coverage-summary.json`),
+              candidate: await readCoverageSummary(`${process.env.RUNNER_TEMP}/coverage-input/candidate/coverage-summary.json`)
             });

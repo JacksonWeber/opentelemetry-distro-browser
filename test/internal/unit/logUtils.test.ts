@@ -5,7 +5,9 @@ import { describe, expect, it } from "vitest";
 import { logToEnvelope } from "../../../src/exporter/logUtils.js";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../../src/shared/constants.js";
 import { TEST_INSTRUMENTATION_KEY as instrumentationKey } from "../../fixtures/azureMonitor.js";
-import { createReadableLogRecord as makeLog } from "../../fixtures/telemetry.js";
+import { createReadableLogRecord as makeLog, createSpanContext } from "../../fixtures/telemetry.js";
+
+const spanContext = createSpanContext();
 
 describe("Azure Monitor log envelope mapping", () => {
   it.each([
@@ -219,7 +221,7 @@ describe("Azure Monitor log envelope mapping", () => {
         baseType: "PageViewData",
         baseData: {
           ver: 2,
-          id: spanContext.traceId,
+          id: "0123456789abcdef0123456789abcdef",
           name: "Cart",
           url: "https://shop.example.test/cart",
           duration: "00:00:00.4252500",

@@ -55,7 +55,7 @@
     "test:watch": "vitest",
     "test:coverage": "npm run test:unit -- --coverage",
     "test:build": "node --test test/build/package.test.mjs test/build/size-harness.test.mjs",
-    "test:report": "node --test test/report/coverage.test.mjs",
+    "test:report": "node --test test/report/coverage.test.mjs && python -m unittest discover -s test/report -p *_test.py",
     "api:check": "api-extractor run && api-extractor run --config api-extractor.instrumentations.json",
     "api:update": "npm run build && api-extractor run --local && api-extractor run --local --config api-extractor.instrumentations.json",
     "size": "node scripts/measure-bundle-size.mjs",
