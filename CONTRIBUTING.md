@@ -44,25 +44,6 @@ npm registry.
 - Update documentation when public behavior or setup changes.
 - Keep the repository planning, API reports, and README documents aligned with the implementation.
 
-## Test Fixtures and Coverage
-
-Shared utilities in `test/fixtures` provide typed telemetry records, in-memory exporters,
-fake clocks, deterministic IDs and sessions, and an Azure Monitor ingestion mock. Use the
-mock's `senderOptions` with `Sender`, or its `connectionString` and `fetch` stub with the
-exporters. Await pending sends and beacon validation before finishing a test. Fixture TSDoc
-describes cleanup ownership and fake-clock usage.
-
-`npm run test:coverage` measures Chromium unit coverage for `src` and writes text, LCOV and
-JSON summary reports. `npm run test:report` checks the coverage comparison and comment publisher.
-PR validation measures both the exact PR base and the candidate on Node 24, then uploads the
-reports for 14 days. Coverage changes are informational and do not fail validation.
-
-The `Coverage comment` workflow updates one PR comment with counts and percentage-point
-changes. It runs trusted reporting code from the default branch, validates artifact data, and
-skips stale or incomplete comparisons. It does not execute PR code with write permissions.
-The publisher must first reach the default branch before it can comment on subsequent runs,
-including fork and Dependabot PRs.
-
 ## Performance Workflow
 
 PR validation runs `npm run perf` after building the bundles in the Node.js 22 and 24 Chromium
