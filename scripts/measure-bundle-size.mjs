@@ -16,6 +16,19 @@ const temporaryDirectory = resolve(reportsDirectory, ".size-inputs");
 const packageJson = JSON.parse(await readFile(resolve(root, "package.json"), "utf8"));
 const packageName = packageJson.name;
 
+export const entryPointBudgets = {
+  ".": {
+    rawBytes: 115 * 1024,
+    gzipBytes: 34 * 1024,
+    brotliBytes: 30 * 1024,
+  },
+  "./instrumentations": {
+    rawBytes: 64 * 1024,
+    gzipBytes: 24 * 1024,
+    brotliBytes: 22 * 1024,
+  },
+};
+
 const API_IMPORTS = `
 import { context, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
@@ -174,6 +187,16 @@ function validateScenarios() {
     if (!coveredEntries.has(entryPoint)) {
       throw new Error(`Published JavaScript entry point ${entryPoint} has no size scenario.`);
     }
+    if (!entryPointBudgets[entryPoint]) {
+      throw new Error(`Published JavaScript entry point ${entryPoint} has no size budget.`);
+    }
+  }
+  for (const entryPoint of Object.keys(entryPointBudgets)) {
+    if (!executablePublishedEntryPoints.includes(entryPoint)) {
+      throw new Error(
+        `Size budget ${entryPoint} does not match a published JavaScript entry point.`,
+      );
+    }
   }
 }
 
@@ -236,6 +259,43 @@ async function measureScenario(scenario) {
 const formatKilobytes = (bytes) => `${(bytes / 1024).toFixed(2)} kB`;
 const formatDelta = (bytes) => `${bytes >= 0 ? "+" : "-"}${formatKilobytes(Math.abs(bytes))}`;
 
+export function getBudgetPolicy(version) {
+  const prereleaseChannel = version.match(/^[^-]+-([^.+]+)/)?.[1];
+  return {
+    mode: prereleaseChannel === "alpha" ? "report-only" : "blocking",
+    blockingFrom: "beta",
+  };
+}
+
+export function addBudgetResults(measurements, budgets = entryPointBudgets) {
+  return measurements.map((measurement) => {
+    const budget = budgets[measurement.entryPoint];
+    if (measurement.group !== "entry-point" || !budget) return measurement;
+    const exceededMetrics = ["rawBytes", "gzipBytes", "brotliBytes"].filter(
+      (metric) => measurement[metric] > budget[metric],
+    );
+    return {
+      ...measurement,
+      budget,
+      budgetStatus: exceededMetrics.length === 0 ? "pass" : "exceeded",
+      exceededMetrics,
+    };
+  });
+}
+
+export function getBudgetViolations(report) {
+  return report.scenarios.filter(({ budgetStatus }) => budgetStatus === "exceeded");
+}
+
+export function enforceBundleSizeBudgets(report) {
+  const violations = getBudgetViolations(report);
+  if (report.budgetPolicy.mode === "blocking" && violations.length > 0) {
+    throw new Error(
+      `Bundle size budgets exceeded: ${violations.map(({ entryPoint }) => entryPoint).join(", ")}`,
+    );
+  }
+}
+
 export function addDeltas(measurements) {
   const byId = new Map(measurements.map((measurement) => [measurement.id, measurement]));
   return measurements.map((measurement) => {
@@ -269,6 +329,19 @@ function markdownTable(rows, includeBaseline = true) {
   return lines;
 }
 
+function budgetMarkdownTable(rows) {
+  const lines = [
+    "| Entry point | Minified | Budget | Gzip | Budget | Brotli | Budget | Result |",
+    "|---|---:|---:|---:|---:|---:|---:|---|",
+  ];
+  for (const row of rows) {
+    lines.push(
+      `| ${row.entryPoint} | ${formatKilobytes(row.rawBytes)} | ${formatKilobytes(row.budget.rawBytes)} | ${formatKilobytes(row.gzipBytes)} | ${formatKilobytes(row.budget.gzipBytes)} | ${formatKilobytes(row.brotliBytes)} | ${formatKilobytes(row.budget.brotliBytes)} | ${row.budgetStatus === "pass" ? "Pass" : `Exceeded (${row.exceededMetrics.join(", ")})`} |`,
+    );
+  }
+  return lines;
+}
+
 export function createMarkdownReport(report) {
   const byGroup = (group) => report.scenarios.filter((scenario) => scenario.group === group);
   const lines = [
@@ -293,7 +366,11 @@ export function createMarkdownReport(report) {
     "",
     "## Published entry points",
     "",
-    ...markdownTable(byGroup("entry-point"), false),
+    `Budget policy: **${report.budgetPolicy.mode}**. Alpha releases report violations; beta,`,
+    "release-candidate, and stable releases fail the size command when an absolute budget is",
+    "exceeded.",
+    "",
+    ...budgetMarkdownTable(byGroup("entry-point")),
     "",
     "The metadata-only `./package.json` export is excluded because it is not executable browser",
     "JavaScript.",
@@ -318,7 +395,8 @@ export function createReport(measurements) {
     bundler: { name: "rollup", version: rollupVersion },
     target: "browser ES module",
     compression: "gzip level 9 and Brotli quality 11, measured per emitted JavaScript chunk",
-    scenarios: addDeltas(measurements),
+    budgetPolicy: getBudgetPolicy(packageJson.version),
+    scenarios: addBudgetResults(addDeltas(measurements)),
   };
 }
 
@@ -342,6 +420,7 @@ export async function run() {
     );
     await writeFile(resolve(reportsDirectory, "bundle-size.md"), markdown, "utf8");
     process.stdout.write(markdown);
+    enforceBundleSizeBudgets(report);
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true });
   }

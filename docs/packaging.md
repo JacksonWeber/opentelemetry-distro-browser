@@ -39,6 +39,19 @@ also generates `reports/bundle-stats.html` for dependency analysis. CI renders t
 in each Node job's check summary and uploads all three files as build artifacts.
 `npm run size:report` remains an alias for `npm run size`.
 
+Every executable published entry point has absolute minified, gzip and Brotli budgets:
+
+| Entry point          | Minified |  Gzip | Brotli |
+| -------------------- | -------: | ----: | -----: |
+| `.`                  |   115 kB | 34 kB |  30 kB |
+| `./instrumentations` |    64 kB | 24 kB |  22 kB |
+
+The generated JSON and Markdown reports show the measured values, ceilings and result for each
+entry point. During alpha releases, violations are report-only so the baselines can stabilize.
+Starting with beta, `npm run size` exits unsuccessfully when any absolute budget is exceeded; the
+same gate therefore blocks CI for beta, release-candidate and stable versions. The separate PR-base
+comparison remains informational and does not replace the absolute gate.
+
 ## Performance measurements
 
 `npm run build && npm run size && npm run perf` measures the actual production
