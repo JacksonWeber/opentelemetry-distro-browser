@@ -1,0 +1,7 @@
+{
+  "products": [
+    { "id": "surface-studio", "name": "Surface Studio", "price": 3499 },
+    { "id": "ergonomic-keyboard", "name": "Ergonomic Keyboard", "price": 129 },
+    { "id": "azure-mug", "name": "Azure Mug", "price": 24 }
+  ]
+}

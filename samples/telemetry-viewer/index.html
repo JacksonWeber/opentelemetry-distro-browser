@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Interactive validation site for the Microsoft OpenTelemetry browser distribution"
+    />
+    <title>Contoso Store | OpenTelemetry validation</title>
+  </head>
+  <body>
+    <div class="site-shell">
+      <header class="site-header">
+        <a class="brand" href="/" data-route="/">
+          <span class="brand-mark" aria-hidden="true">C</span>
+          <span>
+            <strong>Contoso Store</strong>
+            <small>Telemetry lab</small>
+          </span>
+        </a>
+        <nav aria-label="Primary navigation">
+          <a href="/" data-route="/">Overview</a>
+          <a href="/catalog" data-route="/catalog">Catalog</a>
+          <a href="/checkout" data-route="/checkout">Checkout</a>
+          <a href="/settings" data-route="/settings">Settings</a>
+        </nav>
+        <div class="sdk-status"><span></span> SDK connected</div>
+      </header>
+
+      <main id="app" tabindex="-1"></main>
+    </div>
+
+    <aside class="viewer" aria-label="Telemetry viewer">
+      <header class="viewer-header">
+        <div>
+          <p class="eyebrow">Live diagnostics</p>
+          <h2>Telemetry viewer</h2>
+        </div>
+        <div class="viewer-actions">
+          <button id="capture-toggle" class="secondary" type="button">Pause capture</button>
+          <button id="download-telemetry" class="secondary" type="button">Export JSON</button>
+          <button id="clear-telemetry" class="secondary danger" type="button">Clear</button>
+        </div>
+      </header>
+
+      <div class="viewer-summary" aria-label="Telemetry counts">
+        <button class="summary-card selected" type="button" data-kind="all" aria-pressed="true">
+          <span id="total-count">0</span><small>All signals</small>
+        </button>
+        <button class="summary-card" type="button" data-kind="span" aria-pressed="false">
+          <span id="span-count">0</span><small>Spans</small>
+        </button>
+        <button class="summary-card" type="button" data-kind="log" aria-pressed="false">
+          <span id="log-count">0</span><small>Logs</small>
+        </button>
+      </div>
+      <output id="retention-status" class="retention-status" aria-live="polite" hidden></output>
+
+      <label class="search">
+        <span class="visually-hidden">Search telemetry</span>
+        <input
+          id="telemetry-search"
+          type="search"
+          placeholder="Filter by name, trace ID, or content"
+        />
+      </label>
+
+      <div class="viewer-content">
+        <section class="event-list-panel" aria-label="Telemetry events">
+          <div class="event-columns" aria-hidden="true">
+            <span>Signal</span><span>Name</span><span>Time</span>
+          </div>
+          <div id="event-list" class="event-list"></div>
+          <div id="empty-state" class="empty-state">
+            <strong>No telemetry captured yet</strong>
+            <span>Use the site controls to create spans and logs.</span>
+          </div>
+        </section>
+        <section id="event-details" class="event-details" aria-label="Selected telemetry details">
+          <div class="details-placeholder">
+            <strong>Select a telemetry item</strong>
+            <span>Its complete exported payload will appear here.</span>
+          </div>
+        </section>
+      </div>
+    </aside>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

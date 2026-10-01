@@ -8,19 +8,34 @@
     "npm": ">=10"
   },
   "scripts": {
-    "build": "npm run build:azure-monitor && npm run build:console && npm run build:otlp",
+    "prebuild": "npm run build:local-package",
+    "build": "vite build azure-monitor && vite build console && vite build otlp && node ../scripts/write-telemetry-viewer-build-info.mjs && vite build telemetry-viewer",
+    "prebuild:azure-monitor": "npm run build:local-package",
     "build:azure-monitor": "vite build azure-monitor",
+    "prebuild:console": "npm run build:local-package",
     "build:console": "vite build console",
+    "prebuild:otlp": "npm run build:local-package",
     "build:otlp": "vite build otlp",
+    "prebuild:telemetry-viewer": "npm run prepare:telemetry-viewer",
+    "build:telemetry-viewer": "vite build telemetry-viewer",
+    "build:local-package": "npm --prefix .. run build",
+    "predev:azure-monitor": "npm run build:local-package",
     "dev:azure-monitor": "vite azure-monitor",
+    "predev:console": "npm run build:local-package",
     "dev:console": "vite console",
+    "predev:otlp": "npm run build:local-package",
     "dev:otlp": "vite otlp",
+    "predev:telemetry-viewer": "npm run prepare:telemetry-viewer",
+    "dev:telemetry-viewer": "vite telemetry-viewer",
+    "prepare:telemetry-viewer": "npm run build:local-package && node ../scripts/write-telemetry-viewer-build-info.mjs",
+    "pretypecheck": "npm run build:local-package",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@microsoft/opentelemetry-browser": "0.1.0-alpha.1",
+    "@microsoft/opentelemetry-browser": "file:..",
     "@opentelemetry/api": "1.9.1",
     "@opentelemetry/api-logs": "0.222.0",
+    "@opentelemetry/core": "2.11.0",
     "@opentelemetry/exporter-logs-otlp-http": "0.222.0",
     "@opentelemetry/exporter-trace-otlp-http": "0.222.0",
     "@opentelemetry/resources": "2.11.0",
@@ -28,6 +43,7 @@
     "@opentelemetry/sdk-trace-base": "2.11.0"
   },
   "devDependencies": {
+    "@types/node": "^22.20.2",
     "typescript": "~5.9.3",
     "vite": "8.2.2"
   }
