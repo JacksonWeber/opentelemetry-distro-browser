@@ -92,6 +92,27 @@ describe("Azure Monitor log envelope mapping", () => {
     });
   });
 
+  it.each([undefined, null, ""])('maps an empty message body to "n/a": %s', (body) => {
+    const envelope = logToEnvelope(makeLog({ body }), instrumentationKey);
+
+    expect(envelope.data).toEqual({
+      baseType: "MessageData",
+      baseData: {
+        ver: 2,
+        message: "n/a",
+        severityLevel: undefined,
+        properties: undefined,
+        measurements: undefined,
+      },
+    });
+  });
+
+  it.each([0, false])("preserves a valid falsy message body: %s", (body) => {
+    const envelope = logToEnvelope(makeLog({ body }), instrumentationKey);
+
+    expect(envelope.data.baseData).toMatchObject({ message: String(body) });
+  });
+
   it("maps browser.page_view to PageViewData", () => {
     const envelope = logToEnvelope(
       makeLog({

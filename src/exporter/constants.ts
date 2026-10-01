@@ -21,3 +21,5 @@ export const EXCEPTION_STACKTRACE = "exception.stacktrace";
 export const EXCEPTION_TYPE = "exception.type";
 export const NAVIGATION_DURATION = "browser.navigation.duration";
 export const NAVIGATION_EVENT_NAME = "browser.navigation";
+
+export const DEFAULT_LOG_MESSAGE = "n/a";
