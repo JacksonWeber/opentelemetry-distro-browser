@@ -11,6 +11,7 @@ import {
 import {
   BatchSpanProcessor,
   InMemorySpanExporter,
+  type IdGenerator,
   type ReadableSpan,
 } from "@opentelemetry/sdk-trace-base";
 import { createDeterministicIdGenerator } from "./ids.js";
@@ -52,9 +53,13 @@ export function createInMemoryPipeline() {
   };
 }
 
-/** Fresh typed records with stable defaults. Supply a context for correlated or unique records. */
-export function createSpanContext(): SpanContext {
-  const ids = createDeterministicIdGenerator();
+/**
+ * Stable defaults without shared global state. Reuse a test-local generator for unique contexts,
+ * or reuse a context in record overrides for intentional correlation.
+ */
+export function createSpanContext(
+  ids: IdGenerator = createDeterministicIdGenerator(),
+): SpanContext {
   return { traceId: ids.generateTraceId(), spanId: ids.generateSpanId(), traceFlags: 1 };
 }
 

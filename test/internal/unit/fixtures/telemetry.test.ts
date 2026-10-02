@@ -12,9 +12,36 @@ import {
   createInMemoryPipeline,
   createReadableLogRecord,
   createReadableSpan,
+  createSpanContext,
 } from "../../../fixtures/telemetry.js";
 
 describe("in-memory telemetry fixtures", () => {
+  it("generates unique contexts from a shared generator and repeats per test", () => {
+    const ids = createDeterministicIdGenerator();
+    const first = createSpanContext(ids);
+    const second = createSpanContext(ids);
+    expect(second.traceId).not.toBe(first.traceId);
+    expect(second.spanId).not.toBe(first.spanId);
+
+    const repeatedIds = createDeterministicIdGenerator();
+    expect(createSpanContext(repeatedIds)).toEqual(first);
+    expect(createSpanContext(repeatedIds)).toEqual(second);
+    expect(createSpanContext()).toEqual(first);
+    expect(createSpanContext()).toEqual(first);
+  });
+
+  it("supports independent records and explicit span-log correlation", () => {
+    const ids = createDeterministicIdGenerator();
+    const spanContext = createSpanContext(ids);
+    const logContext = createSpanContext(ids);
+    const span = createReadableSpan({ spanContext: () => spanContext });
+    const independentLog = createReadableLogRecord({ spanContext: logContext });
+    const correlatedLog = createReadableLogRecord({ spanContext });
+    expect(independentLog.spanContext).toEqual(logContext);
+    expect(independentLog.spanContext).not.toEqual(span.spanContext());
+    expect(correlatedLog.spanContext).toEqual(span.spanContext());
+  });
+
   it("flushes queued spans with the fake clock and leaves no pending timers", async () => {
     const clock = installFakeClock();
     const pipeline = createInMemoryPipeline();

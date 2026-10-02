@@ -6,15 +6,17 @@ import { describe, expect, it } from "vitest";
 import { spanToEnvelope } from "../../../src/exporter/spanUtils.js";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../../src/shared/constants.js";
 import { TEST_INSTRUMENTATION_KEY as instrumentationKey } from "../../fixtures/azureMonitor.js";
-import { createReadableSpan as makeSpan } from "../../fixtures/telemetry.js";
+import { createReadableSpan as makeSpan, createSpanContext } from "../../fixtures/telemetry.js";
 
-const spanContext = makeSpan().spanContext();
-const parentSpanContext = makeSpan().parentSpanContext;
+const spanContext = createSpanContext();
+const parentSpanContext = { ...spanContext, spanId: "0000000000000002" };
 
 describe("Azure Monitor span envelope mapping", () => {
   it("maps an HTTP client span to RemoteDependencyData", () => {
     const envelope = spanToEnvelope(
       makeSpan({
+        spanContext: () => spanContext,
+        parentSpanContext,
         status: { code: SpanStatusCode.ERROR },
         attributes: {
           "http.request.method": "GET",
@@ -37,7 +39,7 @@ describe("Azure Monitor span envelope mapping", () => {
       tags: {
         "ai.internal.sdkVersion": `mot${OPENTELEMETRY_BROWSER_VERSION}`,
         "ai.operation.id": spanContext.traceId,
-        "ai.operation.parentId": parentSpanContext?.spanId,
+        "ai.operation.parentId": parentSpanContext.spanId,
         "ai.cloud.role": "browser-store",
       },
       ver: 1,
@@ -63,6 +65,7 @@ describe("Azure Monitor span envelope mapping", () => {
   it("maps a server span to RequestData", () => {
     const envelope = spanToEnvelope(
       makeSpan({
+        spanContext: () => spanContext,
         name: "GET /checkout",
         kind: SpanKind.SERVER,
         attributes: {
@@ -87,6 +90,16 @@ describe("Azure Monitor span envelope mapping", () => {
         measurements: undefined,
       },
     });
+  });
+
+  it("omits the parent tag for a root span", () => {
+    const envelope = spanToEnvelope(
+      makeSpan({ spanContext: () => spanContext, parentSpanContext: undefined }),
+      instrumentationKey,
+    );
+
+    expect(envelope.tags["ai.operation.id"]).toBe(spanContext.traceId);
+    expect(envelope.tags).not.toHaveProperty("ai.operation.parentId");
   });
 
   it("includes the day component for long span durations", () => {

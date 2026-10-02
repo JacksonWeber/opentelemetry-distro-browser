@@ -25,6 +25,7 @@ describe("Azure Monitor log envelope mapping", () => {
     const envelope = logToEnvelope(
       makeLog({
         eventName,
+        spanContext,
         body: "Checkout",
         attributes: {
           "browser.page_view.id": id,
@@ -202,11 +203,12 @@ describe("Azure Monitor log envelope mapping", () => {
   it.each(["browser.page_view.duration", "browser.navigation.duration"])(
     "maps browser.page_view to PageViewData using %s",
     (durationAttribute) => {
+      const pageViewId = "0123456789abcdef0123456789abcdef";
       const envelope = logToEnvelope(
         makeLog({
           eventName: "browser.page_view",
           attributes: {
-            "browser.page_view.id": "0123456789abcdef0123456789abcdef",
+            "browser.page_view.id": pageViewId,
             "browser.page_view.name": "Cart",
             [durationAttribute]: 425.25,
             "browser.page_view.referrer": "https://shop.example.test/products",
@@ -221,7 +223,7 @@ describe("Azure Monitor log envelope mapping", () => {
         baseType: "PageViewData",
         baseData: {
           ver: 2,
-          id: "0123456789abcdef0123456789abcdef",
+          id: pageViewId,
           name: "Cart",
           url: "https://shop.example.test/cart",
           duration: "00:00:00.4252500",
@@ -237,6 +239,7 @@ describe("Azure Monitor log envelope mapping", () => {
     const envelope = logToEnvelope(
       makeLog({
         eventName: "browser.navigation",
+        spanContext,
         attributes: {
           "url.full": "https://shop.example.test/cart",
           "browser.navigation.duration": 425.25,
