@@ -8,6 +8,7 @@ All notable changes to this package are documented in this file.
 
 - Add shared deterministic test fixtures and informational PR coverage comparisons.
 - Promote the size harness into a repository tool
+- Add a configurable SDK loader snippet generator that requires an explicit browser bundle URL.
 - Map page view ID and referrer to Azure Monitor envelopes
 - Add an interactive storefront sample with local span and log exporters and a built-in telemetry
   viewer.

@@ -27,6 +27,11 @@ export const entryPointBudgets = {
     gzipBytes: 24 * 1024,
     brotliBytes: 22 * 1024,
   },
+  "./snippet": {
+    rawBytes: 2 * 1024,
+    gzipBytes: 1 * 1024,
+    brotliBytes: 1 * 1024,
+  },
 };
 
 const API_IMPORTS = `
@@ -134,6 +139,14 @@ const publishedInstrumentationsScenario = {
   code: `import * as publishedInstrumentations from "${packageName}/instrumentations";\n${sink("publishedInstrumentations")}`,
 };
 
+const publishedSnippetScenario = {
+  id: "published-snippet",
+  label: "Published snippet generator",
+  group: "entry-point",
+  entryPoint: "./snippet",
+  code: `import * as publishedSnippet from "${packageName}/snippet";\n${sink("publishedSnippet")}`,
+};
+
 const everythingScenario = {
   id: "everything",
   label: "Distribution, exporters, loader, and every instrumentation",
@@ -160,6 +173,7 @@ export const scenarios = [
   exporterScenario,
   publishedRootScenario,
   publishedInstrumentationsScenario,
+  publishedSnippetScenario,
   ...instrumentationScenarios,
   everythingScenario,
 ];

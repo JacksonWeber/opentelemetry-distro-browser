@@ -74,4 +74,20 @@ export default [
       format: "es",
     },
   },
+  {
+    input: "src/snippet.ts",
+    plugins: [typescript({ tsconfig: "./tsconfig.src.json" })],
+    output: {
+      ...esmOutput,
+      file: "dist/esm/snippet.js",
+    },
+  },
+  {
+    input: "src/snippet.ts",
+    plugins: [dts({ tsconfig: "./tsconfig.src.json" })],
+    output: {
+      file: "dist/esm/snippet.d.ts",
+      format: "es",
+    },
+  },
 ];

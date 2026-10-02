@@ -94,6 +94,12 @@ test("the package exposes only ESM entry points without legacy entry fields", ()
         default: "./dist/esm/instrumentations.js",
       },
     },
+    "./snippet": {
+      import: {
+        types: "./dist/esm/snippet.d.ts",
+        default: "./dist/esm/snippet.js",
+      },
+    },
     "./package.json": "./package.json",
   });
   assert.equal(pkg.types, pkg.exports["."].import.types);
@@ -110,6 +116,9 @@ test("the build produces only ESM bundles, declarations, and source maps", async
     "instrumentations.d.ts",
     "instrumentations.js",
     "instrumentations.js.map",
+    "snippet.d.ts",
+    "snippet.js",
+    "snippet.js.map",
   ]);
 });
 
