@@ -409,6 +409,29 @@ test("updates the existing bot comment instead of creating duplicates", async ()
   assert.equal(state.github.rest.issues.updateComment.mock.calls[0].arguments[0].comment_id, 99);
 });
 
+for (const ids of [
+  [98, 99],
+  [99, 98],
+]) {
+  test(`updates the newest matching bot comment in API order ${ids}`, async () => {
+    const state = harness();
+    state.comments.push(
+      ...ids.map((id) => ({
+        id,
+        user: { login: "github-actions[bot]" },
+        body: `${marker}\n<!-- coverage-run:199:1 -->`,
+      })),
+      { id: 100, user: { login: "contributor" }, body: marker },
+      { id: 101, user: { login: "github-actions[bot]" }, body: "Unrelated comment" },
+    );
+    await postCoverageComment(state);
+    assert.equal(state.github.rest.issues.createComment.mock.callCount(), 0);
+    assert.equal(state.github.rest.issues.updateComment.mock.callCount(), 1);
+    assert.equal(state.github.rest.issues.updateComment.mock.calls[0].arguments[0].comment_id, 99);
+    assert.equal(state.core.summary.write.mock.callCount(), 1);
+  });
+}
+
 test("does not modify a user's comment containing the marker", async () => {
   const state = harness();
   state.comments.push({ id: 99, user: { login: "contributor" }, body: marker });
@@ -430,6 +453,25 @@ for (const version of ["201:1", "200:2"]) {
     assert.equal(state.github.rest.issues.updateComment.mock.callCount(), 0);
     assert.equal(state.core.warning.mock.callCount(), 1);
   });
+
+  for (const newerReportId of [98, 99]) {
+    test(`preserves newer report ${version} in duplicate comment ${newerReportId}`, async () => {
+      const state = harness();
+      state.comments.push(
+        ...[98, 99].map((id) => ({
+          id,
+          user: { login: "github-actions[bot]" },
+          body: `${marker}\n<!-- coverage-run:${id === newerReportId ? version : "199:1"} -->`,
+        })),
+      );
+      await postCoverageComment(state);
+      assert.equal(state.github.rest.issues.createComment.mock.callCount(), 0);
+      assert.equal(state.github.rest.issues.updateComment.mock.callCount(), 0);
+      assert.equal(state.core.warning.mock.callCount(), 1);
+      assert.match(state.core.warning.mock.calls[0].arguments[0], /newer run has already reported/);
+      assert.equal(state.core.summary.write.mock.callCount(), 0);
+    });
+  }
 }
 
 for (const [name, change] of [

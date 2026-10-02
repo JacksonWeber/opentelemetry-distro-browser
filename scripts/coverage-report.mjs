@@ -160,15 +160,21 @@ export async function postCoverageComment({
     issue_number: prNumber,
     per_page: 100,
   });
-  const existing = comments.find(
-    (comment) => comment.user?.login === "github-actions[bot]" && comment.body?.includes(marker),
-  );
-  const previous = existing?.body.match(/<!-- coverage-run:(\d+):(\d+) -->/);
-  if (
-    previous &&
-    (Number(previous[1]) > run.id ||
-      (Number(previous[1]) === run.id && Number(previous[2]) > run.run_attempt))
-  ) {
+  const reports = comments
+    .filter(
+      (comment) => comment.user?.login === "github-actions[bot]" && comment.body?.includes(marker),
+    )
+    .sort((a, b) => b.id - a.id);
+  const existing = reports[0];
+  const hasNewerReport = reports.some((comment) => {
+    const previous = comment.body.match(/<!-- coverage-run:(\d+):(\d+) -->/);
+    return (
+      previous &&
+      (Number(previous[1]) > run.id ||
+        (Number(previous[1]) === run.id && Number(previous[2]) > run.run_attempt))
+    );
+  });
+  if (hasNewerReport) {
     core.warning("Coverage comment skipped: a newer run has already reported.");
     return;
   }
