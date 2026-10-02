@@ -18,6 +18,12 @@
         "default": "./dist/esm/instrumentations.js"
       }
     },
+    "./snippet": {
+      "import": {
+        "types": "./dist/esm/snippet.d.ts",
+        "default": "./dist/esm/snippet.js"
+      }
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -55,8 +61,8 @@
     "test:watch": "vitest",
     "test:coverage": "npm run test:unit -- --coverage",
     "test:build": "node --test test/build/package.test.mjs test/build/size-harness.test.mjs",
-    "api:check": "api-extractor run && api-extractor run --config api-extractor.instrumentations.json",
-    "api:update": "npm run build && api-extractor run --local && api-extractor run --local --config api-extractor.instrumentations.json",
+    "api:check": "api-extractor run && api-extractor run --config api-extractor.instrumentations.json && api-extractor run --config api-extractor.snippet.json",
+    "api:update": "npm run build && api-extractor run --local && api-extractor run --local --config api-extractor.instrumentations.json && api-extractor run --local --config api-extractor.snippet.json",
     "size": "node scripts/measure-bundle-size.mjs",
     "size:compare": "node scripts/compare-bundle-size.mjs",
     "size:report": "npm run size",
