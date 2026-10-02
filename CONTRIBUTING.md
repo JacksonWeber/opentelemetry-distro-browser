@@ -24,8 +24,10 @@ information, see the
 ## Development Setup
 
 1. Install a [Node.js](https://nodejs.org/) version supported by `package.json`.
-2. Install dependencies and Chromium.
-3. Run the repository checks before opening a pull request.
+2. Install Python 3.10 or newer, available as `python`, for the coverage artifact safety checks.
+   These use only the Python standard library and do not affect the browser package.
+3. Install dependencies and Chromium.
+4. Run the repository checks before opening a pull request.
 
 ```powershell
 npm ci

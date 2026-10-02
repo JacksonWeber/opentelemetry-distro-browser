@@ -1,32 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import type { SpanContext } from "@opentelemetry/api";
-import type { ReadableLogRecord } from "@opentelemetry/sdk-logs";
 import { describe, expect, it } from "vitest";
 import { logToEnvelope } from "../../../src/exporter/logUtils.js";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../../src/shared/constants.js";
+import { TEST_INSTRUMENTATION_KEY as instrumentationKey } from "../../fixtures/azureMonitor.js";
+import { createReadableLogRecord as makeLog, createSpanContext } from "../../fixtures/telemetry.js";
 
-const instrumentationKey = "00000000-0000-0000-0000-000000000000";
-const spanContext: SpanContext = {
-  traceId: "0123456789abcdef0123456789abcdef",
-  spanId: "0123456789abcdef",
-  traceFlags: 1,
-};
-const resource = { attributes: { "service.name": "browser-store" } };
-
-function makeLog(overrides: Partial<ReadableLogRecord> = {}): ReadableLogRecord {
-  return {
-    hrTime: [1_735_689_600, 0],
-    hrTimeObserved: [1_735_689_600, 0],
-    spanContext,
-    resource,
-    instrumentationScope: { name: "test" },
-    attributes: {},
-    droppedAttributesCount: 0,
-    ...overrides,
-  } as unknown as ReadableLogRecord;
-}
+const spanContext = createSpanContext();
 
 describe("Azure Monitor log envelope mapping", () => {
   it.each([
@@ -44,6 +25,7 @@ describe("Azure Monitor log envelope mapping", () => {
     const envelope = logToEnvelope(
       makeLog({
         eventName,
+        spanContext,
         body: "Checkout",
         attributes: {
           "browser.page_view.id": id,
@@ -221,11 +203,12 @@ describe("Azure Monitor log envelope mapping", () => {
   it.each(["browser.page_view.duration", "browser.navigation.duration"])(
     "maps browser.page_view to PageViewData using %s",
     (durationAttribute) => {
+      const pageViewId = "0123456789abcdef0123456789abcdef";
       const envelope = logToEnvelope(
         makeLog({
           eventName: "browser.page_view",
           attributes: {
-            "browser.page_view.id": "0123456789abcdef0123456789abcdef",
+            "browser.page_view.id": pageViewId,
             "browser.page_view.name": "Cart",
             [durationAttribute]: 425.25,
             "browser.page_view.referrer": "https://shop.example.test/products",
@@ -240,7 +223,7 @@ describe("Azure Monitor log envelope mapping", () => {
         baseType: "PageViewData",
         baseData: {
           ver: 2,
-          id: spanContext.traceId,
+          id: pageViewId,
           name: "Cart",
           url: "https://shop.example.test/cart",
           duration: "00:00:00.4252500",
@@ -256,6 +239,7 @@ describe("Azure Monitor log envelope mapping", () => {
     const envelope = logToEnvelope(
       makeLog({
         eventName: "browser.navigation",
+        spanContext,
         attributes: {
           "url.full": "https://shop.example.test/cart",
           "browser.navigation.duration": 425.25,

@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { beginUnloading, endUnloading } from "../../../src/exporter/common.js";
 import { MAX_BATCH_SIZE_IN_BYTES } from "../../../src/exporter/constants.js";
 import { AzureMonitorSpanExporter } from "../../../src/exporter/trace.js";
+import { createMockIngestionEndpoint } from "../../fixtures/azureMonitor.js";
 
 const connectionString =
   "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example.test";
@@ -71,19 +72,22 @@ describe("AzureMonitorSpanExporter", () => {
   });
 
   it("maps spans, posts Breeze envelopes, and reports success", async () => {
-    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response("", { status: 200 }));
-    vi.stubGlobal("fetch", fetch);
-    const exporter = new AzureMonitorSpanExporter({ connectionString });
-
-    await expect(exportSpan(exporter)).resolves.toEqual({ code: ExportResultCode.SUCCESS });
-    expect(fetch).toHaveBeenCalledOnce();
-    expect(fetch.mock.calls[0][0]).toBe("https://example.test/v2/track");
-    const envelopes = await requestEnvelopes(fetch, 0);
-    expect(envelopes).toHaveLength(1);
-    expect(envelopes[0]).toMatchObject({
-      name: "Microsoft.ApplicationInsights.RemoteDependency",
-      iKey: "00000000-0000-0000-0000-000000000000",
-    });
+    const ingestion = createMockIngestionEndpoint();
+    vi.stubGlobal("fetch", ingestion.fetch);
+    const exporter = new AzureMonitorSpanExporter({ connectionString: ingestion.connectionString });
+    try {
+      await expect(exportSpan(exporter)).resolves.toEqual({ code: ExportResultCode.SUCCESS });
+      expect(ingestion.fetch).toHaveBeenCalledOnce();
+      expect(ingestion.requests[0].request.url).toBe(ingestion.senderOptions.endpoint);
+      expect(ingestion.requests[0].envelopes).toEqual([
+        expect.objectContaining({
+          name: "Microsoft.ApplicationInsights.RemoteDependency",
+          iKey: "00000000-0000-0000-0000-000000000000",
+        }),
+      ]);
+    } finally {
+      await exporter.shutdown();
+    }
   });
 
   it("splits envelopes into request-sized batches without rejecting an oversized envelope", async () => {

@@ -4,8 +4,38 @@
 import { describe, expect, it, vi } from "vitest";
 import { Sender } from "../../../src/exporter/sender.js";
 import type { AzureMonitorEnvelope } from "../../../src/exporter/telemetryModels.js";
+import { installFakeClock } from "../../fixtures/clock.js";
 
 describe("Sender", () => {
+  it.each([
+    ["Wed, 01 Jan 2025 00:00:02 GMT", 2_000],
+    ["Fri, 03 Jan 2025 00:00:00 GMT", 86_400_000],
+    ["Tue, 31 Dec 2024 23:59:59 GMT", undefined],
+    ["invalid-date", undefined],
+    ["0", undefined],
+  ])("parses Retry-After %s against a deterministic clock", async (retryAfter, expected) => {
+    const clock = installFakeClock();
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(new Response(null, { headers: { "retry-after": retryAfter } }));
+    const sender = new Sender({ endpoint: "https://example.test/v2.1/track", fetch });
+    try {
+      const result = await sender.send({
+        body: new TextEncoder().encode("telemetry"),
+        contentType: "application/json",
+        unloading: true,
+      });
+      expect(result).toEqual({
+        transport: "fetch",
+        statusCode: 200,
+        result: "",
+        ...(expected === undefined ? {} : { retryAfterMs: expected }),
+      });
+    } finally {
+      clock.restore();
+    }
+  });
+
   it("posts a payload and returns the Breeze response", async () => {
     const response = new Response('{"itemsAccepted":1,"itemsReceived":1,"errors":[]}', {
       status: 200,

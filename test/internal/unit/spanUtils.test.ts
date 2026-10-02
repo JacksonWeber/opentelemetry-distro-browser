@@ -1,51 +1,22 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { SpanKind, SpanStatusCode, type SpanContext } from "@opentelemetry/api";
-import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
+import { SpanKind, SpanStatusCode } from "@opentelemetry/api";
 import { describe, expect, it } from "vitest";
 import { spanToEnvelope } from "../../../src/exporter/spanUtils.js";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../../src/shared/constants.js";
+import { TEST_INSTRUMENTATION_KEY as instrumentationKey } from "../../fixtures/azureMonitor.js";
+import { createReadableSpan as makeSpan, createSpanContext } from "../../fixtures/telemetry.js";
 
-const instrumentationKey = "00000000-0000-0000-0000-000000000000";
-const spanContext: SpanContext = {
-  traceId: "0123456789abcdef0123456789abcdef",
-  spanId: "0123456789abcdef",
-  traceFlags: 1,
-};
-const parentSpanContext: SpanContext = {
-  ...spanContext,
-  spanId: "fedcba9876543210",
-};
-const resource = { attributes: { "service.name": "browser-store" } };
-
-function makeSpan(overrides: Partial<ReadableSpan> = {}): ReadableSpan {
-  return {
-    name: "GET /items/:id",
-    kind: SpanKind.CLIENT,
-    spanContext: () => spanContext,
-    parentSpanContext,
-    startTime: [1_735_689_600, 0],
-    endTime: [1_735_689_601, 234_567_000],
-    duration: [1, 234_567_000],
-    status: { code: SpanStatusCode.UNSET },
-    attributes: {},
-    links: [],
-    events: [],
-    resource,
-    instrumentationScope: { name: "test" },
-    droppedAttributesCount: 0,
-    droppedEventsCount: 0,
-    droppedLinksCount: 0,
-    ended: true,
-    ...overrides,
-  } as unknown as ReadableSpan;
-}
+const spanContext = createSpanContext();
+const parentSpanContext = { ...spanContext, spanId: "0000000000000002" };
 
 describe("Azure Monitor span envelope mapping", () => {
   it("maps an HTTP client span to RemoteDependencyData", () => {
     const envelope = spanToEnvelope(
       makeSpan({
+        spanContext: () => spanContext,
+        parentSpanContext,
         status: { code: SpanStatusCode.ERROR },
         attributes: {
           "http.request.method": "GET",
@@ -94,6 +65,7 @@ describe("Azure Monitor span envelope mapping", () => {
   it("maps a server span to RequestData", () => {
     const envelope = spanToEnvelope(
       makeSpan({
+        spanContext: () => spanContext,
         name: "GET /checkout",
         kind: SpanKind.SERVER,
         attributes: {
@@ -118,6 +90,16 @@ describe("Azure Monitor span envelope mapping", () => {
         measurements: undefined,
       },
     });
+  });
+
+  it("omits the parent tag for a root span", () => {
+    const envelope = spanToEnvelope(
+      makeSpan({ spanContext: () => spanContext, parentSpanContext: undefined }),
+      instrumentationKey,
+    );
+
+    expect(envelope.tags["ai.operation.id"]).toBe(spanContext.traceId);
+    expect(envelope.tags).not.toHaveProperty("ai.operation.parentId");
   });
 
   it("includes the day component for long span durations", () => {

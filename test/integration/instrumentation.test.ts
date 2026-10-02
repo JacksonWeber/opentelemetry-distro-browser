@@ -72,7 +72,7 @@ for (const file of ["index.js", "index.min.js"]) {
     history.pushState(null, "", "/registration-page?secret=redact#private");
     await fetch(new URL("/registration-request?secret=redact", location.origin));
     await fetch(new URL("/excluded", location.origin));
-    await Promise.all([pipeline.spanProcessor.forceFlush(), pipeline.logProcessor.forceFlush()]);
+    await pipeline.forceFlush();
 
     const records = pipeline.logExporter.getFinishedLogRecords();
     const record = records.find((entry) => entry.attributes["url.full"] === "/registration-page");
