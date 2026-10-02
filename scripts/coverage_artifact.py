@@ -36,6 +36,7 @@ def extract_summary(download_directory: Path, output_directory: Path) -> None:
             path = name.removesuffix("/")
             if (
                 name != entry.filename
+                or "\x00" in name
                 or "\\" in name
                 or ":" in name
                 or any(part in ("", ".", "..") for part in path.split("/"))

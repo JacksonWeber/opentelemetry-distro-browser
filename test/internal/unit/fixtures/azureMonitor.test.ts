@@ -300,6 +300,40 @@ describe("in-memory Azure Monitor endpoint", () => {
     expect(networkBeacon).not.toHaveBeenCalled();
   });
 
+  it.each([
+    "text/plain",
+    "text/plain;charset=UTF-8",
+    "application/json",
+    "application/json;charset=UTF-8",
+  ])("accepts beacon envelopes with content type %s", async (contentType) => {
+    const ingestion = createMockIngestionEndpoint();
+    expect(
+      ingestion.sendBeacon(
+        ingestion.senderOptions.endpoint,
+        new Blob([JSON.stringify(message)], { type: contentType }),
+      ),
+    ).toBe(true);
+    await expect(ingestion.flush()).resolves.toBeUndefined();
+    expect(ingestion.requests).toHaveLength(1);
+    expect(ingestion.requests[0]).toMatchObject({
+      transport: "beacon",
+      envelopes: [JSON.parse(JSON.stringify(message))],
+    });
+  });
+
+  it.each(["", "text/html", "application/octet-stream"])(
+    "rejects beacon content type %j",
+    async (contentType) => {
+      const ingestion = createMockIngestionEndpoint();
+      ingestion.sendBeacon(
+        ingestion.senderOptions.endpoint,
+        new Blob([JSON.stringify(message)], { type: contentType }),
+      );
+      await expect(ingestion.flush()).rejects.toThrow("Beacon ingestion validation failed");
+      expect(ingestion.requests).toEqual([]);
+    },
+  );
+
   it.each(["{}", "null", "[]", "not json", JSON.stringify([message, {}])])(
     "rejects invalid request body %s atomically",
     async (body) => {
@@ -323,6 +357,11 @@ describe("in-memory Azure Monitor endpoint", () => {
     ],
     ["wrong method", undefined, { method: "PUT", headers: { "content-type": "application/json" } }],
     ["wrong content type", undefined, { method: "POST", headers: { "content-type": "text/html" } }],
+    [
+      "beacon-only content type for fetch",
+      undefined,
+      { method: "POST", headers: { "content-type": "text/plain" } },
+    ],
     [
       "wrong encoding",
       undefined,

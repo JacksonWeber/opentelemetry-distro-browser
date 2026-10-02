@@ -142,6 +142,7 @@ interface MockIngestionOptions {
  * unexpected URLs or malformed envelopes without delegating to browser networking.
  * For exporters, use connectionString and stub global fetch with this fixture's fetch.
  * Accepts one JSON envelope or a nonempty JSON array, plus gzip for fetch.
+ * Beacons accept text/plain or application/json. Fetch requires application/json.
  * Await flush() to observe queued beacon validation. It also runs at test cleanup.
  * Await fetch calls before finishing the test. Custom responders own their pending work.
  *
@@ -157,9 +158,9 @@ export function createMockIngestionEndpoint(options: MockIngestionOptions = {}) 
     expect(request.url, "ingestion URL").toBe(endpoint);
     expect(request.method, "ingestion method").toBe("POST");
     const contentType = request.headers.get("content-type")?.split(";")[0];
-    expect(contentType, "ingestion content-type").toBe(
-      transport === "beacon" ? "text/plain" : "application/json",
-    );
+    const allowedContentTypes =
+      transport === "beacon" ? ["text/plain", "application/json"] : ["application/json"];
+    expect(allowedContentTypes, "ingestion content-type").toContain(contentType);
     const encoding = request.headers.get("content-encoding");
     assert(
       encoding === null || (encoding === "gzip" && transport === "fetch"),

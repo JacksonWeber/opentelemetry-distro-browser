@@ -110,10 +110,12 @@ class CoverageArtifactTests(unittest.TestCase):
                 self.assert_rejected_before_read("Unsafe.*path")
 
     def test_rejects_null_bytes_in_entry_paths(self):
-        self.write_archive([(artifact.SUMMARY_NAME, self.summary), ("report.txt", b"")])
-        data = self.archive_path.read_bytes().replace(b"report.txt", b"repor\x00.txt")
-        self.archive_path.write_bytes(data)
-        self.assert_rejected_before_read("Unsafe.*path")
+        for name in (b"\x00eport.txt", b"repor\x00.txt", b"report.tx\x00"):
+            with self.subTest(name=name):
+                self.write_archive([(artifact.SUMMARY_NAME, self.summary), ("report.txt", b"")])
+                data = self.archive_path.read_bytes().replace(b"report.txt", name)
+                self.archive_path.write_bytes(data)
+                self.assert_rejected_before_read("Unsafe.*path")
 
     def test_rejects_links_and_special_files(self):
         for file_type in (stat.S_IFLNK, stat.S_IFIFO, stat.S_IFCHR, stat.S_IFDIR):
