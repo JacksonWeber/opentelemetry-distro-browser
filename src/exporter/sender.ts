@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+import { context } from "@opentelemetry/api";
+import { suppressTracing } from "@opentelemetry/core";
 import {
   MAX_BEACON_BODY_SIZE,
   MAX_PENDING_KEEPALIVE_BODY_SIZE,
@@ -190,15 +192,18 @@ export class Sender {
       try {
         const payload = unloading ? undefined : await gzipPayload(request.body);
         try {
-          response = await this.fetch(this.endpoint, {
-            method: "POST",
-            headers: {
-              "content-type": request.contentType,
-              ...(payload === undefined ? {} : { "content-encoding": "gzip" }),
-            },
-            body: payload ?? request.body,
-            keepalive: useKeepalive,
-          });
+          // Browser context may not survive compression or retry awaits, so suppress at the call.
+          response = await context.with(suppressTracing(context.active()), () =>
+            this.fetch(this.endpoint, {
+              method: "POST",
+              headers: {
+                "content-type": request.contentType,
+                ...(payload === undefined ? {} : { "content-encoding": "gzip" }),
+              },
+              body: payload ?? request.body,
+              keepalive: useKeepalive,
+            }),
+          );
         } catch (error) {
           if (!isBrowserTransportFailure(error)) {
             throw error;
