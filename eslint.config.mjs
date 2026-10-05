@@ -54,7 +54,16 @@ export default defineConfig([
     },
   },
   {
-    files: ["**/*.ts"],
+    files: ["test/build/fixtures/*.{cjs,cts}"],
+    languageOptions: {
+      globals: globals.node,
+    },
+    rules: {
+      "@typescript-eslint/no-require-imports": "off",
+    },
+  },
+  {
+    files: ["**/*.{ts,cts,mts}"],
     rules: {
       "@typescript-eslint/no-unused-vars": [
         "error",

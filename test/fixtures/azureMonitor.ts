@@ -166,9 +166,14 @@ export function createMockIngestionEndpoint(options: MockIngestionOptions = {}) 
       encoding === null || (encoding === "gzip" && transport === "fetch"),
       "Unsupported ingestion content-encoding",
     );
+    // Buffer before decompressing: Firefox yields an empty result when piping `Request.body`.
     const text =
       encoding === "gzip"
-        ? await new Response(request.body?.pipeThrough(new DecompressionStream("gzip"))).text()
+        ? await new Response(
+            new Blob([await request.arrayBuffer()])
+              .stream()
+              .pipeThrough(new DecompressionStream("gzip")),
+          ).text()
         : await request.text();
     const parsed: unknown = JSON.parse(text);
     const envelopes: unknown[] = Array.isArray(parsed) ? parsed : [parsed];

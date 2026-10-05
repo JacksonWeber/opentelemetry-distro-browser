@@ -1,5 +1,11 @@
 import { playwright } from "@vitest/browser-playwright";
-import { defineConfig } from "vitest/config";
+import { defineConfig, type TestUserConfig } from "vitest/config";
+
+export const browserInstances = [
+  { browser: "chromium" },
+  { browser: "firefox" },
+  { browser: "webkit" },
+] satisfies NonNullable<NonNullable<TestUserConfig["browser"]>["instances"]>;
 
 export default defineConfig({
   optimizeDeps: {

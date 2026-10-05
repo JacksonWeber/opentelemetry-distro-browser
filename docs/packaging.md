@@ -1,42 +1,51 @@
 # Browser package output
 
-The [M0 planning document](../planning/M0_PLANNING.md) requires ES2022 ESM-only output, and
-[M1](../planning/M1_PLANNING.md) owns declaring that target explicitly.
-`npm run build` cleans previous artifacts and emits:
+The [M0 planning document](../planning/M0_PLANNING.md) started with ES2022 ESM output.
+`npm run build` now also emits CommonJS for npm bundlers and self-contained UMD and IIFE artifacts
+for the browser:
 
-| Artifact                 | Purpose                                     |
-| ------------------------ | ------------------------------------------- |
-| `dist/esm/index.js`      | Package entry point, resolved by `exports`  |
-| `dist/esm/index.min.js`  | Minified ESM bundle for browser size checks |
-| `dist/esm/index.d.ts`    | Public TypeScript declarations              |
-| `dist/esm/index*.js.map` | Source maps with embedded source content    |
-| `dist/esm/snippet.js`    | Configurable SDK loader snippet generator   |
-| `dist/esm/snippet.d.ts`  | Loader snippet TypeScript declarations      |
+| Artifact                             | Purpose                                                                       |
+| ------------------------------------ | ----------------------------------------------------------------------------- |
+| `dist/esm/index.js`                  | ESM package entry point                                                       |
+| `dist/commonjs/index.cjs`            | CommonJS package entry point                                                  |
+| `dist/esm/instrumentations.js`       | Tree-shakeable ESM instrumentation loader                                     |
+| `dist/commonjs/instrumentations.cjs` | CommonJS instrumentation loader                                               |
+| `dist/esm/index.min.js`              | Minified ESM bundle for browser size checks                                   |
+| `dist/browser/*umd*.js`              | UMD SDK and instrumentation bundles for CommonJS, AMD, RequireJS, and globals |
+| `dist/browser/*iife*.js`             | IIFE SDK and instrumentation bundles for direct classic-script loading        |
+| `dist/esm/*.d.ts`                    | Public TypeScript declarations for ESM consumers                              |
+| `dist/commonjs/*.d.cts`              | Public TypeScript declarations for CommonJS consumers                         |
+| `dist/**/*.map`                      | Source maps with embedded source content                                      |
+| `dist/esm/snippet.js`                | Configurable SDK loader snippet generator                                     |
+| `dist/esm/snippet.d.ts`              | Loader snippet TypeScript declarations                                        |
 
-Import the package through its `exports` map. The manifest intentionally has no `main` or
-`module` field and no CommonJS `require` condition. CommonJS consumers must use asynchronous
-`import()`; synchronous `require()` of the package is not supported. The `package.json`
-metadata subpath remains available.
+Import the package through its `exports` map. The `main` and `module` fields support older bundlers
+and point to the same files selected by the explicit `require` and `import` conditions. The
+`package.json` metadata subpath remains available. The CommonJS entries `require()` ESM-only
+OpenTelemetry packages, so they target bundlers and Node.js versions with `require(esm)` support;
+CommonJS test runners such as Jest must transform those dependencies.
 
-There is no CommonJS build, `.d.cts` declaration, IIFE bundle, or `OpenTelemetryBrowser` global.
-The former `dist/commonjs/` and `dist/browser/` outputs are removed. Browser consumers use an
-ESM-aware bundler or native module imports, not a classic script tag expecting a global.
-CDN publication remains deferred. The `./snippet` helper requires the caller to supply the script
-URL, so it does not claim an unpublished CDN location.
+The `opentelemetry-browser.*` SDK bundles are self-contained and expose `Microsoft.OpenTelemetry`.
+They also expose the standard OpenTelemetry APIs used by the bundled SDK, so direct-script
+consumers can emit manual telemetry without loading a second API copy. The
+`opentelemetry-browser-instrumentations.*` bundles expose `Microsoft.OpenTelemetryInstrumentations`
+and include their own API copy, which shares state with the SDK bundle through the OpenTelemetry
+global registry. Use IIFE when RequireJS may already be present; UMD deliberately registers with
+AMD loaders.
 
-The supplied URL must serve a classic IIFE or UMD script that assigns the distribution's root
-exports to `window.Microsoft.OpenTelemetry`, including `useMicrosoftOpenTelemetry`. The package's
-ESM artifacts are not compatible with the loader and no compatible CDN artifact is published yet.
-Until M2 publishes that artifact, callers can self-host one by bundling an entry that imports the
-package root and assigns its exports to that namespace, with all runtime dependencies included.
+CDN publication remains deferred. The `./snippet` helper requires the caller to supply the IIFE
+bundle URL, so it does not claim an unpublished CDN location. The loader reads the
+`Microsoft.OpenTelemetry` global, which a UMD bundle does not set when an AMD loader is present.
 Production snippets should pass the hosted file's `sha384` or stronger digest through `integrity`;
-the loader applies it to the script together with `crossOrigin`.
+the loader applies it together with `crossOrigin`.
 
-`npm run test:build` checks the output inventory, package resolution, declaration consumption
-with TypeScript NodeNext and Bundler resolution, source maps, minification, and tree shaking.
-`npm run test:integration` imports both emitted bundles natively in Chromium without a bundler
-transforming their contents. The `sideEffects: false` contract remains in place; importing the
-package does not initialize telemetry.
+`npm run test:build` checks the output inventory, ESM and CommonJS package resolution, declaration
+consumption with TypeScript Node16, NodeNext, and Bundler resolution, source maps, minification,
+and tree shaking. `npm run test:integration` imports the ESM bundles and loads every minified and
+unminified UMD and IIFE artifact in Chromium, Firefox, and WebKit. It exercises both global and AMD
+loading.
+The `sideEffects: false` contract remains in place; importing the package does not initialize
+telemetry.
 
 `npm run size` bundles real consumers of every published JavaScript entry point with Rollup,
 tree-shakes and minifies each scenario, and reports gzip and Brotli transfer sizes. It measures the
