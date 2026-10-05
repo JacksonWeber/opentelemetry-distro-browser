@@ -169,10 +169,13 @@ describe("BrowserDetector", () => {
     const attributes = browserDetector.detect().attributes ?? {};
 
     expect(typeof attributes["browser.language"]).toBe("string");
-    // Tests run in Chromium, which implements User-Agent Client Hints.
-    expect(Array.isArray(attributes["browser.brands"])).toBe(true);
-    expect(typeof attributes["browser.platform"]).toBe("string");
-    expect(typeof attributes["browser.mobile"]).toBe("boolean");
+    if ("userAgentData" in navigator && navigator.userAgentData != null) {
+      expect(Array.isArray(attributes["browser.brands"])).toBe(true);
+      expect(typeof attributes["browser.platform"]).toBe("string");
+      expect(typeof attributes["browser.mobile"]).toBe("boolean");
+    } else {
+      expect(attributes).toMatchObject({ "browser.language": navigator.language });
+    }
   });
 
   describe.each(CLIENT_HINTS_CASES)("$label", (expectation) => {

@@ -9,10 +9,12 @@
 export interface SdkLoaderConfig {
   /**
    * URL of a classic script that exposes
-   * `Microsoft.OpenTelemetry.useMicrosoftOpenTelemetry` on `window`.
+   * `Microsoft.OpenTelemetry.useMicrosoftOpenTelemetry` on `window`, such as the package's
+   * `opentelemetry-browser.iife.min.js` bundle.
    *
    * @remarks
-   * The package's ESM output is not compatible with this loader. No CDN location is assumed.
+   * The package's ESM output is not compatible with this loader. A UMD bundle only sets the global
+   * when no AMD loader is present. No CDN location is assumed.
    */
   readonly src: string;
   /** Azure Monitor connection string passed to the distribution initializer. */
