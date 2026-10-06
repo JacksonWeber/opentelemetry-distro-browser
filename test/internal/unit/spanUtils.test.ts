@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 
 import { SpanKind, SpanStatusCode } from "@opentelemetry/api";
+import { resourceFromAttributes } from "@opentelemetry/resources";
+import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
 import { describe, expect, it } from "vitest";
 import { spanToEnvelope } from "../../../src/exporter/spanUtils.js";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../../src/shared/constants.js";
@@ -59,6 +61,99 @@ describe("Azure Monitor span envelope mapping", () => {
           measurements: { retries: 2 },
         },
       },
+    });
+  });
+
+  it.each(["user.id", "enduser.id"])(
+    "maps %s to authenticated user context and promotes user tags",
+    (attribute) => {
+      const envelope = spanToEnvelope(
+        makeSpan({
+          attributes: {
+            [attribute]: "signed-in-user",
+            "enduser.pseudo.id": "anonymous-user",
+            "user.account.id": "tenant-42",
+          },
+        }),
+        instrumentationKey,
+      );
+
+      expect(envelope.tags).toMatchObject({
+        "ai.user.id": "anonymous-user",
+        "ai.user.authUserId": "signed-in-user",
+        "ai.user.accountId": "tenant-42",
+      });
+      expect(envelope.data.baseData.properties).toBeUndefined();
+    },
+  );
+
+  it("prefers application enduser.id over managed user.id", () => {
+    const envelope = spanToEnvelope(
+      makeSpan({
+        attributes: {
+          "user.id": "managed-user",
+          "enduser.id": "application-user",
+        },
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.tags["ai.user.authUserId"]).toBe("application-user");
+    expect(envelope.data.baseData.properties).toBeUndefined();
+  });
+
+  it("uses the same authenticated user precedence for resource attributes", () => {
+    const envelope = spanToEnvelope(
+      makeSpan({
+        resource: resourceFromAttributes({
+          "user.id": "managed-user",
+          "enduser.id": "application-user",
+        }),
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.tags["ai.user.authUserId"]).toBe("application-user");
+  });
+
+  it("omits invalid user tag values", () => {
+    const envelope = spanToEnvelope(
+      makeSpan({
+        attributes: {
+          "enduser.pseudo.id": "",
+          "user.id": null,
+          "user.account.id": 42,
+        } as unknown as ReadableSpan["attributes"],
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.tags).not.toHaveProperty("ai.user.id");
+    expect(envelope.tags).not.toHaveProperty("ai.user.authUserId");
+    expect(envelope.tags).not.toHaveProperty("ai.user.accountId");
+  });
+
+  it("falls back to valid resource user context when signal values are invalid", () => {
+    const envelope = spanToEnvelope(
+      makeSpan({
+        attributes: {
+          "enduser.pseudo.id": "",
+          "enduser.id": null,
+          "user.account.id": 42,
+        } as unknown as ReadableSpan["attributes"],
+        resource: resourceFromAttributes({
+          "enduser.pseudo.id": "resource-anonymous",
+          "enduser.id": "resource-user",
+          "user.account.id": "resource-account",
+        }),
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.tags).toMatchObject({
+      "ai.user.id": "resource-anonymous",
+      "ai.user.authUserId": "resource-user",
+      "ai.user.accountId": "resource-account",
     });
   });
 

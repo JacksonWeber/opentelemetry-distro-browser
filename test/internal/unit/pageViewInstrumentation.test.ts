@@ -10,6 +10,7 @@ import {
 } from "@opentelemetry/api-logs";
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import type { BrowserInstrumentation } from "../../../src/types.js";
+import { BROWSER_ASYNC_TIMEOUT_MS } from "../../fixtures/timeouts.js";
 import {
   createPageViewContext,
   generatePageViewId,
@@ -74,19 +75,38 @@ async function settle(): Promise<void> {
   });
 }
 
+function waitForPopState(): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const state: { timeout?: number } = {};
+    const onPopState = (): void => {
+      clearTimeout(state.timeout);
+      resolve();
+    };
+    state.timeout = window.setTimeout(() => {
+      window.removeEventListener("popstate", onPopState);
+      reject(new Error("Timed out waiting for popstate"));
+    }, BROWSER_ASYNC_TIMEOUT_MS);
+    window.addEventListener("popstate", onPopState, { once: true });
+  });
+}
+
 function attributesOf(record: LogRecord): Record<string, unknown> {
   return (record.attributes ?? {}) as Record<string, unknown>;
 }
 
 beforeEach(() => {
-  history.replaceState(null, "", originalUrl);
+  if (location.href !== originalUrl) {
+    history.replaceState(null, "", originalUrl);
+  }
   document.title = originalTitle;
 });
 
 afterEach(() => {
   active?.disable();
   active = undefined;
-  history.replaceState(null, "", originalUrl);
+  if (location.href !== originalUrl) {
+    history.replaceState(null, "", originalUrl);
+  }
   document.title = originalTitle;
 });
 
@@ -440,7 +460,9 @@ describe("PageViewInstrumentation", () => {
       history.pushState(null, "", "#hash-a");
       await settle();
       provider.records.length = 0;
+      const traversed = waitForPopState();
       history.back();
+      await traversed;
       await settle();
 
       expect(attributesOf(provider.records[0] as LogRecord)[ATTR_PAGE_VIEW_TYPE]).toBe("traverse");

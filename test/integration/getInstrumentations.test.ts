@@ -10,8 +10,9 @@ import {
   type TextMapPropagator,
 } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
+import type { ReadableLogRecord } from "@opentelemetry/sdk-logs";
 import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
-import { afterEach, describe, expect, inject, it } from "vitest";
+import { afterEach, describe, expect, inject, it, vi } from "vitest";
 import { useMicrosoftOpenTelemetry } from "../../src/index.js";
 import { getInstrumentations } from "../../src/instrumentation/browserInstrumentation/index.js";
 import type {
@@ -105,11 +106,21 @@ function expectW3cHeaders(headers: PropagationHeaders): void {
   expect(headers.baggage).toBe("tenant.id=contoso");
 }
 
-/** Waits for the exporter to settle, then returns whatever was captured. */
-async function captured(): Promise<ReadableSpan[]> {
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  await pipeline.spanProcessor.forceFlush();
+async function captured(expectedCount = 0): Promise<ReadableSpan[]> {
+  // Exact counts intentionally detect unexpected telemetry from the configured instrumentations.
+  await vi.waitFor(async () => {
+    await pipeline.spanProcessor.forceFlush();
+    expect(pipeline.spanExporter.getFinishedSpans()).toHaveLength(expectedCount);
+  });
   return pipeline.spanExporter.getFinishedSpans();
+}
+
+async function capturedLogs(expectedCount: number): Promise<ReadableLogRecord[]> {
+  await vi.waitFor(async () => {
+    await pipeline.logProcessor.forceFlush();
+    expect(pipeline.logExporter.getFinishedLogRecords()).toHaveLength(expectedCount);
+  });
+  return pipeline.logExporter.getFinishedLogRecords();
 }
 
 function urlsOf(spans: readonly ReadableSpan[]): string[] {
@@ -132,7 +143,7 @@ describe("configured instrumentations in a browser", () => {
     await request(APPLICATION_URL);
     await sendXhr(APPLICATION_URL);
 
-    const spans = await captured();
+    const spans = await captured(2);
     expect(spans).toHaveLength(2);
     expect(urlsOf(spans)).toEqual([APPLICATION_URL, APPLICATION_URL]);
   });
@@ -158,7 +169,7 @@ describe("configured instrumentations in a browser", () => {
 
     await request(APPLICATION_URL);
 
-    const spans = await captured();
+    const spans = await captured(1);
     expect(spans).toHaveLength(1);
     expect(urlsOf(spans)).toEqual([APPLICATION_URL]);
   });
@@ -168,9 +179,61 @@ describe("configured instrumentations in a browser", () => {
 
     await sendXhr(APPLICATION_URL);
 
-    const spans = await captured();
+    const spans = await captured(1);
     expect(spans).toHaveLength(1);
     expect(urlsOf(spans)).toEqual([APPLICATION_URL]);
+  });
+
+  it("captures browser errors, unhandled rejections and cross-origin error messages", async () => {
+    await start({
+      fetch: { enabled: false },
+      xhr: { enabled: false },
+      errors: {
+        enabled: true,
+        applyCustomAttributes: (error) => ({
+          "test.error_kind": typeof error === "string" ? "message" : error.name,
+        }),
+      },
+    });
+
+    const thrown = new TypeError("checkout failed");
+    thrown.stack = "TypeError: checkout failed\n    at checkout (https://shop.test/app.js:42:7)";
+    window.dispatchEvent(new ErrorEvent("error", { error: thrown, message: thrown.message }));
+
+    const rejected = new Error("payment rejected");
+    rejected.stack = "Error: payment rejected\n    at submitPayment (https://shop.test/pay.js:8:3)";
+    const rejectedPromise = Promise.reject(rejected);
+    rejectedPromise.catch(() => undefined);
+    window.dispatchEvent(
+      new PromiseRejectionEvent("unhandledrejection", {
+        promise: rejectedPromise,
+        reason: rejected,
+      }),
+    );
+
+    window.dispatchEvent(new ErrorEvent("error", { message: "Script error." }));
+
+    const records = (await capturedLogs(3)).filter((record) => record.eventName === "exception");
+    expect(records).toHaveLength(3);
+    const recordsByKind = new Map(
+      records.map((record) => [record.attributes["test.error_kind"], record]),
+    );
+    expect(recordsByKind.get("TypeError")?.attributes).toMatchObject({
+      "exception.type": "TypeError",
+      "exception.message": "checkout failed",
+      "exception.stacktrace": thrown.stack,
+      "test.error_kind": "TypeError",
+    });
+    expect(recordsByKind.get("Error")?.attributes).toMatchObject({
+      "exception.type": "Error",
+      "exception.message": "payment rejected",
+      "exception.stacktrace": rejected.stack,
+      "test.error_kind": "Error",
+    });
+    expect(recordsByKind.get("message")?.attributes).toMatchObject({
+      "exception.message": "Script error.",
+      "test.error_kind": "message",
+    });
   });
 
   describe("W3C propagation", () => {
@@ -201,7 +264,7 @@ describe("configured instrumentations in a browser", () => {
 
       expectW3cHeaders(fetchRequest);
       expectW3cHeaders(xhrRequest);
-      const spans = await captured();
+      const spans = await captured(3);
       expect(spans).toHaveLength(3);
       for (const headers of [fetchRequest, xhrRequest]) {
         const requestSpan = spans.find(
@@ -304,7 +367,7 @@ describe("configured instrumentations in a browser", () => {
 
       await request(`${APPLICATION_URL}?token=secret`);
 
-      expect(urlsOf(await captured())).toEqual(["https://sanitized.example.test/"]);
+      expect(urlsOf(await captured(1))).toEqual(["https://sanitized.example.test/"]);
     });
 
     it("invokes a caller requestHook and applyCustomAttributesOnSpan", async () => {
@@ -325,7 +388,7 @@ describe("configured instrumentations in a browser", () => {
 
       await request(APPLICATION_URL);
 
-      const spans = await captured();
+      const spans = await captured(1);
       expect(seen).toEqual(["requestHook", "applyCustomAttributesOnSpan"]);
       expect(spans[0]?.attributes["test.request_hook"]).toBe(true);
       expect(spans[0]?.attributes["test.custom_attributes"]).toBe(true);

@@ -1,5 +1,5 @@
 import { defineConfig } from "vitest/config";
-import config from "./vitest.config.js";
+import config, { browserInstances } from "./vitest.config.js";
 import { verifyUnloadDelivery } from "./test/integration/unloadCommand.js";
 import buildCoexistenceFixtures from "./test/integration/coexistenceSetup.js";
 
@@ -14,6 +14,7 @@ export default defineConfig(async () => {
       browser: {
         ...config.test?.browser,
         commands: { verifyUnloadDelivery },
+        instances: browserInstances,
       },
       globalSetup: ["./test/integration/redirectServer.ts"],
       include: ["test/integration/**/*.test.ts"],

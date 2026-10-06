@@ -77,6 +77,7 @@ it.each(["tracer-provider", "logger-provider", "context-manager", "propagator"] 
       useMicrosoftOpenTelemetry({
         ...pipeline.options,
         session: { enabled: true },
+        userContext: { enabled: true },
         instrumentations: [instrumentation],
         // A conflict takes precedence over exporter construction and config validation.
         azureMonitor: { connectionString: "invalid" },
@@ -189,6 +190,39 @@ it.each(["traces", "logs", "both"] as const)(
     ).rejects.toMatchObject({ code: "logger-provider-conflict" });
   },
 );
+
+it("preserves context globals when Azure Monitor is configured but traces are explicitly disabled", async () => {
+  const manager = new StackContextManager().enable();
+  context.setGlobalContextManager(manager);
+  propagation.setGlobalPropagator(new W3CTraceContextPropagator());
+  const globals = { ...Object(realm[apiKey]) };
+  const handle = await useMicrosoftOpenTelemetry({
+    azureMonitor: {
+      connectionString: "InstrumentationKey=00000000-0000-0000-0000-000000000000",
+    },
+    spanProcessors: [],
+    logRecordProcessors: [],
+    pageView: { enabled: false },
+  });
+  cleanup.push(() => handle.shutdown());
+  expect(realm[apiKey]).toMatchObject(globals);
+  expect(trace.getTracer("disabled").startSpan("disabled").isRecording()).toBe(false);
+  expect(realm[logsKey]).toBeUndefined();
+});
+
+it("cleans up default OTLP processors when a foreign provider registers during startup", async () => {
+  const spanShutdown = vi.spyOn(BatchSpanProcessor.prototype, "shutdown");
+  const logShutdown = vi.spyOn(BatchLogRecordProcessor.prototype, "shutdown");
+  const initializing = useMicrosoftOpenTelemetry({ pageView: { enabled: false } });
+  const foreign = new BasicTracerProvider();
+  cleanup.push(() => foreign.shutdown());
+  trace.setGlobalTracerProvider(foreign);
+  await expect(initializing).rejects.toMatchObject({ code: "tracer-provider-conflict" });
+  expect(spanShutdown).toHaveBeenCalledOnce();
+  expect(logShutdown).toHaveBeenCalledOnce();
+  expect(trace.getTracerProvider().getTracer("foreign")).toBe(foreign.getTracer("foreign"));
+  expect(realm[logsKey]).toBeUndefined();
+});
 
 it("rejects simultaneous startup and preserves the first installation through rejected retries", async () => {
   const pipeline = createInMemoryPipeline();
