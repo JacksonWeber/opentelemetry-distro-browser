@@ -620,6 +620,8 @@ it.each(["context", "router"] as const)(
     );
     expect(getRegisteredGlobal("trace")).toBeUndefined();
     expect(getRegisteredGlobal("logs")).toBeUndefined();
+    expect(getRegisteredGlobal("context")).toBeUndefined();
+    expect(getRegisteredGlobal("propagation")).toBeUndefined();
   },
 );
 
@@ -704,4 +706,171 @@ it("removes the new trace proxy when its registration diagnostic throws", async 
   trace.getTracer("retry").startSpan("retry").end();
   await handle.forceFlush();
   expect(next.spanExporter.getFinishedSpans()).toHaveLength(1);
+});
+
+it.each(["setTracerProvider", "setLoggerProvider", "getConfig", "enable"] as const)(
+  "rolls back all first-start globals when instrumentation %s throws",
+  async (method) => {
+    const pipeline = createInMemoryPipeline();
+    const failure = new Error("instrumentation failed");
+    const instrumentation = probe();
+    vi.spyOn(instrumentation, method).mockImplementation(() => {
+      throw failure;
+    });
+    const disable = vi.spyOn(instrumentation, "disable");
+    const spanShutdown = vi.spyOn(pipeline.spanProcessor, "shutdown");
+    const logShutdown = vi.spyOn(pipeline.logProcessor, "shutdown");
+    await expect(
+      useMicrosoftOpenTelemetry({
+        ...pipeline.options,
+        pageView: { enabled: false },
+        instrumentations: [instrumentation],
+      }),
+    ).rejects.toBe(failure);
+    expect(disable).toHaveBeenCalledOnce();
+    expect(spanShutdown).toHaveBeenCalledOnce();
+    expect(logShutdown).toHaveBeenCalledOnce();
+    for (const signal of ["trace", "logs", "context", "propagation"] as const) {
+      expect(getRegisteredGlobal(signal)).toBeUndefined();
+    }
+    expect(getSharedRegistry().pending).toEqual([]);
+    const foreignTrace = new BasicTracerProvider();
+    const foreignLogs = new LoggerProvider();
+    cleanup.push(
+      () => foreignTrace.shutdown(),
+      () => foreignLogs.shutdown(),
+    );
+    expect(trace.setGlobalTracerProvider(foreignTrace)).toBe(true);
+    expect(logs.setGlobalLoggerProvider(foreignLogs)).toBe(foreignLogs);
+    expect(context.setGlobalContextManager(new StackContextManager().enable())).toBe(true);
+    expect(propagation.setGlobalPropagator(new W3CTraceContextPropagator())).toBe(true);
+  },
+);
+
+it.each(["both fail", "first fails", "second fails"] as const)(
+  "settles concurrent startup ownership when %s",
+  async (scenario) => {
+    const first = createInMemoryPipeline();
+    const second = createInMemoryPipeline();
+    const fail = {
+      ...probe(),
+      enable() {
+        throw new Error("startup failed");
+      },
+    };
+    const results = await Promise.allSettled([
+      useMicrosoftOpenTelemetry({
+        ...first.options,
+        pageView: { enabled: false },
+        instrumentations: scenario !== "second fails" ? [fail] : [],
+      }),
+      useMicrosoftOpenTelemetry({
+        ...second.options,
+        pageView: { enabled: false },
+        instrumentations: scenario !== "first fails" ? [{ ...fail }] : [],
+      }),
+    ]);
+    const active = results.filter((result) => result.status === "fulfilled");
+    cleanup.push(...active.map((result) => () => result.value.shutdown()));
+    expect(active).toHaveLength(scenario === "both fail" ? 0 : 1);
+    expect(getSharedRegistry().pending).toEqual([]);
+    if (scenario === "both fail") {
+      for (const signal of ["trace", "logs", "context", "propagation"] as const) {
+        expect(getRegisteredGlobal(signal)).toBeUndefined();
+      }
+    } else {
+      trace.getTracer("survivor").startSpan("survivor").end();
+      logs.getLogger("survivor").emit({ eventName: "survivor" });
+      await active[0].value.forceFlush();
+      const survivor = scenario === "first fails" ? second : first;
+      expect(survivor.spanExporter.getFinishedSpans()).toHaveLength(1);
+      expect(survivor.logExporter.getFinishedLogRecords()).toHaveLength(1);
+    }
+  },
+);
+
+it("preserves a foreign context installed by a throwing disable callback", async () => {
+  const manager = new StackContextManager();
+  const foreign = new StackContextManager().enable();
+  const failure = new Error("logger registration failed");
+  vi.spyOn(manager, "disable").mockImplementation(() => {
+    context.disable();
+    context.setGlobalContextManager(foreign);
+    throw new Error("manager cleanup failed");
+  });
+  vi.spyOn(logs, "setGlobalLoggerProvider").mockImplementationOnce(() => {
+    throw failure;
+  });
+  const pipeline = createInMemoryPipeline();
+  await expect(
+    useMicrosoftOpenTelemetry({
+      ...pipeline.options,
+      pageView: { enabled: false },
+      traces: { contextManager: manager },
+    }),
+  ).rejects.toBe(failure);
+  expect(getRegisteredGlobal("context")).toBe(foreign);
+  for (const signal of ["trace", "logs", "propagation"] as const) {
+    expect(getRegisteredGlobal(signal)).toBeUndefined();
+  }
+});
+
+it.each(["trace", "logs"] as const)(
+  "preserves a concurrent %s-only commit without retaining failed-instance globals",
+  async (signal) => {
+    const failing = createInMemoryPipeline();
+    const survivor = createInMemoryPipeline();
+    cleanup.push(() =>
+      (signal === "trace" ? survivor.logProcessor : survivor.spanProcessor).shutdown(),
+    );
+
+    const results = await Promise.allSettled([
+      useMicrosoftOpenTelemetry({
+        ...failing.options,
+        pageView: { enabled: false },
+        instrumentations: [
+          {
+            ...probe(),
+            enable() {
+              throw new Error("startup failed");
+            },
+          },
+        ],
+      }),
+      useMicrosoftOpenTelemetry({
+        spanProcessors: signal === "trace" ? survivor.options.spanProcessors : [],
+        logRecordProcessors: signal === "logs" ? survivor.options.logRecordProcessors : [],
+        pageView: { enabled: false },
+      }),
+    ]);
+    expect(results[0].status).toBe("rejected");
+    const started = results[1];
+    if (started.status !== "fulfilled") throw started.reason;
+    cleanup.push(() => started.value.shutdown());
+    expect(getSharedRegistry().pending).toEqual([]);
+    expect(getRegisteredGlobal(signal)).toBeDefined();
+    expect(getRegisteredGlobal(signal === "trace" ? "logs" : "trace")).toBeUndefined();
+    if (signal === "logs") {
+      expect(getRegisteredGlobal("context")).toBeUndefined();
+      expect(getRegisteredGlobal("propagation")).toBeUndefined();
+    }
+  },
+);
+
+it("aborts globals when listener setup fails with no instrumentations", async () => {
+  const pipeline = createInMemoryPipeline();
+  const failure = new Error("listener registration failed");
+  vi.spyOn(globalThis, "addEventListener").mockImplementationOnce(() => {
+    throw failure;
+  });
+  await expect(
+    useMicrosoftOpenTelemetry({
+      ...pipeline.options,
+      pageView: { enabled: false },
+    }),
+  ).rejects.toBe(failure);
+  for (const signal of ["trace", "logs", "context", "propagation"] as const) {
+    expect(getRegisteredGlobal(signal)).toBeUndefined();
+  }
+  expect(getSharedRegistry().pending).toEqual([]);
 });

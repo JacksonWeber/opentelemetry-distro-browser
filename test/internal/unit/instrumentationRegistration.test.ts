@@ -17,6 +17,8 @@ function fakeInstance() {
   return {
     tracerProvider: { getTracer: vi.fn() },
     loggerProvider: { getLogger: vi.fn() },
+    commit: vi.fn(),
+    abort: vi.fn(),
     detach: vi.fn(),
     shutdown: vi.fn(async () => {}),
   };

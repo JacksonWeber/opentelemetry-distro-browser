@@ -22,7 +22,12 @@ import { TracerProvider, type SpanProcessor } from "@opentelemetry/sdk-trace";
 import { StackContextManager } from "@opentelemetry/sdk-trace-web";
 import { addInstance, noopLoggerProvider, noopTracerProvider } from "./instanceRouter.js";
 import { addPageCorrelation, registerPageContext, type PageCorrelation } from "./pageContext.js";
-import { getSharedRegistry, reportError } from "../shared/globalOwnership.js";
+import {
+  commitGlobals,
+  getSharedRegistry,
+  reportError,
+  rollbackGlobals,
+} from "../shared/globalOwnership.js";
 
 /** Resolved pipeline configuration for one distribution instance. */
 export interface TelemetryInstanceOptions {
@@ -41,6 +46,10 @@ export interface TelemetryInstanceOptions {
 export interface TelemetryInstance {
   readonly tracerProvider: TracerProviderApi;
   readonly loggerProvider: LoggerProviderApi;
+  /** Commits globals after instrumentation setup succeeds. */
+  commit(): void;
+  /** Releases provisional globals without disturbing surviving instances. */
+  abort(): void;
   /** Hands off routing and page context before waiting for flushes. */
   detach(): void;
   /** Stops routing to the instance, then shuts down both of its providers. */
@@ -69,7 +78,6 @@ export async function startTelemetryInstance(
     if (errors.length > 1) throw new AggregateError(errors, "Telemetry provider shutdown failed");
   };
 
-  let rollbackContext: (() => void) | undefined;
   let removeCorrelation: (() => void) | undefined;
   let removeInstance: (() => void) | undefined;
   try {
@@ -92,7 +100,7 @@ export async function startTelemetryInstance(
       });
     }
     if (tracerProvider) {
-      rollbackContext = registerPageContext(
+      registerPageContext(
         options.contextManager,
         () => new StackContextManager(),
         () =>
@@ -109,11 +117,7 @@ export async function startTelemetryInstance(
   } catch (error) {
     removeCorrelation?.();
     removeInstance?.();
-    try {
-      rollbackContext?.();
-    } catch (cleanupFailure) {
-      reportError("Telemetry global rollback failed", cleanupFailure);
-    }
+    rollbackGlobals();
     try {
       await shutdownProviders();
     } catch (cleanupFailure) {
@@ -125,6 +129,14 @@ export async function startTelemetryInstance(
   return {
     tracerProvider: tracerProvider ?? noopTracerProvider,
     loggerProvider: loggerProvider ?? noopLoggerProvider,
+    commit() {
+      commitGlobals(!!tracerProvider, !!loggerProvider);
+    },
+    abort() {
+      removeInstance?.();
+      removeCorrelation?.();
+      rollbackGlobals();
+    },
     detach() {
       removeInstance?.();
       removeCorrelation?.();

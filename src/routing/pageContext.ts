@@ -17,6 +17,7 @@ import {
   getRegisteredGlobal,
   getSharedRegistry,
   reportError,
+  deferGlobalRollback,
 } from "../shared/globalOwnership.js";
 
 /** Page correlation contributed by one instance with page views. */
@@ -69,13 +70,13 @@ function getPageContext(): PageContextState {
 
 /**
  * Registers page context without replacing foreign globals. Rejects re-entrant changes.
- * Returns a rollback callback for this attempt's registrations only.
+ * Keeps new registrations provisional until instrumentation startup commits.
  */
 export function registerPageContext(
   supplied: ContextManager | undefined,
   createDefault: () => ContextManager,
   createPropagator: () => TextMapPropagator,
-): () => void {
+): void {
   const state = getPageContext();
   if (state.registering)
     conflict("initialization-in-progress", "Page context registration is already in progress");
@@ -93,13 +94,20 @@ export function registerPageContext(
   let registeredPropagation = false;
 
   const rollback = (): void => {
+    const wasEnabled = enabled;
+    enabled = false;
     if (registeredPropagation && getRegisteredGlobal("propagation") === propagator) {
       propagation.disable();
       state.propagator = undefined;
     }
     if (registeredContext && getRegisteredGlobal("context") === state.manager) {
-      context.disable();
-    } else if (enabled && manager && getRegisteredGlobal("context") !== manager) {
+      try {
+        state.manager.disable();
+      } finally {
+        // Storage is cleared before delegate cleanup, so unregister without calling it twice.
+        if (getRegisteredGlobal("context") === state.manager) context.disable();
+      }
+    } else if (wasEnabled && manager && getRegisteredGlobal("context") !== manager) {
       if (state.storage === manager) state.storage = undefined;
       manager.disable();
     }
@@ -160,7 +168,7 @@ export function registerPageContext(
     if (getRegisteredGlobal("logs") !== before.logs) {
       conflict("logger-provider-conflict", "OpenTelemetry logs changed during registration");
     }
-    return rollback;
+    if (registeredContext || registeredPropagation) deferGlobalRollback("trace", rollback);
   } catch (error) {
     try {
       rollback();

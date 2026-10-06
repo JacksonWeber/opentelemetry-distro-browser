@@ -10,7 +10,12 @@ import {
   type TracerProvider,
 } from "@opentelemetry/api";
 import { createNoopLogger, logs, type LoggerProvider } from "@opentelemetry/api-logs";
-import { getRegisteredGlobal, getSharedRegistry, reportError } from "../shared/globalOwnership.js";
+import {
+  deferGlobalRollback,
+  getRegisteredGlobal,
+  getSharedRegistry,
+  reportError,
+} from "../shared/globalOwnership.js";
 
 /** Instance-owned providers. Omitted signals never fall back to another instance. */
 export interface InstancePipelines {
@@ -78,6 +83,12 @@ export function addInstance(instance: InstancePipelines): () => void {
   const state = getRouter();
   let installedTrace: unknown;
   let installedLogs: unknown;
+  const rollback = (signal: "trace" | "logs", registration: unknown): void => {
+    if (registration && getRegisteredGlobal(signal) === registration) {
+      if (signal === "trace") trace.disable();
+      else logs.disable();
+    }
+  };
   try {
     const traceRegistration = getRegisteredGlobal("trace");
     if (
@@ -115,17 +126,17 @@ export function addInstance(instance: InstancePipelines): () => void {
     }
     state.reportedDrops.clear();
     state.running.push(instance);
+    if (installedTrace) deferGlobalRollback("trace", () => rollback("trace", installedTrace));
+    if (installedLogs) deferGlobalRollback("logs", () => rollback("logs", installedLogs));
   } catch (error) {
-    for (const [signal, registration, disable] of [
-      ["logs", installedLogs, () => logs.disable()],
-      ["trace", installedTrace, () => trace.disable()],
+    for (const [signal, registration] of [
+      ["logs", installedLogs],
+      ["trace", installedTrace],
     ] as const) {
-      if (registration && getRegisteredGlobal(signal) === registration) {
-        try {
-          disable();
-        } catch (cleanupError) {
-          reportError("Telemetry router rollback failed", cleanupError);
-        }
+      try {
+        rollback(signal, registration);
+      } catch (cleanupError) {
+        reportError("Telemetry router rollback failed", cleanupError);
       }
     }
     throw error;

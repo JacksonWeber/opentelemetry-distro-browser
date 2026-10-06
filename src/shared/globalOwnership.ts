@@ -16,6 +16,7 @@ interface SharedRegistry {
   pageContexts?: WeakSet<SpanContext>;
   router?: RouterState;
   page?: PageContextState;
+  pending?: { signal: "trace" | "logs"; rollback: () => void }[];
 }
 
 /** Exporter-only consumers may read page membership without initializing a distribution. */
@@ -63,5 +64,35 @@ export function reportError(...args: Parameters<typeof diag.error>): void {
     diag.error(...args);
   } catch {
     // A diagnostic logger must not interrupt cleanup or replace the startup error.
+  }
+}
+
+/** Pending registrations can be adopted by another instance before startup settles. */
+export function deferGlobalRollback(signal: "trace" | "logs", rollback: () => void): void {
+  (getSharedRegistry().pending ??= []).push({ signal, rollback });
+}
+
+export function commitGlobals(traces: boolean, logs: boolean): void {
+  const registry = getSharedRegistry();
+  registry.pending = registry.pending?.filter(
+    (entry) => !(entry.signal === "trace" ? traces : logs),
+  );
+}
+
+export function rollbackGlobals(): void {
+  const registry = getSharedRegistry();
+  const pending = registry.pending ?? [];
+  registry.pending = [];
+  for (const entry of pending) {
+    const provider = entry.signal === "trace" ? "tracerProvider" : "loggerProvider";
+    if (registry.router?.running.some((instance) => instance[provider])) {
+      registry.pending.push(entry);
+      continue;
+    }
+    try {
+      entry.rollback();
+    } catch (error) {
+      reportError("Telemetry global rollback failed", error);
+    }
   }
 }

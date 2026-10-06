@@ -110,6 +110,7 @@ export async function useMicrosoftOpenTelemetry(
   const instrumentations = [...owned, ...(options.instrumentations ?? [])];
   let instance: TelemetryInstance | undefined;
   let processorsTransferred = false;
+  let initialized = false;
   let stopping = false;
   // Upstream stale tracers can still call processors after provider shutdown.
   const sessionProvider = {
@@ -189,6 +190,7 @@ export async function useMicrosoftOpenTelemetry(
           errors.push(error);
         }
       }
+      if (!initialized) instance?.abort();
       const activeFlushes = [flushPromise, unloadFlushPromise].filter(
         (operation): operation is Promise<void> => operation !== undefined,
       );
@@ -279,6 +281,8 @@ export async function useMicrosoftOpenTelemetry(
       instrumentation.setLoggerProvider?.(instance.loggerProvider);
       if (!instrumentation.getConfig().enabled) instrumentation.enable();
     }
+    instance.commit();
+    initialized = true;
   } catch (error) {
     try {
       await shutdown();

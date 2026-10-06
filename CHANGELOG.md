@@ -31,6 +31,8 @@ All notable changes to this package are documented in this file.
   diagnostic initialization to be retried when registration fails.
 - Keep cleanup running and preserve the startup error when diagnostic reporting throws.
 - Remove newly installed routers when startup fails, without replacing existing owners.
+- Keep global registrations provisional through instrumentation setup and finish context
+  unregistration even when manager cleanup throws.
 - Isolate telemetry pipelines per initialization: each instance owns its tracer and logger
   providers, instrumentations bind to their own instance, and global tracers and loggers bind to
   the earliest running instance that collects that signal when acquired.
