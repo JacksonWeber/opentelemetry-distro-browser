@@ -6,6 +6,7 @@ import { logs } from "@opentelemetry/api-logs";
 import { startBrowserSdk } from "@opentelemetry/browser-sdk";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
+import { CompositePropagator } from "@opentelemetry/core";
 import {
   BrowserContextLogRecordProcessor,
   BrowserContextSpanProcessor,
@@ -32,6 +33,7 @@ import {
   assertGlobalsAvailable,
   assertGlobalsRegistered,
   reserveGlobals,
+  trackGlobals,
 } from "./shared/globalOwnership.js";
 import type {
   MicrosoftOpenTelemetryBrowser,
@@ -113,6 +115,7 @@ async function initialize(
   // Publish the initial page operation before caller instrumentations can emit.
   const instrumentations = [...owned, ...(options.instrumentations ?? [])];
   let sdk: ReturnType<typeof startBrowserSdk> | undefined;
+  let registration: ReturnType<typeof trackGlobals> | undefined;
   let instrumentationsStarted = false;
   let stopping = false;
   // Upstream stale tracers can still call processors after provider shutdown.
@@ -240,9 +243,17 @@ async function initialize(
       logRecordProcessors = [logProcessor, ...(logRecordProcessors ?? [])];
     }
     await session?.start();
-    // A foreign SDK can register while session restoration is awaiting storage.
-    assertGlobalsAvailable(tracesEnabled);
-    sdk = startBrowserSdk({
+    const propagators = traceOptions?.propagators?.slice();
+    // Run application fields() callbacks before the SDK starts registering globals.
+    const preparedPropagators =
+      tracesEnabled && propagators ? [new CompositePropagator({ propagators })] : propagators;
+    registration = trackGlobals(
+      tracesEnabled,
+      logRecordProcessors?.length !== 0,
+      correlation ?? traceOptions?.contextManager,
+      traceOptions?.contextManager,
+    );
+    const sdkOptions = {
       // Spread last: the caller's attributes win, and each call gets a fresh object because the
       // SDK mutates this one in place and shares it between the traces and logs SDKs.
       resourceAttributes: {
@@ -251,14 +262,10 @@ async function initialize(
         ...options.resource?.attributes,
       },
       traces: {
-        ...(correlation
-          ? { contextManager: correlation }
-          : traceOptions?.contextManager === undefined
-            ? {}
-            : { contextManager: traceOptions.contextManager }),
-        ...(traceOptions?.propagators === undefined
+        ...(registration.contextManager === undefined
           ? {}
-          : { propagators: traceOptions.propagators.slice() }),
+          : { contextManager: registration.contextManager }),
+        ...(preparedPropagators === undefined ? {} : { propagators: preparedPropagators }),
         processors:
           spanProcessors?.length === 0 ? [] : [contextSpanProcessor, ...(spanProcessors ?? [])],
       },
@@ -272,8 +279,11 @@ async function initialize(
                 ...(logRecordProcessors ?? []),
               ],
       },
-    });
-    assertGlobalsRegistered(tracesEnabled, logRecordProcessors?.length !== 0);
+    };
+    // Session restoration and application configuration callbacks can register a foreign SDK.
+    assertGlobalsAvailable(tracesEnabled);
+    sdk = startBrowserSdk(sdkOptions);
+    assertGlobalsRegistered(registration);
     globalThis.addEventListener?.("pagehide", flushForUnload);
     globalThis.document?.addEventListener("visibilitychange", visibilityChange);
     if (instrumentations.length === 0) return handle;
@@ -287,6 +297,11 @@ async function initialize(
       if (!instrumentation.getConfig().enabled) instrumentation.enable();
     }
   } catch (error) {
+    try {
+      registration?.rollback();
+    } catch (rollbackError) {
+      diag.error("Telemetry initialization rollback failed", rollbackError);
+    }
     try {
       await shutdown();
     } catch (cleanupError) {

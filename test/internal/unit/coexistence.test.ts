@@ -316,3 +316,199 @@ it("snapshots exporter settings and caller processors before awaiting startup", 
   expect(spanFlush).toHaveBeenCalledOnce();
   expect(logFlush).toHaveBeenCalledOnce();
 });
+
+it.each(
+  [false, true].flatMap((pageView) =>
+    [
+      ["context", "context-manager-conflict"],
+      ["propagation", "propagator-conflict"],
+      ["trace", "tracer-provider-conflict"],
+      ["logs", "logger-provider-conflict"],
+    ].map(([signal, code]) => ({ pageView, signal, code })),
+  ),
+)(
+  "preserves a foreign $signal installed by enable() with pageView=$pageView",
+  async ({ pageView, signal, code }) => {
+    const pipeline = createInMemoryPipeline();
+    const spanShutdown = vi.spyOn(pipeline.spanProcessor, "shutdown");
+    const logShutdown = vi.spyOn(pipeline.logProcessor, "shutdown");
+    const foreignManager = new StackContextManager().enable();
+    const foreignTracer = new BasicTracerProvider();
+    const foreignLogger = new LoggerProvider();
+    const foreignPropagator = new W3CTraceContextPropagator();
+    const foreignDisable = vi.spyOn(foreignManager, "disable");
+    const foreignTraceShutdown = vi.spyOn(foreignTracer, "shutdown");
+    const foreignLogShutdown = vi.spyOn(foreignLogger, "shutdown");
+    cleanup.push(
+      async () => {
+        foreignManager.disable();
+      },
+      () => foreignTracer.shutdown(),
+      () => foreignLogger.shutdown(),
+    );
+    const manager = new StackContextManager();
+    const enable = manager.enable.bind(manager);
+    const disable = vi.spyOn(manager, "disable");
+    const report = vi.spyOn(diag, "error").mockImplementation(() => {});
+    let foreignRegistration: unknown;
+    vi.spyOn(manager, "enable").mockImplementation(() => {
+      enable();
+      if (signal === "context") context.setGlobalContextManager(foreignManager);
+      if (signal === "propagation") {
+        propagation.disable();
+        propagation.setGlobalPropagator(foreignPropagator);
+      }
+      if (signal === "trace") {
+        trace.disable();
+        trace.setGlobalTracerProvider(foreignTracer);
+      }
+      if (signal === "logs") {
+        logs.disable();
+        logs.setGlobalLoggerProvider(foreignLogger);
+      }
+      foreignRegistration =
+        signal === "logs" ? realm[logsKey] : Reflect.get(Object(realm[apiKey]), signal);
+      return manager;
+    });
+    const instrumentation = {
+      setTracerProvider: vi.fn(),
+      setLoggerProvider: vi.fn(),
+      getConfig: vi.fn(() => ({ enabled: false })),
+      enable: vi.fn(),
+      disable: vi.fn(),
+    };
+
+    await expect(
+      useMicrosoftOpenTelemetry({
+        ...pipeline.options,
+        pageView: { enabled: pageView },
+        traces: { contextManager: manager },
+        instrumentations: [instrumentation],
+      }).then((handle) => {
+        cleanup.push(() => handle.shutdown());
+        return handle;
+      }),
+    ).rejects.toMatchObject({ code });
+
+    expect(report).toHaveBeenCalledWith(expect.stringContaining(`[${code}]`));
+    expect(spanShutdown).toHaveBeenCalledOnce();
+    expect(logShutdown).toHaveBeenCalledOnce();
+    expect(disable).toHaveBeenCalledOnce();
+    expect(foreignDisable).not.toHaveBeenCalled();
+    expect(foreignTraceShutdown).not.toHaveBeenCalled();
+    expect(foreignLogShutdown).not.toHaveBeenCalled();
+    for (const key of ["trace", "context", "propagation"]) {
+      expect(Reflect.get(Object(realm[apiKey]), key)).toBe(
+        key === signal ? foreignRegistration : undefined,
+      );
+    }
+    expect(realm[logsKey]).toBe(signal === "logs" ? foreignRegistration : undefined);
+    for (const operation of Object.values(instrumentation))
+      expect(operation).not.toHaveBeenCalled();
+  },
+);
+
+it.each([false, true])(
+  "does not disable a manager that registered itself from enable() with pageView=%s",
+  async (pageView) => {
+    const pipeline = createInMemoryPipeline();
+    const manager = new StackContextManager();
+    const enable = manager.enable.bind(manager);
+    const disable = vi.spyOn(manager, "disable");
+    vi.spyOn(diag, "error").mockImplementation(() => {});
+    vi.spyOn(manager, "enable").mockImplementation(() => {
+      enable();
+      context.setGlobalContextManager(manager);
+      return manager;
+    });
+    await expect(
+      useMicrosoftOpenTelemetry({
+        ...pipeline.options,
+        pageView: { enabled: pageView },
+        traces: { contextManager: manager },
+      }),
+    ).rejects.toMatchObject({ code: "context-manager-conflict" });
+    expect(disable).not.toHaveBeenCalled();
+    expect(Reflect.get(Object(realm[apiKey]), "context")).toBe(manager);
+  },
+);
+
+it("retains the SDK shutdown handle when a context manager's enable() throws", async () => {
+  const pipeline = createInMemoryPipeline();
+  const spanShutdown = vi.spyOn(pipeline.spanProcessor, "shutdown");
+  const logShutdown = vi.spyOn(pipeline.logProcessor, "shutdown");
+  const manager = new StackContextManager();
+  const failure = new Error("context enable failed");
+  vi.spyOn(manager, "enable").mockImplementation(() => {
+    throw failure;
+  });
+  const disable = vi.spyOn(manager, "disable");
+  await expect(
+    useMicrosoftOpenTelemetry({
+      ...pipeline.options,
+      pageView: { enabled: false },
+      traces: { contextManager: manager },
+    }),
+  ).rejects.toBe(failure);
+  expect(spanShutdown).toHaveBeenCalledOnce();
+  expect(logShutdown).toHaveBeenCalledOnce();
+  expect(disable).toHaveBeenCalledOnce();
+  expect(realm[logsKey]).toBeUndefined();
+  expect(assertGlobalsAvailable).not.toThrow();
+});
+
+it("checks propagator fields callbacks before starting either SDK pipeline", async () => {
+  const pipeline = createInMemoryPipeline();
+  cleanup.push(() => pipeline.shutdown());
+  const spanShutdown = vi.spyOn(pipeline.spanProcessor, "shutdown");
+  const logShutdown = vi.spyOn(pipeline.logProcessor, "shutdown");
+  const foreignPropagator = new W3CTraceContextPropagator();
+  const fields = vi.fn(() => {
+    propagation.setGlobalPropagator(foreignPropagator);
+    return [];
+  });
+  await expect(
+    useMicrosoftOpenTelemetry({
+      ...pipeline.options,
+      pageView: { enabled: false },
+      traces: { propagators: [{ fields, inject() {}, extract: (ctx) => ctx }] },
+    }),
+  ).rejects.toMatchObject({ code: "propagator-conflict" });
+  expect(fields).toHaveBeenCalledOnce();
+  expect(spanShutdown).not.toHaveBeenCalled();
+  expect(logShutdown).not.toHaveBeenCalled();
+  expect(realm[logsKey]).toBeUndefined();
+  expect(Reflect.get(Object(realm[apiKey]), "trace")).toBeUndefined();
+  expect(Reflect.get(Object(realm[apiKey]), "propagation")).toBe(foreignPropagator);
+});
+
+it("removes owned registrations after an instrumentation failure so startup can be retried", async () => {
+  const pipeline = createInMemoryPipeline();
+  const failure = new Error("instrumentation enable failed");
+  await expect(
+    useMicrosoftOpenTelemetry({
+      ...pipeline.options,
+      pageView: { enabled: false },
+      instrumentations: [
+        {
+          setTracerProvider() {},
+          getConfig: () => ({ enabled: false }),
+          enable() {
+            throw failure;
+          },
+          disable() {},
+        },
+      ],
+    }),
+  ).rejects.toBe(failure);
+  expect(assertGlobalsAvailable).not.toThrow();
+  const nextPipeline = createInMemoryPipeline();
+  const handle = await useMicrosoftOpenTelemetry({
+    ...nextPipeline.options,
+    pageView: { enabled: false },
+  });
+  cleanup.push(() => handle.shutdown());
+  trace.getTracer("retry").startSpan("retry").end();
+  await handle.forceFlush();
+  expect(nextPipeline.spanExporter.getFinishedSpans()).toHaveLength(1);
+});

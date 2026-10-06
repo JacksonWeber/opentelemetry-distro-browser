@@ -14,6 +14,7 @@ import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { startBrowserSdk } from "@opentelemetry/browser-sdk";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
+import { CompositePropagator } from "@opentelemetry/core";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { BatchLogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
@@ -202,7 +203,8 @@ it.each(["both", "context manager", "propagators", "no propagators"] as const)(
         "telemetry.distro.version": OPENTELEMETRY_BROWSER_VERSION,
       },
       traces: {
-        ...traces,
+        ...(traces.contextManager ? { contextManager: expect.any(Object) } : {}),
+        ...(traces.propagators ? { propagators: [expect.any(CompositePropagator)] } : {}),
         processors: [
           expect.objectContaining({ onStart: expect.any(Function) }),
           pipeline.spanProcessor,
@@ -218,11 +220,17 @@ it.each(["both", "context manager", "propagators", "no propagators"] as const)(
     const forwarded = vi.mocked(startBrowserSdk).mock.calls[0]?.[0]?.traces;
     expect(forwarded?.propagators).not.toBe(propagators);
     if (configuration === "both" || configuration === "context manager") {
-      expect(forwarded?.contextManager).toBe(contextManager);
+      expect(forwarded?.contextManager).not.toBe(contextManager);
+      expect(forwarded?.contextManager?.active()).toBe(contextManager.active());
     } else {
       expect(forwarded).not.toHaveProperty("contextManager");
     }
     if (configuration === "context manager") expect(forwarded).not.toHaveProperty("propagators");
+    else {
+      expect(forwarded?.propagators?.[0].fields()).toEqual(
+        configuration === "no propagators" ? [] : ["x-test-context"],
+      );
+    }
     expect(options.traces).toBe(traces);
     expect(options.traces?.propagators).toBe(traces.propagators);
   },
