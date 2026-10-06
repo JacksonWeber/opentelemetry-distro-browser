@@ -43,10 +43,7 @@ export function getSharedRegistry(): SharedRegistry {
   return registry;
 }
 
-/**
- * Public API getters hide incompatible registrations behind no-op providers.
- * Inspect registry identities without invoking foreign code or importing dependency internals.
- */
+/** Reads raw identities because API getters can hide incompatible registrations. */
 export function getRegisteredGlobal(name: "trace" | "context" | "propagation" | "logs"): unknown {
   if (name === "logs") return realm[logsKey];
   const registry = realm[apiKey];
@@ -57,6 +54,14 @@ export function getRegisteredGlobal(name: "trace" | "context" | "propagation" | 
 
 export function conflict(code: string, detail: string): never {
   const message = `[${code}] ${detail}.`;
-  diag.error(message);
+  reportError(message);
   throw Object.assign(new Error(message), { code });
+}
+
+export function reportError(...args: Parameters<typeof diag.error>): void {
+  try {
+    diag.error(...args);
+  } catch {
+    // A diagnostic logger must not interrupt cleanup or replace the startup error.
+  }
 }

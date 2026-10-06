@@ -12,10 +12,7 @@ import {
 import { createNoopLogger, logs, type LoggerProvider } from "@opentelemetry/api-logs";
 import { getRegisteredGlobal, getSharedRegistry } from "../shared/globalOwnership.js";
 
-/**
- * The isolated pipelines owned by one distribution instance. A signal the instance does not
- * collect is left undefined, so it is never served by another instance's pipeline.
- */
+/** Instance-owned providers. Omitted signals never fall back to another instance. */
 export interface InstancePipelines {
   readonly tracerProvider?: TracerProvider;
   readonly loggerProvider?: LoggerProvider;
@@ -55,11 +52,7 @@ export const noopTracerProvider: TracerProvider = /* @__PURE__ */ new ProxyTrace
 /** Hands out no-op loggers. */
 export const noopLoggerProvider: LoggerProvider = { getLogger: () => createNoopLogger() };
 
-/**
- * Resolves the provider for one signal: the selected instance's own provider, or by default the
- * first running instance that collects the signal. A selected instance that does not collect it
- * gets none, never another instance's.
- */
+/** Uses the selected instance, or defaults to the first running owner of this signal. */
 function selectProvider<K extends keyof InstancePipelines>(
   signal: K,
 ): InstancePipelines[K] | undefined {
@@ -78,12 +71,8 @@ function selectProvider<K extends keyof InstancePipelines>(
 }
 
 /**
- * Adds an instance to the routing table and registers the global router for each signal it
- * collects. Never replaces a provider registered by another SDK, and diagnoses each foreign
- * provider once without invoking its registration or acquisition methods.
- *
- * @returns Removes the instance from routing. Tracers and loggers already bound to it stay bound
- * to its own pipelines rather than moving to another instance.
+ * Adds an instance without replacing foreign providers.
+ * Returns a removal callback. Acquired tracers and loggers stay bound to their instance.
  */
 export function addInstance(instance: InstancePipelines): () => void {
   const state = getRouter();

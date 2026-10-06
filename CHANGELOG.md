@@ -29,6 +29,7 @@ All notable changes to this package are documented in this file.
   still owned by the failed initialization.
 - Clean up processors after early diagnostic, resource, or provider startup failures, and allow
   diagnostic initialization to be retried when registration fails.
+- Keep cleanup running and preserve the startup error when diagnostic reporting throws.
 - Isolate telemetry pipelines per initialization: each instance owns its tracer and logger
   providers, instrumentations bind to their own instance, and global tracers and loggers bind to
   the earliest running instance that collects that signal when acquired.

@@ -26,7 +26,7 @@ import {
   ATTR_TELEMETRY_DISTRO_VERSION,
 } from "@opentelemetry/semantic-conventions";
 import { OPENTELEMETRY_BROWSER_VERSION } from "./shared/constants.js";
-import { getSharedRegistry } from "./shared/globalOwnership.js";
+import { getSharedRegistry, reportError } from "./shared/globalOwnership.js";
 import { getPageOperation, isPageContextRegistered } from "./routing/pageContext.js";
 import { startTelemetryInstance, type TelemetryInstance } from "./routing/telemetryInstance.js";
 import type {
@@ -75,19 +75,14 @@ function createOwnedInstrumentations(
  * Await completion before emitting telemetry.
  *
  * @remarks
- * Like the upstream OpenTelemetry browser SDK, the first initialization on a page installs a
- * console logger at INFO level for the global `diag` API, replacing any diagnostic logger set
- * earlier. Call `diag.setLogger` after initialization to use your own logger or level.
+ * First initialization installs an INFO console diagnostic logger, replacing the previous one.
+ * Call `diag.setLogger` afterward to override it.
  *
- * Compatible distribution copies share realm-local routers and page context, but each call owns
- * its processors and instrumentation providers. Existing foreign globals remain untouched and
- * are diagnosed rather than adopted by the instance. The global APIs continue to serve their
- * existing owner. Changes to globals from context or propagator startup callbacks reject
- * initialization without shutting down another instance.
+ * Compatible copies share realm-local routing and page context, not pipelines.
+ * Foreign globals stay untouched. Re-entrant registration changes reject startup.
  *
- * With duplicate API packages, acquire tracers and loggers after initialization or share both
- * API packages as singletons. Upstream pre-initialization proxies belong to their API copy.
- * Iframes and workers initialize independently, without implicit cross-realm telemetry routing.
+ * Share both API packages as singletons or acquire tracers and loggers after initialization.
+ * Early proxies belong to their API copy. Iframes and workers have independent state.
  * @public
  */
 export async function useMicrosoftOpenTelemetry(
@@ -271,7 +266,7 @@ export async function useMicrosoftOpenTelemetry(
       correlation,
       propagators: traceOptions?.propagators,
     };
-    // The callee owns processor cleanup even if startup fails before creating any provider.
+    // Ownership transfers on call, including failed startup.
     processorsTransferred = true;
     instance = await startTelemetryInstance(instanceOptions);
     globalThis.addEventListener?.("pagehide", flushForUnload);
@@ -288,7 +283,7 @@ export async function useMicrosoftOpenTelemetry(
     try {
       await shutdown();
     } catch (cleanupError) {
-      diag.error("Telemetry initialization cleanup failed", cleanupError);
+      reportError("Telemetry initialization cleanup failed", cleanupError);
     }
     throw error;
   }

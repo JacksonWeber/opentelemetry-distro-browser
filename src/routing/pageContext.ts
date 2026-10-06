@@ -12,7 +12,12 @@ import {
   type TextMapPropagator,
 } from "@opentelemetry/api";
 import { withoutPageOperation } from "../instrumentation/pageView/pageViewCorrelation.js";
-import { conflict, getRegisteredGlobal, getSharedRegistry } from "../shared/globalOwnership.js";
+import {
+  conflict,
+  getRegisteredGlobal,
+  getSharedRegistry,
+  reportError,
+} from "../shared/globalOwnership.js";
 
 /** Page correlation contributed by one instance with page views. */
 export interface PageCorrelation {
@@ -63,16 +68,8 @@ function getPageContext(): PageContextState {
 }
 
 /**
- * The page-lifetime context manager. The OpenTelemetry API allows only one registration, so
- * context storage is shared for the page, while the page operation comes from the earliest
- * running instance with page views and passes on when that instance shuts down. Contexts bound before a
- * handoff therefore stay valid.
- * Registers the page context manager and propagator for the first tracing instance, which then
- * serve the page for its lifetime. Foreign registrations present at entry are preserved.
- * Re-entrant changes during configuration or enable callbacks reject startup.
- *
- * @param supplied - Caller-owned manager. It may already be the global one, so a registration
- * conflict leaves it enabled. Rollback never disables a foreign global manager.
+ * Registers page context without replacing foreign globals. Rejects re-entrant changes.
+ * Returns a rollback callback for this attempt's registrations only.
  */
 export function registerPageContext(
   supplied: ContextManager | undefined,
@@ -168,7 +165,7 @@ export function registerPageContext(
     try {
       rollback();
     } catch (cleanupError) {
-      diag.error("Page context rollback failed", cleanupError);
+      reportError("Page context rollback failed", cleanupError);
     }
     throw error;
   } finally {
@@ -176,12 +173,7 @@ export function registerPageContext(
   }
 }
 
-/**
- * Adds an instance's page correlation, whether or not it collects traces, so every instance with
- * page views shares the page operation.
- *
- * @returns Removes the correlation, passing the page operation to the next instance.
- */
+/** Adds page correlation and returns a removal callback that hands off to the next owner. */
 export function addPageCorrelation(owner: PageCorrelation): () => void {
   const state = getPageContext();
   state.owners.push(owner);
@@ -193,10 +185,7 @@ export function addPageCorrelation(owner: PageCorrelation): () => void {
   };
 }
 
-/**
- * The page operation supplied by another instance, which later instances adopt so their page
- * views match the correlation on their spans and logs.
- */
+/** Returns another instance's page operation, if any. */
 export function getPageOperation(self: PageCorrelation | undefined): SpanContext | undefined {
   const { correlation } = getPageContext();
   return correlation === self ? undefined : correlation?.operation();

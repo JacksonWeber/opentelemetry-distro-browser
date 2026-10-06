@@ -22,7 +22,7 @@ import { TracerProvider, type SpanProcessor } from "@opentelemetry/sdk-trace";
 import { StackContextManager } from "@opentelemetry/sdk-trace-web";
 import { addInstance, noopLoggerProvider, noopTracerProvider } from "./instanceRouter.js";
 import { addPageCorrelation, registerPageContext, type PageCorrelation } from "./pageContext.js";
-import { getSharedRegistry } from "../shared/globalOwnership.js";
+import { getSharedRegistry, reportError } from "../shared/globalOwnership.js";
 
 /** Resolved pipeline configuration for one distribution instance. */
 export interface TelemetryInstanceOptions {
@@ -41,25 +41,15 @@ export interface TelemetryInstanceOptions {
 export interface TelemetryInstance {
   readonly tracerProvider: TracerProviderApi;
   readonly loggerProvider: LoggerProviderApi;
-  /**
-   * Stops routing new tracers and loggers to the instance and passes the page operation on at
-   * once, before shutdown awaits pending flushes.
-   */
+  /** Hands off routing and page context before waiting for flushes. */
   detach(): void;
   /** Stops routing to the instance, then shuts down both of its providers. */
   shutdown(): Promise<void>;
 }
 
 /**
- * Creates an instance's own tracer and logger providers and adds it to the global router.
- *
- * @remarks
- * Nothing is shared with other instances except the page-wide context manager and propagator,
- * which the OpenTelemetry API allows only one SDK to register: the first tracing instance on the
- * page registers them for the page's lifetime. The page operation comes from the earliest running
- * instance with page views, including logs-only instances, and passes on when it shuts down.
- * Processor ownership transfers on entry. Any startup failure shuts down created providers and
- * processors not yet bound to a provider before the failure is rethrown.
+ * Creates isolated providers behind shared routers and page context.
+ * Takes processor ownership on entry and cleans up every failed startup.
  */
 export async function startTelemetryInstance(
   options: TelemetryInstanceOptions,
@@ -122,12 +112,12 @@ export async function startTelemetryInstance(
     try {
       rollbackContext?.();
     } catch (cleanupFailure) {
-      diag.error("Telemetry global rollback failed", cleanupFailure);
+      reportError("Telemetry global rollback failed", cleanupFailure);
     }
     try {
       await shutdownProviders();
     } catch (cleanupFailure) {
-      diag.error("Telemetry initialization cleanup failed", cleanupFailure);
+      reportError("Telemetry initialization cleanup failed", cleanupFailure);
     }
     throw error;
   }

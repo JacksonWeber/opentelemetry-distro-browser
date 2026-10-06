@@ -561,3 +561,62 @@ it("finishes early-startup cleanup after a synchronous processor shutdown failur
     cleanupFailure,
   );
 });
+
+it.each(["context", "router"] as const)(
+  "preserves the %s startup error when rollback, processor shutdown, and diagnostics all throw",
+  async (stage) => {
+    const failure = new Error(`${stage} startup failed`);
+    const rollbackFailure = new Error("rollback failed");
+    const shutdownFailure = new Error("processor shutdown failed");
+    const report = vi.fn(() => {
+      throw new Error("diagnostic logger failed");
+    });
+    const pipeline = createInMemoryPipeline();
+    const shutdownSpan = pipeline.spanProcessor.shutdown.bind(pipeline.spanProcessor);
+    const spanShutdown = vi
+      .spyOn(pipeline.spanProcessor, "shutdown")
+      .mockImplementationOnce(async () => {
+        await shutdownSpan();
+        throw shutdownFailure;
+      });
+    const logShutdown = vi.spyOn(pipeline.logProcessor, "shutdown");
+    const manager = new StackContextManager();
+    vi.spyOn(manager, "enable").mockImplementation(() => {
+      diag.setLogger(
+        { error: report, warn() {}, info() {}, debug() {}, verbose() {} },
+        {
+          suppressOverrideMessage: true,
+        },
+      );
+      if (stage === "context") throw failure;
+      return manager;
+    });
+    vi.spyOn(manager, "disable").mockImplementation(() => {
+      throw rollbackFailure;
+    });
+    if (stage === "router") {
+      vi.spyOn(logs, "setGlobalLoggerProvider").mockImplementationOnce(() => {
+        throw failure;
+      });
+    }
+
+    await expect(
+      useMicrosoftOpenTelemetry({
+        ...pipeline.options,
+        pageView: { enabled: false },
+        traces: { contextManager: manager },
+      }),
+    ).rejects.toBe(failure);
+
+    expect(spanShutdown).toHaveBeenCalledOnce();
+    expect(logShutdown).toHaveBeenCalledOnce();
+    expect(report).toHaveBeenCalledWith(
+      stage === "context" ? "Page context rollback failed" : "Telemetry global rollback failed",
+      rollbackFailure,
+    );
+    expect(report).toHaveBeenCalledWith(
+      "Telemetry initialization cleanup failed",
+      expect.any(Error),
+    );
+  },
+);
