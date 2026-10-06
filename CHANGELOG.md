@@ -27,6 +27,8 @@ All notable changes to this package are documented in this file.
   and worker initialization. Defer API version compatibility to the loaded API's registration.
 - Reject re-entrant context-manager and propagator conflicts, and roll back only registrations
   still owned by the failed initialization.
+- Clean up processors after early diagnostic, resource, or provider startup failures, and allow
+  diagnostic initialization to be retried when registration fails.
 - Isolate telemetry pipelines per initialization: each instance owns its tracer and logger
   providers, instrumentations bind to their own instance, and global tracers and loggers bind to
   the earliest running instance that collects that signal when acquired.

@@ -57,31 +57,21 @@ export interface TelemetryInstance {
  * Nothing is shared with other instances except the page-wide context manager and propagator,
  * which the OpenTelemetry API allows only one SDK to register: the first tracing instance on the
  * page registers them for the page's lifetime. The page operation comes from the earliest running
- * instance with page views, including logs-only instances, and passes on when it shuts down. If startup fails, the providers it created
- * are shut down before the failure is rethrown.
+ * instance with page views, including logs-only instances, and passes on when it shuts down.
+ * Processor ownership transfers on entry. Any startup failure shuts down created providers and
+ * processors not yet bound to a provider before the failure is rethrown.
  */
 export async function startTelemetryInstance(
   options: TelemetryInstanceOptions,
 ): Promise<TelemetryInstance> {
-  const registry = getSharedRegistry();
-  // Matches the upstream browser SDK, which installs a console diagnostic logger once per page.
-  // Documented on useMicrosoftOpenTelemetry; applications can replace it after initialization.
-  if (!registry.diagInitialized) {
-    registry.diagInitialized = true;
-    diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.INFO);
-  }
-  const resource = defaultResource().merge(resourceFromAttributes(options.resourceAttributes));
-  const tracerProvider = options.spanProcessors.length
-    ? new TracerProvider({ resource, spanProcessors: options.spanProcessors.slice() })
-    : undefined;
-  const loggerProvider = options.logRecordProcessors.length
-    ? new LoggerProvider({ resource, processors: options.logRecordProcessors.slice() })
-    : undefined;
+  let tracerProvider: TracerProvider | undefined;
+  let loggerProvider: LoggerProvider | undefined;
   const shutdownProviders = async (): Promise<void> => {
-    const results = await Promise.allSettled([
-      tracerProvider?.shutdown(),
-      loggerProvider?.shutdown(),
-    ]);
+    const owners = [
+      ...(tracerProvider ? [tracerProvider] : options.spanProcessors),
+      ...(loggerProvider ? [loggerProvider] : options.logRecordProcessors),
+    ];
+    const results = await Promise.allSettled(owners.map(async (owner) => owner.shutdown()));
     const errors = results.flatMap((result) =>
       result.status === "rejected" ? [result.reason as unknown] : [],
     );
@@ -93,6 +83,24 @@ export async function startTelemetryInstance(
   let removeCorrelation: (() => void) | undefined;
   let removeInstance: (() => void) | undefined;
   try {
+    const registry = getSharedRegistry();
+    // Matches the upstream browser SDK's once-per-page diagnostic initialization.
+    if (!registry.diagInitialized) {
+      registry.diagInitialized = diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.INFO);
+    }
+    const resource = defaultResource().merge(resourceFromAttributes(options.resourceAttributes));
+    if (options.spanProcessors.length) {
+      tracerProvider = new TracerProvider({
+        resource,
+        spanProcessors: options.spanProcessors.slice(),
+      });
+    }
+    if (options.logRecordProcessors.length) {
+      loggerProvider = new LoggerProvider({
+        resource,
+        processors: options.logRecordProcessors.slice(),
+      });
+    }
     if (tracerProvider) {
       rollbackContext = registerPageContext(
         options.contextManager,

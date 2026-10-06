@@ -114,7 +114,7 @@ export async function useMicrosoftOpenTelemetry(
   // Publish the initial page operation before caller instrumentations can emit.
   const instrumentations = [...owned, ...(options.instrumentations ?? [])];
   let instance: TelemetryInstance | undefined;
-  let pipelinesStarted = false;
+  let processorsTransferred = false;
   let stopping = false;
   // Upstream stale tracers can still call processors after provider shutdown.
   const sessionProvider = {
@@ -208,7 +208,7 @@ export async function useMicrosoftOpenTelemetry(
       } catch (error) {
         errors.push(error);
       }
-      if (!pipelinesStarted) {
+      if (!processorsTransferred) {
         for (const processor of ownedProcessors) {
           try {
             await processor.shutdown();
@@ -271,7 +271,8 @@ export async function useMicrosoftOpenTelemetry(
       correlation,
       propagators: traceOptions?.propagators,
     };
-    pipelinesStarted = true;
+    // The callee owns processor cleanup even if startup fails before creating any provider.
+    processorsTransferred = true;
     instance = await startTelemetryInstance(instanceOptions);
     globalThis.addEventListener?.("pagehide", flushForUnload);
     globalThis.document?.addEventListener("visibilitychange", visibilityChange);

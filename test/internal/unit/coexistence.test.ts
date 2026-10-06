@@ -9,7 +9,8 @@ import { BasicTracerProvider, BatchSpanProcessor } from "@opentelemetry/sdk-trac
 import { StackContextManager } from "@opentelemetry/sdk-trace-web";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useMicrosoftOpenTelemetry, type BrowserInstrumentation } from "../../../src/index.js";
-import { getRegisteredGlobal } from "../../../src/shared/globalOwnership.js";
+import { getRegisteredGlobal, getSharedRegistry } from "../../../src/shared/globalOwnership.js";
+import { startTelemetryInstance } from "../../../src/routing/telemetryInstance.js";
 import { createInMemoryPipeline } from "../../fixtures/telemetry.js";
 
 const apiKey = Symbol.for("opentelemetry.js.api.1");
@@ -439,4 +440,124 @@ it("cleans up partially created owned processors before handing them to a pipeli
   ).rejects.toBe(failure);
   expect(spanShutdown).toHaveBeenCalledOnce();
   expect(logShutdown).toHaveBeenCalledOnce();
+});
+
+it.each(["OTLP", "Azure Monitor"])(
+  "cleans up owned %s processors when the application's diagnostic logger throws during startup",
+  async (destination) => {
+    const failure = new Error("application diagnostic logger failed");
+    const logger = {
+      error: vi.fn(),
+      warn: vi.fn<() => void>(() => {
+        throw failure;
+      }),
+      info: vi.fn(),
+      debug: vi.fn(),
+      verbose: vi.fn(),
+    };
+    diag.setLogger(logger);
+    const spanShutdown = vi.spyOn(BatchSpanProcessor.prototype, "shutdown");
+    const logShutdown = vi.spyOn(BatchLogRecordProcessor.prototype, "shutdown");
+    const instrumentation = probe();
+    const bind = vi.spyOn(instrumentation, "setTracerProvider");
+
+    await expect(
+      useMicrosoftOpenTelemetry({
+        ...(destination === "Azure Monitor"
+          ? {
+              azureMonitor: {
+                connectionString: "InstrumentationKey=00000000-0000-0000-0000-000000000000",
+              },
+            }
+          : {}),
+        pageView: { enabled: false },
+        instrumentations: [instrumentation],
+      }),
+    ).rejects.toBe(failure);
+
+    expect(spanShutdown).toHaveBeenCalledOnce();
+    expect(logShutdown).toHaveBeenCalledOnce();
+    expect(getSharedRegistry().diagInitialized).not.toBe(true);
+    expect(bind).not.toHaveBeenCalled();
+    for (const signal of ["trace", "logs", "context", "propagation"] as const) {
+      expect(getRegisteredGlobal(signal)).toBeUndefined();
+    }
+
+    logger.warn.mockImplementation(() => {});
+    const pipeline = createInMemoryPipeline();
+    const handle = await useMicrosoftOpenTelemetry({
+      ...pipeline.options,
+      pageView: { enabled: false },
+    });
+    cleanup.push(() => handle.shutdown());
+    expect(logger.warn).toHaveBeenCalledTimes(2);
+    expect(getSharedRegistry().diagInitialized).toBe(true);
+    trace.getTracer("retry").startSpan("retry").end();
+    await handle.forceFlush();
+    expect(pipeline.spanExporter.getFinishedSpans()).toHaveLength(1);
+  },
+);
+
+it.each(["resource", "logger provider"] as const)(
+  "shuts down caller processors exactly once after an early %s failure",
+  async (stage) => {
+    const pipeline = createInMemoryPipeline();
+    const spanShutdown = vi.spyOn(pipeline.spanProcessor, "shutdown");
+    const logShutdown = vi.spyOn(pipeline.logProcessor, "shutdown");
+    const failure = new Error(`${stage} failed`);
+    if (stage === "logger provider") {
+      vi.spyOn(pipeline.options.logRecordProcessors, "slice").mockImplementationOnce(() => {
+        throw failure;
+      });
+    }
+    await expect(
+      startTelemetryInstance({
+        resourceAttributes: {
+          get "service.name"() {
+            if (stage === "resource") throw failure;
+            return "startup-test";
+          },
+        },
+        spanProcessors: pipeline.options.spanProcessors,
+        logRecordProcessors: pipeline.options.logRecordProcessors,
+      }),
+    ).rejects.toBe(failure);
+    expect(spanShutdown).toHaveBeenCalledOnce();
+    expect(logShutdown).toHaveBeenCalledOnce();
+    for (const signal of ["trace", "logs", "context", "propagation"] as const) {
+      expect(getRegisteredGlobal(signal)).toBeUndefined();
+    }
+  },
+);
+
+it("finishes early-startup cleanup after a synchronous processor shutdown failure", async () => {
+  const failure = new Error("diagnostic initialization failed");
+  const cleanupFailure = new Error("span shutdown failed");
+  const logger = {
+    error: vi.fn(),
+    warn: () => {
+      throw failure;
+    },
+    info() {},
+    debug() {},
+    verbose() {},
+  };
+  diag.setLogger(logger);
+  const spanShutdown = vi.fn(() => {
+    throw cleanupFailure;
+  });
+  const logShutdown = vi.fn(async () => {});
+  await expect(
+    startTelemetryInstance({
+      resourceAttributes: {},
+      spanProcessors: [{ onStart() {}, onEnd() {}, async forceFlush() {}, shutdown: spanShutdown }],
+      logRecordProcessors: [{ onEmit() {}, async forceFlush() {}, shutdown: logShutdown }],
+    }),
+  ).rejects.toBe(failure);
+  expect(spanShutdown).toHaveBeenCalledOnce();
+  expect(logShutdown).toHaveBeenCalledOnce();
+  expect(logger.error).toHaveBeenCalledExactlyOnceWith(
+    "Telemetry initialization cleanup failed",
+    cleanupFailure,
+  );
 });
