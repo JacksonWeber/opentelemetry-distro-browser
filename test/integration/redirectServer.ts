@@ -142,5 +142,8 @@ function listen(server: Server): Promise<string> {
 function close(server: Server): Promise<void> {
   return new Promise((resolve, reject) => {
     server.close((error) => (error ? reject(error) : resolve()));
+    // Browsers can keep requests or keep-alive sockets open after tests finish; without this,
+    // close() waits for them indefinitely and the test run never exits.
+    server.closeAllConnections();
   });
 }

@@ -40,8 +40,17 @@ export interface ExceptionData extends EnvelopeData {
     readonly message: string;
     readonly hasFullStack: boolean;
     readonly stack?: string;
+    readonly parsedStack?: readonly StackFrame[];
   }[];
   readonly severityLevel?: SeverityLevel;
+}
+
+export interface StackFrame {
+  readonly level: number;
+  readonly method: string;
+  readonly assembly: string;
+  readonly fileName: string;
+  readonly line: number;
 }
 
 export interface PageViewData extends EnvelopeData {
