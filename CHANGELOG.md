@@ -23,8 +23,8 @@ All notable changes to this package are documented in this file.
 
 - Share routing and page-context state across compatible distribution copies while preserving
   foreign OpenTelemetry globals and isolated instance pipelines.
-- Cover shared and duplicate APIs through webpack Module Federation, with independent iframe
-  and worker initialization. Defer API version compatibility to the loaded API's registration.
+- Cover shared and duplicate APIs using emitted bundles, with independent iframe and worker
+  initialization. Defer API version compatibility to the loaded API's registration.
 - Reject re-entrant context-manager and propagator conflicts, and roll back only registrations
   still owned by the failed initialization.
 - Clean up processors after early diagnostic, resource, or provider startup failures, and allow

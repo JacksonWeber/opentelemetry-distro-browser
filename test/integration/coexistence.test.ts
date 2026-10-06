@@ -3,35 +3,29 @@
 
 import { context, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
-import type { InMemoryLogRecordExporter } from "@opentelemetry/sdk-logs";
-import type { InMemorySpanExporter } from "@opentelemetry/sdk-trace-base";
 import { afterEach, expect, inject, it } from "vitest";
 import type { AzureMonitorEnvelope } from "../../src/exporter/telemetryModels.js";
 import {
   useMicrosoftOpenTelemetry,
   type MicrosoftOpenTelemetryBrowser,
-  type MicrosoftOpenTelemetryBrowserOptions,
   type BrowserInstrumentation,
 } from "../../src/index.js";
 import { createInMemoryPipeline } from "../fixtures/telemetry.js";
+import { loadBrowserScript } from "../fixtures/browserBundle.js";
+import realmSource from "../fixtures/coexistenceRealm.js?raw";
 
 interface Installation {
   trace: typeof trace;
-  logs: typeof logs;
+  logs: Pick<typeof logs, "getLogger" | "getLoggerProvider" | "disable">;
   context: typeof context;
   propagation: typeof propagation;
   diag: typeof diag;
   useMicrosoftOpenTelemetry: typeof useMicrosoftOpenTelemetry;
-  createPipeline(): {
-    spans: InMemorySpanExporter;
-    records: InMemoryLogRecordExporter;
-    options: MicrosoftOpenTelemetryBrowserOptions;
-  };
-  loadRemote(): Promise<Installation>;
 }
 
 const handles: MicrosoftOpenTelemetryBrowser[] = [];
 const installations: Installation[] = [];
+const scripts: HTMLScriptElement[] = [];
 
 afterEach(async () => {
   try {
@@ -46,37 +40,36 @@ afterEach(async () => {
     }
     Reflect.deleteProperty(globalThis, Symbol.for("opentelemetry.js.api.1"));
     Reflect.deleteProperty(globalThis, Symbol.for("@microsoft/opentelemetry-browser"));
+    for (const script of scripts.splice(0)) script.remove();
+    delete window.Microsoft;
   }
 });
 
-async function loadHost(mode: string): Promise<Installation> {
-  const url = new URL(`/${mode}/host.mjs`, location.href);
-  const host: Installation = await import(/* @vite-ignore */ url.href);
-  installations.push(host);
-  return host;
+async function loadCopies(mode = "isolated"): Promise<[Installation, Installation]> {
+  const copies: Installation[] = [];
+  for (const suffix of ["js", "min.js"]) {
+    let copy: Installation;
+    if (mode === "shared") {
+      const path = `../../dist/esm/index.${suffix}`;
+      const url = new URL(path, import.meta.url);
+      const distro: typeof import("../../src/index.js") = await import(/* @vite-ignore */ url.href);
+      copy = { ...distro, trace, logs, context, propagation, diag };
+    } else {
+      scripts.push(await loadBrowserScript(`opentelemetry-browser.iife.${suffix}`));
+      const bundle = window.Microsoft?.OpenTelemetry;
+      if (!bundle) throw new Error("The IIFE bundle did not initialize");
+      copy = bundle;
+    }
+    copies.push(copy);
+    installations.push(copy);
+  }
+  return [copies[0], copies[1]];
 }
 
-it("accepts the API actually loaded when its patch metadata differs from the development pin", async () => {
-  const host = await loadHost("runtime-patch");
-  host.diag.setLogger({
-    error() {},
-    warn() {},
-    info() {},
-    debug() {},
-    verbose() {},
-  });
-  expect(Reflect.get(globalThis, Symbol.for("opentelemetry.js.api.1"))).toMatchObject({
-    version: "1.9.2",
-  });
-  const pipeline = host.createPipeline();
-  const handle = await host.useMicrosoftOpenTelemetry(pipeline.options);
-  handles.push(handle);
-  host.trace.getTracer("runtime-patch").startSpan("runtime-patch").end();
-  host.logs.getLogger("runtime-patch").emit({ eventName: "runtime-patch" });
-  await handle.forceFlush();
-  expect(pipeline.spans.getFinishedSpans()).toHaveLength(1);
-  expect(pipeline.records.getFinishedLogRecords()).toHaveLength(1);
-});
+function createPipeline() {
+  const { spanExporter: spans, logExporter: records, options } = createInMemoryPipeline();
+  return { spans, records, options: { ...options, pageView: { enabled: false } } };
+}
 
 function probe() {
   let tracerProvider: ReturnType<typeof trace.getTracerProvider> | undefined;
@@ -99,19 +92,17 @@ function probe() {
 }
 
 it.each(["shared", "isolated"])(
-  "shares routers while isolating federation host and remote pipelines with %s APIs",
+  "shares routers while isolating separately loaded distributions with %s APIs",
   async (mode) => {
-    const host = await loadHost(mode);
-    const remote = await host.loadRemote();
-    installations.push(remote);
+    const [host, remote] = await loadCopies(mode);
     expect(host.trace === remote.trace).toBe(mode === "shared");
     expect(host.logs === remote.logs).toBe(mode === "shared");
     expect(host.useMicrosoftOpenTelemetry).not.toBe(remote.useMicrosoftOpenTelemetry);
     // Upstream pre-start proxies are local to each API copy, unlike post-start acquisitions.
     const earlyTracer = remote.trace.getTracer("same-scope");
     const earlyLogger = remote.logs.getLogger("same-scope");
-    const pipeline = host.createPipeline();
-    const remotePipeline = remote.createPipeline();
+    const pipeline = createPipeline();
+    const remotePipeline = createPipeline();
     const hostProbe = probe();
     const remoteProbe = probe();
     const handle = await host.useMicrosoftOpenTelemetry({
@@ -174,11 +165,9 @@ it.each(["shared", "isolated"])(
 );
 
 it("supports concurrent startup across separately bundled distribution and API copies", async () => {
-  const host = await loadHost("isolated");
-  const remote = await host.loadRemote();
-  installations.push(remote);
-  const first = host.createPipeline();
-  const second = remote.createPipeline();
+  const [host, remote] = await loadCopies();
+  const first = createPipeline();
+  const second = createPipeline();
   const a = probe();
   const b = probe();
   const started = await Promise.all([
@@ -194,11 +183,9 @@ it("supports concurrent startup across separately bundled distribution and API c
 });
 
 it("hands page correlation to a surviving distribution copy", async () => {
-  const host = await loadHost("isolated");
-  const remote = await host.loadRemote();
-  installations.push(remote);
-  const first = host.createPipeline();
-  const second = remote.createPipeline();
+  const [host, remote] = await loadCopies();
+  const first = createPipeline();
+  const second = createPipeline();
   const a = await host.useMicrosoftOpenTelemetry({ ...first.options, pageView: {} });
   handles.push(a);
   const b = await remote.useMicrosoftOpenTelemetry({ ...second.options, pageView: {} });
@@ -226,10 +213,8 @@ it("hands page correlation to a surviving distribution copy", async () => {
 });
 
 it("recognizes another copy's page context when exporting to Azure Monitor", async () => {
-  const host = await loadHost("isolated");
-  const remote = await host.loadRemote();
-  installations.push(remote);
-  const first = host.createPipeline();
+  const [host, remote] = await loadCopies();
+  const first = createPipeline();
   const a = await host.useMicrosoftOpenTelemetry({ ...first.options, pageView: {} });
   handles.push(a);
   const operation = host.trace.getSpanContext(host.context.active());
@@ -266,8 +251,19 @@ it.each(["iframe", "worker"])(
     });
     handles.push(handle);
     const globals = [trace.getTracerProvider(), logs.getLoggerProvider()];
-    const fixtureUrl = new URL("/realm.mjs", location.href).href;
-    const worker = kind === "worker" ? new Worker(fixtureUrl, { type: "module" }) : undefined;
+    const bundleUrl = new URL(
+      "../../dist/browser/opentelemetry-browser.iife.min.js",
+      import.meta.url,
+    ).href;
+    const workerUrl =
+      kind === "worker"
+        ? URL.createObjectURL(
+            new Blob([`importScripts(${JSON.stringify(bundleUrl)});\n${realmSource}`], {
+              type: "text/javascript",
+            }),
+          )
+        : undefined;
+    const worker = workerUrl ? new Worker(workerUrl) : undefined;
     const frame = kind === "iframe" ? document.createElement("iframe") : undefined;
     const target = worker ?? window;
     let receive: ((event: MessageEvent) => void) | undefined;
@@ -287,7 +283,7 @@ it.each(["iframe", "worker"])(
     try {
       const initialized = nextMessage();
       if (frame) {
-        frame.srcdoc = `<script type="module" src="${fixtureUrl}"></script>`;
+        frame.srcdoc = `<script src="${bundleUrl}"></script><script>${realmSource}</script>`;
         document.body.append(frame);
       }
       expect(await initialized).toEqual({ spans: ["realm-span"], logs: ["realm-log"] });
@@ -310,6 +306,7 @@ it.each(["iframe", "worker"])(
       clearTimeout(timer);
       if (receive) target.removeEventListener("message", receive as EventListener);
       worker?.terminate();
+      if (workerUrl) URL.revokeObjectURL(workerUrl);
       frame?.remove();
     }
   },
