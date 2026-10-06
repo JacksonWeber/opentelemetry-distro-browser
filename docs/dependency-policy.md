@@ -9,7 +9,7 @@ in a minor release.
 | Release cohort          | Packages                                                                                                                                                                    | Version   |
 | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
 | API                     | `@opentelemetry/api`                                                                                                                                                        | `1.9.1`   |
-| Stable SDK              | `@opentelemetry/core`, `@opentelemetry/resources`, `@opentelemetry/sdk-trace-base`, `@opentelemetry/sdk-trace-web`                                                          | `2.11.0`  |
+| Stable SDK              | `@opentelemetry/core`, `@opentelemetry/resources`, `@opentelemetry/sdk-trace`, `@opentelemetry/sdk-trace-base`, `@opentelemetry/sdk-trace-web`                              | `2.11.0`  |
 | Development SDK         | `@opentelemetry/api-logs`, `@opentelemetry/exporter-logs-otlp-http`, `@opentelemetry/exporter-trace-otlp-http`, `@opentelemetry/instrumentation`, `@opentelemetry/sdk-logs` | `0.222.0` |
 | Browser SDK             | `@opentelemetry/browser-sdk`                                                                                                                                                | `0.4.0`   |
 | Browser instrumentation | `@opentelemetry/browser-instrumentation`                                                                                                                                    | `0.8.1`   |

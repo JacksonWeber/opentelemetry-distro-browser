@@ -212,7 +212,12 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
 
   private currentOperation(): SpanContext {
     const url = this.getNavigationApi()?.currentEntry?.url ?? location.href;
-    if (!this.operation || this.operationUrl !== url) {
+    const shared = this.getConfig().sharedOperation?.();
+    if (shared) {
+      // Kept for this URL, so the page view in flight keeps its ID after the source shuts down.
+      this.operation = shared;
+      this.operationUrl = url;
+    } else if (!this.operation || this.operationUrl !== url) {
       this.operation = {
         traceId: this.mintId(this.getConfig().generatePageViewId),
         spanId: new RandomIdGenerator().generateSpanId(),

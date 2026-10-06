@@ -21,6 +21,9 @@ All notable changes to this package are documented in this file.
 
 ### Changed
 
+- Isolate telemetry pipelines per initialization: each instance owns its tracer and logger
+  providers, instrumentations bind to their own instance, and global tracers and loggers bind to
+  the earliest running instance that collects that signal when acquired.
 - The prerelease browser lifecycle handle now includes the required `userContext` identity and
   persistence controls.
 - Spans and logs without an application or resource `enduser.pseudo.id` now receive an anonymous
