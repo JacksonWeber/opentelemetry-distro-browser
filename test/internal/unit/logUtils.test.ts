@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+import { resourceFromAttributes } from "@opentelemetry/resources";
 import { describe, expect, it } from "vitest";
 import { logToEnvelope } from "../../../src/exporter/logUtils.js";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../../src/shared/constants.js";
@@ -178,6 +179,54 @@ describe("Azure Monitor log envelope mapping", () => {
       },
     });
   });
+
+  it("maps resource user attributes to Azure Monitor user tags", () => {
+    const envelope = logToEnvelope(
+      makeLog({
+        resource: resourceFromAttributes({
+          "service.name": "browser-store",
+          "user.id": "signed-in-user",
+          "enduser.pseudo.id": "anonymous-user",
+        }),
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.tags).toMatchObject({
+      "ai.user.id": "anonymous-user",
+      "ai.user.authUserId": "signed-in-user",
+    });
+  });
+
+  it.each([undefined, "browser.page_view"])(
+    "maps log user attributes to tags instead of properties for event %s",
+    (eventName) => {
+      const envelope = logToEnvelope(
+        makeLog({
+          eventName,
+          attributes: {
+            "enduser.pseudo.id": "anonymous-user",
+            "user.id": "signed-in-user",
+            "user.account.id": "tenant-42",
+            "custom.attribute": "kept",
+          },
+        }),
+        instrumentationKey,
+      );
+
+      expect(envelope.tags).toMatchObject({
+        "ai.user.id": "anonymous-user",
+        "ai.user.authUserId": "signed-in-user",
+        "ai.user.accountId": "tenant-42",
+      });
+      const properties = (envelope.data?.baseData as { properties?: Record<string, string> })
+        .properties;
+      expect(properties).toMatchObject({ "custom.attribute": "kept" });
+      for (const key of ["enduser.pseudo.id", "user.id", "user.account.id"]) {
+        expect(properties).not.toHaveProperty(key);
+      }
+    },
+  );
 
   it.each([undefined, null, ""])('maps an empty message body to "n/a": %s', (body) => {
     const envelope = logToEnvelope(makeLog({ body }), instrumentationKey);

@@ -16,6 +16,7 @@ import {
   type MicrosoftOpenTelemetryBrowser,
   type MicrosoftOpenTelemetryBrowserOptions,
   type MicrosoftOpenTelemetryBrowserTraceOptions,
+  type MicrosoftOpenTelemetryBrowserUserContext,
   type PageViewInstrumentationConfig,
 } from "../../../src/index.js";
 
@@ -34,6 +35,7 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
     | "instrumentations"
     | "pageView"
     | "session"
+    | "userContext"
     | "traces"
   >();
   expectTypeOf<MicrosoftOpenTelemetryBrowserOptions["resource"]>().toEqualTypeOf<
@@ -49,6 +51,9 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
     readonly TextMapPropagator[] | undefined
   >();
   expectTypeOf<MicrosoftOpenTelemetryBrowserOptions["session"]>().toEqualTypeOf<
+    { enabled?: boolean } | undefined
+  >();
+  expectTypeOf<MicrosoftOpenTelemetryBrowserOptions["userContext"]>().toEqualTypeOf<
     { enabled?: boolean } | undefined
   >();
   expectTypeOf<MicrosoftOpenTelemetryBrowserOptions["azureMonitor"]>().toEqualTypeOf<
@@ -75,4 +80,7 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
   >();
   expectTypeOf<Instrumentation>().toExtend<BrowserInstrumentation>();
   expectTypeOf<MicrosoftOpenTelemetryBrowser["forceFlush"]>().toEqualTypeOf<() => Promise<void>>();
+  expectTypeOf<
+    MicrosoftOpenTelemetryBrowser["userContext"]
+  >().toEqualTypeOf<MicrosoftOpenTelemetryBrowserUserContext>();
 });

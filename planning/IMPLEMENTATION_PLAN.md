@@ -121,7 +121,7 @@ release, and it has shipped.
 **Initial release.** A global multi-instance routing layer over
 `@opentelemetry/api`, with isolated per-instance tracing **and logging**
 pipelines behind the existing `useMicrosoftOpenTelemetry(options)` initializer
-and lifecycle-only `forceFlush()`/`shutdown()` handle. Manual tracing through the
+and `forceFlush()`/`shutdown()` lifecycle handle (plus M1 `userContext` controls). Manual tracing through the
 OTel API and manual events through the Logs API with a top-level `eventName`.
 Routed event-based instrumentation covering the upstream occurrence set, plus
 span-based fetch/XHR with W3C Trace Context and Baggage propagation. Supported

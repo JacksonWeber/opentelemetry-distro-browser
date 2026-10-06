@@ -7,16 +7,16 @@ Applications create custom telemetry through standard OpenTelemetry APIs. Applic
 Insights-style convenience and manual tracking APIs such as `trackEvent`, `trackPageView`,
 `trackException`, `trackDependencyData` and `trackMetric` are out of scope.
 
-Status: in progress. M1 preserves the `useMicrosoftOpenTelemetry(options)` initializer and
-lifecycle-handle shape, but may add options for identity consent and persistence and configurable
-sessions. The handle remains lifecycle-only, with no `track*`, manual telemetry, or identity
-mutation methods.
+Status: in progress. M1 preserves the `useMicrosoftOpenTelemetry(options)` initializer and adds
+a `userContext` property to the lifecycle handle for identity lifecycle and persistence, plus
+options for identity persistence and configurable sessions. The handle remains free of `track*`
+and manual telemetry methods.
 
 ## Customer capabilities
 
 | Capability | M1 outcome | Status |
 | --- | --- | --- |
-| Users, identity and consent | The distribution generates standard OpenTelemetry `enduser.pseudo.id` and persists it only when consent configuration permits. Authenticated identity is application-supplied `enduser.id` directly on standard OpenTelemetry telemetry; the distribution does not persist it, and sign-out means the application stops adding it. The Azure Monitor exporter maps these standard attributes to `ai.user.*` tags. | Not started |
+| Users, identity and consent | The distribution generates standard OpenTelemetry `enduser.pseudo.id` and keeps it in memory by default. `userContext.enabled` and `userContext.setEnabled` opt into or out of identity persistence through the shared browser storage seam; session persistence is configured separately. Applications may supply authenticated identity directly as `user.id` or `enduser.id`, or update the returned `userContext`; sign-out clears in-memory and persisted authenticated identity. The Azure Monitor exporter maps these standard attributes to `ai.user.*` tags. | In progress |
 | Sessions | Add configurable inactivity and maximum session lifetimes and consent-aware persistence instead of fixed `localStorage`. The Azure Monitor exporter maps the standard `session.id` attribute to `ai.session.*` tags. | Not started |
 | Page performance | Add Azure Monitor exporter support for `PageViewPerformanceData`: define its telemetry model and base type, map navigation timing phases to `perfTotal`, `networkConnect`, `sentRequest`, `receivedResponse` and `domProcessing`, correlate each record to its owning page view, and validate the customer-visible Azure Monitor fields. | Not started |
 | Fixed-percentage sampling | Add fixed-percentage sampling equivalent in effect to Application Insights `samplingPercentage` without a proprietary tracking API. Compose the upstream sampler for spans; define the corresponding log-record policy and have the Azure Monitor exporter set envelope `sampleRate` to the effective percentage instead of hard-coded `100`. | Not started |

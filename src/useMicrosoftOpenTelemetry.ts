@@ -4,8 +4,14 @@
 import { context, diag, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { startBrowserSdk } from "@opentelemetry/browser-sdk";
-import { SessionLogRecordProcessor, SessionSpanProcessor } from "./session/sessionProcessors.js";
+import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
+import {
+  BrowserContextLogRecordProcessor,
+  BrowserContextSpanProcessor,
+} from "./context/contextProcessors.js";
 import { createSession } from "./session/createSession.js";
+import { createUserContext } from "./user/createUserContext.js";
 import {
   BatchLogRecordProcessor,
   type BatchLogRecordProcessorBrowserOptions,
@@ -69,27 +75,42 @@ function createOwnedInstrumentations(
 export async function useMicrosoftOpenTelemetry(
   options: MicrosoftOpenTelemetryBrowserOptions = {},
 ): Promise<MicrosoftOpenTelemetryBrowser> {
-  const azureBatchOptions = {
+  const userContext = createUserContext(options.userContext?.enabled === true);
+  // The handle flushes owned processors on page hide; avoid a second per-processor hide flush.
+  const batchOptions = {
     disableAutoFlushOnDocumentHide: true,
   } satisfies Pick<BatchLogRecordProcessorBrowserOptions, "disableAutoFlushOnDocumentHide">;
-  const spanProcessors = options.azureMonitor
-    ? [
-        new BatchSpanProcessor(
-          new AzureMonitorSpanExporter(options.azureMonitor),
-          azureBatchOptions,
-        ),
-        ...(options.spanProcessors ?? []),
-      ]
-    : options.spanProcessors?.slice();
-  const logRecordProcessors = options.azureMonitor
-    ? [
-        new BatchLogRecordProcessor({
-          exporter: new AzureMonitorLogRecordExporter(options.azureMonitor),
-          ...azureBatchOptions,
-        }),
-        ...(options.logRecordProcessors ?? []),
-      ]
-    : options.logRecordProcessors?.slice();
+  const spanProcessors =
+    options.spanProcessors?.length === 0
+      ? []
+      : options.azureMonitor
+        ? [
+            new BatchSpanProcessor(
+              new AzureMonitorSpanExporter(options.azureMonitor),
+              batchOptions,
+            ),
+            ...(options.spanProcessors ?? []),
+          ]
+        : (options.spanProcessors?.slice() ?? [
+            new BatchSpanProcessor(new OTLPTraceExporter(), batchOptions),
+          ]);
+  const logRecordProcessors =
+    options.logRecordProcessors?.length === 0
+      ? []
+      : options.azureMonitor
+        ? [
+            new BatchLogRecordProcessor({
+              exporter: new AzureMonitorLogRecordExporter(options.azureMonitor),
+              ...batchOptions,
+            }),
+            ...(options.logRecordProcessors ?? []),
+          ]
+        : (options.logRecordProcessors?.slice() ?? [
+            new BatchLogRecordProcessor({
+              exporter: new OTLPLogExporter(),
+              ...batchOptions,
+            }),
+          ]);
   const session = options.session?.enabled === true ? createSession() : undefined;
   const traceOptions = options.traces;
   const owned = createOwnedInstrumentations(options);
@@ -105,6 +126,12 @@ export async function useMicrosoftOpenTelemetry(
   const sessionProvider = {
     getSessionId: () => (stopping ? null : (session?.getSessionId() ?? null)),
   };
+  const contextProvider = {
+    ...userContext.provider,
+    ...sessionProvider,
+  };
+  const contextSpanProcessor = new BrowserContextSpanProcessor(contextProvider);
+  const contextLogRecordProcessor = new BrowserContextLogRecordProcessor(contextProvider);
 
   let shutdownPromise: Promise<void> | undefined;
   let flushPromise: Promise<void> | undefined;
@@ -191,14 +218,10 @@ export async function useMicrosoftOpenTelemetry(
     })());
   }
 
-  const handle = { forceFlush, shutdown };
+  const handle = { forceFlush, shutdown, userContext: userContext.context };
 
   try {
     await session?.start();
-    const logContextProcessors = [
-      ...(session ? [new SessionLogRecordProcessor(sessionProvider)] : []),
-      ...(correlation ? [correlation] : []),
-    ];
     sdk = startBrowserSdk({
       // Spread last: the caller's attributes win, and each call gets a fresh object because the
       // SDK mutates this one in place and shares it between the traces and logs SDKs.
@@ -217,20 +240,17 @@ export async function useMicrosoftOpenTelemetry(
           ? {}
           : { propagators: traceOptions.propagators.slice() }),
         processors:
-          session && spanProcessors?.length !== 0
-            ? [new SessionSpanProcessor(sessionProvider), ...(spanProcessors ?? [])]
-            : spanProcessors,
-        // Supplying enrichment processors must not disable upstream default export.
-        ...(session && spanProcessors === undefined ? { exportConfig: {} } : {}),
+          spanProcessors?.length === 0 ? [] : [contextSpanProcessor, ...(spanProcessors ?? [])],
       },
       logs: {
         processors:
-          logContextProcessors.length && logRecordProcessors?.length !== 0
-            ? [...logContextProcessors, ...(logRecordProcessors ?? [])]
-            : logRecordProcessors,
-        ...(logContextProcessors.length && logRecordProcessors === undefined
-          ? { exportConfig: {} }
-          : {}),
+          logRecordProcessors?.length === 0
+            ? []
+            : [
+                contextLogRecordProcessor,
+                ...(correlation ? [correlation] : []),
+                ...(logRecordProcessors ?? []),
+              ],
       },
     });
     if (instrumentations.length === 0) return handle;

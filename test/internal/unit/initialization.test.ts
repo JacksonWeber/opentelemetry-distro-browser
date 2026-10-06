@@ -92,7 +92,7 @@ it("prepends session enrichment without changing the caller's processor arrays",
   expect(upstreamHandle.shutdown).toHaveBeenCalledOnce();
 });
 
-it("adds Azure Monitor batch exporters after session enrichment and before caller processors", async () => {
+it("adds Azure Monitor batch exporters after context enrichment and before caller processors", async () => {
   const pipeline = createInMemoryPipeline();
   const upstreamHandle = { shutdown: vi.fn(async () => {}) };
   vi.mocked(startBrowserSdk).mockReturnValueOnce(upstreamHandle);
@@ -130,6 +130,26 @@ it("adds Azure Monitor batch exporters after session enrichment and before calle
 
   await handle.shutdown();
   expect(upstreamHandle.shutdown).toHaveBeenCalledOnce();
+});
+
+it("honors explicit per-signal disabling with Azure Monitor configured", async () => {
+  vi.mocked(startBrowserSdk).mockReturnValueOnce({ shutdown: vi.fn(async () => {}) });
+
+  const handle = await useMicrosoftOpenTelemetry({
+    azureMonitor: {
+      connectionString:
+        "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example.test",
+    },
+    spanProcessors: [],
+    logRecordProcessors: [],
+    pageView: { enabled: false },
+  });
+  handles.add(handle);
+
+  expect(startBrowserSdk).toHaveBeenCalledOnce();
+  const sdkOptions = vi.mocked(startBrowserSdk).mock.calls[0]?.[0];
+  expect(sdkOptions?.traces?.processors).toEqual([]);
+  expect(sdkOptions?.logs?.processors).toEqual([]);
 });
 
 it.each(["both", "context manager", "propagators", "no propagators"] as const)(
@@ -178,9 +198,17 @@ it.each(["both", "context manager", "propagators", "no propagators"] as const)(
       },
       traces: {
         ...traces,
-        processors: [pipeline.spanProcessor],
+        processors: [
+          expect.objectContaining({ onStart: expect.any(Function) }),
+          pipeline.spanProcessor,
+        ],
       },
-      logs: { processors: undefined },
+      logs: {
+        processors: [
+          expect.objectContaining({ onEmit: expect.any(Function) }),
+          expect.any(BatchLogRecordProcessor),
+        ],
+      },
     });
     const forwarded = vi.mocked(startBrowserSdk).mock.calls[0]?.[0]?.traces;
     expect(forwarded?.propagators).not.toBe(propagators);
@@ -257,8 +285,8 @@ it("does not share one attributes object across initializations", async () => {
     .mockReturnValueOnce({ shutdown: vi.fn(async () => {}) })
     .mockReturnValueOnce({ shutdown: vi.fn(async () => {}) });
 
-  await useMicrosoftOpenTelemetry();
-  await useMicrosoftOpenTelemetry();
+  handles.add(await useMicrosoftOpenTelemetry());
+  handles.add(await useMicrosoftOpenTelemetry());
 
   const [first, second] = vi.mocked(startBrowserSdk).mock.calls;
   expect(first[0]?.resourceAttributes).not.toBe(second[0]?.resourceAttributes);
@@ -275,6 +303,48 @@ it("force flushes both signal processors", async () => {
 
   expect(spanFlush).toHaveBeenCalledOnce();
   expect(logFlush).toHaveBeenCalledOnce();
+});
+
+it("owns and force flushes default OTLP processors without per-processor hide flushing", async () => {
+  const succeed = (_items: unknown, done: (result: { code: number }) => void) => done({ code: 0 });
+  const spanExport = vi.spyOn(OTLPTraceExporter.prototype, "export").mockImplementation(succeed);
+  const logExport = vi.spyOn(OTLPLogExporter.prototype, "export").mockImplementation(succeed);
+  const spanFlush = vi.spyOn(BatchSpanProcessor.prototype, "forceFlush");
+  const logFlush = vi.spyOn(BatchLogRecordProcessor.prototype, "forceFlush");
+  const handle = await useMicrosoftOpenTelemetry({ pageView: { enabled: false } });
+  handles.add(handle);
+
+  const config = vi.mocked(startBrowserSdk).mock.calls[0]?.[0];
+  expect(config?.traces?.processors).toEqual([
+    expect.objectContaining({ onStart: expect.any(Function) }),
+    expect.any(BatchSpanProcessor),
+  ]);
+  expect(config?.logs?.processors).toEqual([
+    expect.objectContaining({ onEmit: expect.any(Function) }),
+    expect.any(BatchLogRecordProcessor),
+  ]);
+  expect(config?.traces).not.toHaveProperty("exportConfig");
+  expect(config?.logs).not.toHaveProperty("exportConfig");
+
+  trace.getTracer("default-otlp").startSpan("operation").end();
+  logs.getLogger("default-otlp").emit({ body: "record" });
+  await handle.forceFlush();
+  expect(spanExport).toHaveBeenCalledOnce();
+  expect(logExport).toHaveBeenCalledOnce();
+  expect(spanFlush).toHaveBeenCalledOnce();
+  expect(logFlush).toHaveBeenCalledOnce();
+
+  globalThis.dispatchEvent(new Event("pagehide"));
+  await vi.waitFor(() => {
+    expect(spanFlush).toHaveBeenCalledTimes(2);
+    expect(logFlush).toHaveBeenCalledTimes(2);
+  });
+  await vi.waitFor(() => expect(isUnloading()).toBe(false));
+  // Upstream batch processors listen on document; non-bubbling events bypass the handle.
+  document.dispatchEvent(new Event("pagehide"));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(spanFlush).toHaveBeenCalledTimes(2);
+  expect(logFlush).toHaveBeenCalledTimes(2);
 });
 
 it("coalesces concurrent force flushes across both signals", async () => {
