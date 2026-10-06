@@ -9,8 +9,9 @@ import { createSession } from "./session/createSession.js";
 import {
   BatchLogRecordProcessor,
   type BatchLogRecordProcessorBrowserOptions,
+  type LogRecordProcessor,
 } from "@opentelemetry/sdk-logs";
-import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { BatchSpanProcessor, type SpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { beginUnloading, endUnloading } from "./exporter/common.js";
 import { AzureMonitorLogRecordExporter } from "./exporter/log.js";
 import { AzureMonitorSpanExporter } from "./exporter/trace.js";
@@ -21,6 +22,11 @@ import {
   ATTR_TELEMETRY_DISTRO_VERSION,
 } from "@opentelemetry/semantic-conventions";
 import { OPENTELEMETRY_BROWSER_VERSION } from "./shared/constants.js";
+import {
+  assertGlobalsAvailable,
+  assertGlobalsRegistered,
+  reserveGlobals,
+} from "./shared/globalOwnership.js";
 import type {
   MicrosoftOpenTelemetryBrowser,
   MicrosoftOpenTelemetryBrowserOptions,
@@ -69,27 +75,26 @@ function createOwnedInstrumentations(
 export async function useMicrosoftOpenTelemetry(
   options: MicrosoftOpenTelemetryBrowserOptions = {},
 ): Promise<MicrosoftOpenTelemetryBrowser> {
+  const tracesEnabled = !!options.azureMonitor || options.spanProcessors?.length !== 0;
+  const release = reserveGlobals(tracesEnabled);
+  try {
+    return await initialize(options, tracesEnabled);
+  } finally {
+    release();
+  }
+}
+
+async function initialize(
+  options: MicrosoftOpenTelemetryBrowserOptions,
+  tracesEnabled: boolean,
+): Promise<MicrosoftOpenTelemetryBrowser> {
   const azureBatchOptions = {
     disableAutoFlushOnDocumentHide: true,
   } satisfies Pick<BatchLogRecordProcessorBrowserOptions, "disableAutoFlushOnDocumentHide">;
-  const spanProcessors = options.azureMonitor
-    ? [
-        new BatchSpanProcessor(
-          new AzureMonitorSpanExporter(options.azureMonitor),
-          azureBatchOptions,
-        ),
-        ...(options.spanProcessors ?? []),
-      ]
-    : options.spanProcessors?.slice();
-  const logRecordProcessors = options.azureMonitor
-    ? [
-        new BatchLogRecordProcessor({
-          exporter: new AzureMonitorLogRecordExporter(options.azureMonitor),
-          ...azureBatchOptions,
-        }),
-        ...(options.logRecordProcessors ?? []),
-      ]
-    : options.logRecordProcessors?.slice();
+  const azureMonitor = options.azureMonitor ? { ...options.azureMonitor } : undefined;
+  let spanProcessors: SpanProcessor[] | undefined = options.spanProcessors?.slice();
+  let logRecordProcessors: LogRecordProcessor[] | undefined = options.logRecordProcessors?.slice();
+  const ownedProcessors: (SpanProcessor | LogRecordProcessor)[] = [];
   const session = options.session?.enabled === true ? createSession() : undefined;
   const traceOptions = options.traces;
   const owned = createOwnedInstrumentations(options);
@@ -100,6 +105,7 @@ export async function useMicrosoftOpenTelemetry(
   // Publish the initial page operation before caller instrumentations can emit.
   const instrumentations = [...owned, ...(options.instrumentations ?? [])];
   let sdk: ReturnType<typeof startBrowserSdk> | undefined;
+  let instrumentationsStarted = false;
   let stopping = false;
   // Upstream stale tracers can still call processors after provider shutdown.
   const sessionProvider = {
@@ -125,8 +131,6 @@ export async function useMicrosoftOpenTelemetry(
   const visibilityChange = (): void => {
     if (globalThis.document?.visibilityState === "hidden") flushForUnload();
   };
-  globalThis.addEventListener?.("pagehide", flushForUnload);
-  globalThis.document?.addEventListener("visibilitychange", visibilityChange);
 
   async function flushProcessors(): Promise<void> {
     const processors = [...(spanProcessors ?? []), ...(logRecordProcessors ?? [])];
@@ -165,7 +169,7 @@ export async function useMicrosoftOpenTelemetry(
       } catch (error) {
         errors.push(error);
       }
-      for (let i = sdk ? instrumentations.length - 1 : -1; i >= 0; i--) {
+      for (let i = sdk && instrumentationsStarted ? instrumentations.length - 1 : -1; i >= 0; i--) {
         try {
           instrumentations[i].disable();
         } catch (error) {
@@ -186,6 +190,15 @@ export async function useMicrosoftOpenTelemetry(
       } catch (error) {
         errors.push(error);
       }
+      if (!sdk) {
+        for (const processor of ownedProcessors) {
+          try {
+            await processor.shutdown();
+          } catch (error) {
+            errors.push(error);
+          }
+        }
+      }
       if (errors.length === 1) throw errors[0];
       if (errors.length > 1) throw new AggregateError(errors, "Telemetry shutdown failed");
     })());
@@ -194,7 +207,23 @@ export async function useMicrosoftOpenTelemetry(
   const handle = { forceFlush, shutdown };
 
   try {
+    if (azureMonitor) {
+      const spanProcessor = new BatchSpanProcessor(
+        new AzureMonitorSpanExporter(azureMonitor),
+        azureBatchOptions,
+      );
+      ownedProcessors.push(spanProcessor);
+      spanProcessors = [spanProcessor, ...(spanProcessors ?? [])];
+      const logProcessor = new BatchLogRecordProcessor({
+        exporter: new AzureMonitorLogRecordExporter(azureMonitor),
+        ...azureBatchOptions,
+      });
+      ownedProcessors.push(logProcessor);
+      logRecordProcessors = [logProcessor, ...(logRecordProcessors ?? [])];
+    }
     await session?.start();
+    // A foreign SDK can register while session restoration is awaiting storage.
+    assertGlobalsAvailable(tracesEnabled);
     const logContextProcessors = [
       ...(session ? [new SessionLogRecordProcessor(sessionProvider)] : []),
       ...(correlation ? [correlation] : []),
@@ -233,10 +262,14 @@ export async function useMicrosoftOpenTelemetry(
           : {}),
       },
     });
+    assertGlobalsRegistered(tracesEnabled, logRecordProcessors?.length !== 0);
+    globalThis.addEventListener?.("pagehide", flushForUnload);
+    globalThis.document?.addEventListener("visibilitychange", visibilityChange);
     if (instrumentations.length === 0) return handle;
 
     const tracerProvider = trace.getTracerProvider();
     const loggerProvider = logs.getLoggerProvider();
+    instrumentationsStarted = true;
     for (const instrumentation of instrumentations) {
       instrumentation.setTracerProvider(tracerProvider);
       instrumentation.setLoggerProvider?.(loggerProvider);

@@ -15,6 +15,11 @@ All notable changes to this package are documented in this file.
 
 ### Changed
 
+- Reject conflicting OpenTelemetry installations before startup, with stable diagnostics and
+  protection against concurrent initialization by independently bundled distribution copies.
+- Cover shared and duplicate APIs through webpack Module Federation, with independent iframe
+  and worker initialization. Defer API version compatibility to the loaded API's registration.
+
 - Correlate page views, spans, and logs through shared operation IDs while preserving explicit
   application span contexts.
 - Fixed post-merge performance publishing for fork contributions by using the upstream

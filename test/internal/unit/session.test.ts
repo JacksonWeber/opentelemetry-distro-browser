@@ -14,6 +14,11 @@ import {
 } from "../../../src/index.js";
 
 vi.mock("@opentelemetry/browser-sdk", { spy: true });
+// Stubbed SDK handles do not register globals. Coexistence tests verify the real SDK.
+vi.mock("../../../src/shared/globalOwnership.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../src/shared/globalOwnership.js")>()),
+  assertGlobalsRegistered: vi.fn(),
+}));
 
 const storageKey = "opentelemetry-session";
 const handles = new Set<MicrosoftOpenTelemetryBrowser>();

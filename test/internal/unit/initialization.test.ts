@@ -30,6 +30,11 @@ import { isUnloading } from "../../../src/exporter/common.js";
 import { createInMemoryPipeline } from "../../fixtures/telemetry.js";
 
 vi.mock("@opentelemetry/browser-sdk", { spy: true });
+// Stubbed SDK handles do not register globals. Coexistence tests verify the real SDK.
+vi.mock("../../../src/shared/globalOwnership.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../src/shared/globalOwnership.js")>()),
+  assertGlobalsRegistered: vi.fn(),
+}));
 
 const handles = new Set<MicrosoftOpenTelemetryBrowser>();
 
@@ -430,11 +435,12 @@ it("clears unload state when a processor throws synchronously during flush", asy
   });
 });
 
-it("keeps shared unload mode active until every handle finishes flushing", async () => {
+it("keeps unload mode active until both signals finish flushing", async () => {
   const finishFlushes: Array<() => void> = [];
   const createProcessor = () => ({
     onStart() {},
     onEnd() {},
+    onEmit() {},
     forceFlush: vi.fn(() => new Promise<void>((resolve) => finishFlushes.push(resolve))),
     shutdown: vi.fn(async () => {}),
   });
@@ -442,14 +448,10 @@ it("keeps shared unload mode active until every handle finishes flushing", async
   const secondProcessor = createProcessor();
   const firstHandle = await useMicrosoftOpenTelemetry({
     spanProcessors: [firstProcessor],
-    pageView: { enabled: false },
-  });
-  const secondHandle = await useMicrosoftOpenTelemetry({
-    spanProcessors: [secondProcessor],
+    logRecordProcessors: [secondProcessor],
     pageView: { enabled: false },
   });
   handles.add(firstHandle);
-  handles.add(secondHandle);
 
   globalThis.dispatchEvent(new Event("pagehide"));
   await vi.waitFor(() => {
