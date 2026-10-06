@@ -5,11 +5,13 @@ import { context, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import type { InMemoryLogRecordExporter } from "@opentelemetry/sdk-logs";
 import type { InMemorySpanExporter } from "@opentelemetry/sdk-trace-base";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, inject, it } from "vitest";
+import type { AzureMonitorEnvelope } from "../../src/exporter/telemetryModels.js";
 import {
   useMicrosoftOpenTelemetry,
   type MicrosoftOpenTelemetryBrowser,
   type MicrosoftOpenTelemetryBrowserOptions,
+  type BrowserInstrumentation,
 } from "../../src/index.js";
 import { createInMemoryPipeline } from "../fixtures/telemetry.js";
 
@@ -43,6 +45,7 @@ afterEach(async () => {
       api.diag.disable();
     }
     Reflect.deleteProperty(globalThis, Symbol.for("opentelemetry.js.api.1"));
+    Reflect.deleteProperty(globalThis, Symbol.for("@microsoft/opentelemetry-browser"));
   }
 });
 
@@ -75,8 +78,28 @@ it("accepts the API actually loaded when its patch metadata differs from the dev
   expect(pipeline.records.getFinishedLogRecords()).toHaveLength(1);
 });
 
+function probe() {
+  let tracerProvider: ReturnType<typeof trace.getTracerProvider> | undefined;
+  let loggerProvider: ReturnType<typeof logs.getLoggerProvider> | undefined;
+  return {
+    setTracerProvider(provider) {
+      tracerProvider = provider;
+    },
+    setLoggerProvider(provider) {
+      loggerProvider = provider;
+    },
+    getConfig: () => ({ enabled: false }),
+    enable() {},
+    disable() {},
+    emit(name: string) {
+      tracerProvider?.getTracer("same-scope").startSpan(name).end();
+      loggerProvider?.getLogger("same-scope").emit({ eventName: name });
+    },
+  } satisfies BrowserInstrumentation & { emit(name: string): void };
+}
+
 it.each(["shared", "isolated"])(
-  "uses one pipeline across a real module federation host and remote with %s APIs",
+  "shares routers while isolating federation host and remote pipelines with %s APIs",
   async (mode) => {
     const host = await loadHost(mode);
     const remote = await host.loadRemote();
@@ -88,11 +111,21 @@ it.each(["shared", "isolated"])(
     const earlyTracer = remote.trace.getTracer("same-scope");
     const earlyLogger = remote.logs.getLogger("same-scope");
     const pipeline = host.createPipeline();
-    const handle = await host.useMicrosoftOpenTelemetry(pipeline.options);
-    handles.push(handle);
-    await expect(remote.useMicrosoftOpenTelemetry()).rejects.toMatchObject({
-      code: "tracer-provider-conflict",
+    const remotePipeline = remote.createPipeline();
+    const hostProbe = probe();
+    const remoteProbe = probe();
+    const handle = await host.useMicrosoftOpenTelemetry({
+      ...pipeline.options,
+      instrumentations: [hostProbe],
     });
+    handles.push(handle);
+    const globals = [host.trace.getTracerProvider(), host.logs.getLoggerProvider()];
+    const remoteHandle = await remote.useMicrosoftOpenTelemetry({
+      ...remotePipeline.options,
+      instrumentations: [remoteProbe],
+    });
+    handles.push(remoteHandle);
+    expect([remote.trace.getTracerProvider(), remote.logs.getLoggerProvider()]).toEqual(globals);
     const earlySpan = earlyTracer.startSpan("early-span");
     expect(earlySpan.isRecording()).toBe(mode === "shared");
     expect(earlyLogger.enabled()).toBe(mode === "shared");
@@ -113,25 +146,113 @@ it.each(["shared", "isolated"])(
       "remote-log",
       "host-log",
     ]);
+    remoteProbe.emit("isolated-remote");
+    hostProbe.emit("isolated-host");
+    await Promise.all([handle.forceFlush(), remoteHandle.forceFlush()]);
+    expect(remotePipeline.spans.getFinishedSpans().map((span) => span.name)).toEqual([
+      "isolated-remote",
+    ]);
+    expect(
+      remotePipeline.records.getFinishedLogRecords().map((record) => record.eventName),
+    ).toEqual(["isolated-remote"]);
+    expect(pipeline.spans.getFinishedSpans().at(-1)?.name).toBe("isolated-host");
+    const boundToHost = remote.trace.getTracer("bound-before-shutdown");
     await handle.shutdown();
-    await expect(remote.useMicrosoftOpenTelemetry()).rejects.toMatchObject({
-      code: "tracer-provider-conflict",
-    });
+    boundToHost.startSpan("stale").end();
+    host.trace.getTracer("same-scope").startSpan("next-instance").end();
+    host.logs.getLogger("same-scope").emit({ eventName: "next-instance" });
+    await remoteHandle.forceFlush();
+    expect(remotePipeline.spans.getFinishedSpans().map((span) => span.name)).toEqual([
+      "isolated-remote",
+      "next-instance",
+    ]);
+    expect(
+      remotePipeline.records.getFinishedLogRecords().map((record) => record.eventName),
+    ).toEqual(["isolated-remote", "next-instance"]);
+    expect([host.trace.getTracerProvider(), host.logs.getLoggerProvider()]).toEqual(globals);
   },
 );
 
-it("reserves startup across separately bundled distribution and API copies", async () => {
+it("supports concurrent startup across separately bundled distribution and API copies", async () => {
   const host = await loadHost("isolated");
   const remote = await host.loadRemote();
   installations.push(remote);
-  const pipeline = host.createPipeline();
-  const first = host.useMicrosoftOpenTelemetry(pipeline.options);
+  const first = host.createPipeline();
+  const second = remote.createPipeline();
+  const a = probe();
+  const b = probe();
+  const started = await Promise.all([
+    host.useMicrosoftOpenTelemetry({ ...first.options, instrumentations: [a] }),
+    remote.useMicrosoftOpenTelemetry({ ...second.options, instrumentations: [b] }),
+  ]);
+  handles.push(...started);
+  a.emit("a");
+  b.emit("b");
+  await Promise.all(started.map((handle) => handle.forceFlush()));
+  expect(first.spans.getFinishedSpans().map((span) => span.name)).toEqual(["a"]);
+  expect(second.spans.getFinishedSpans().map((span) => span.name)).toEqual(["b"]);
+});
+
+it("hands page correlation to a surviving distribution copy", async () => {
+  const host = await loadHost("isolated");
+  const remote = await host.loadRemote();
+  installations.push(remote);
+  const first = host.createPipeline();
+  const second = remote.createPipeline();
+  const a = await host.useMicrosoftOpenTelemetry({ ...first.options, pageView: {} });
+  handles.push(a);
+  const b = await remote.useMicrosoftOpenTelemetry({ ...second.options, pageView: {} });
+  handles.push(b);
+  const operation = host.trace.getSpanContext(host.context.active());
+  expect(operation?.traceId).toMatch(/^[0-9a-f]{32}$/);
+  expect(remote.trace.getSpanContext(remote.context.active())).toEqual(operation);
+  await a.shutdown();
+  expect(remote.trace.getSpanContext(remote.context.active())).toEqual(operation);
+  remote.trace.getTracer("survivor").startSpan("survivor").end();
+  await b.forceFlush();
+  expect(second.spans.getFinishedSpans()[0]?.spanContext().traceId).toBe(operation?.traceId);
+  const originalUrl = location.href;
   try {
-    await expect(remote.useMicrosoftOpenTelemetry()).rejects.toMatchObject({
-      code: "initialization-in-progress",
+    history.pushState(null, "", `${location.pathname}?coexistence=${crypto.randomUUID()}`);
+    const latest = remote.context.active();
+    expect(remote.trace.getSpanContext(latest)?.traceId).not.toBe(operation?.traceId);
+    await b.shutdown();
+    host.context.with(latest, () => {
+      expect(host.trace.getSpanContext(host.context.active())).toBeUndefined();
     });
   } finally {
-    handles.push(await first);
+    history.replaceState(null, "", originalUrl);
+  }
+});
+
+it("recognizes another copy's page context when exporting to Azure Monitor", async () => {
+  const host = await loadHost("isolated");
+  const remote = await host.loadRemote();
+  installations.push(remote);
+  const first = host.createPipeline();
+  const a = await host.useMicrosoftOpenTelemetry({ ...first.options, pageView: {} });
+  handles.push(a);
+  const operation = host.trace.getSpanContext(host.context.active());
+  const runId = crypto.randomUUID();
+  const endpoint = `${inject("ingestionEndpoint")}${runId}`;
+  const instrumentation = probe();
+  const b = await remote.useMicrosoftOpenTelemetry({
+    azureMonitor: {
+      connectionString: `InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=${endpoint}`,
+    },
+    pageView: { enabled: false },
+    instrumentations: [instrumentation],
+  });
+  handles.push(b);
+  instrumentation.emit("cross-copy");
+  await b.forceFlush();
+  const captured: AzureMonitorEnvelope[] = await fetch(
+    `${new URL(endpoint).origin}/captured?runId=${encodeURIComponent(runId)}`,
+  ).then((response) => response.json());
+  expect(captured).toHaveLength(2);
+  for (const envelope of captured) {
+    expect(envelope.tags["ai.operation.id"]).toBe(operation?.traceId);
+    expect(envelope.tags).not.toHaveProperty("ai.operation.parentId");
   }
 });
 

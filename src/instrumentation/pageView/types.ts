@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+import type { SpanContext } from "@opentelemetry/api";
 import { type LogRecord } from "@opentelemetry/api-logs";
 
 /**
@@ -210,4 +211,7 @@ export interface InternalPageViewInstrumentationConfig extends PageViewInstrumen
 
   /** Overrides page-view id generation. */
   readonly generatePageViewId?: () => string;
+
+  /** Supplies an operation shared with another instrumentation, which outranks minting one. */
+  readonly sharedOperation?: () => SpanContext | undefined;
 }

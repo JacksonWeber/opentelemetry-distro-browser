@@ -14,7 +14,7 @@ import { type LogRecord } from "@opentelemetry/api-logs";
 import { RandomIdGenerator } from "@opentelemetry/sdk-trace-base";
 import { InstrumentationBase, safeExecuteInTheMiddle } from "@opentelemetry/instrumentation";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../shared/constants.js";
-import { syntheticPageContexts } from "../../shared/pageOperationContext.js";
+import { markPageContext } from "../../shared/pageOperationContext.js";
 import { createPageViewContext, generatePageViewId } from "./pageViewContext.js";
 import {
   ATTR_PAGE_VIEW_DURATION,
@@ -212,13 +212,18 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
 
   private currentOperation(): SpanContext {
     const url = this.getNavigationApi()?.currentEntry?.url ?? location.href;
-    if (!this.operation || this.operationUrl !== url) {
+    const shared = this.getConfig().sharedOperation?.();
+    if (shared) {
+      // Kept for this URL, so the page view in flight keeps its ID after the source shuts down.
+      this.operation = shared;
+      this.operationUrl = url;
+    } else if (!this.operation || this.operationUrl !== url) {
       this.operation = {
         traceId: this.mintId(this.getConfig().generatePageViewId),
         spanId: new RandomIdGenerator().generateSpanId(),
         traceFlags: 1,
       };
-      syntheticPageContexts.add(this.operation);
+      markPageContext(this.operation);
       this.operationUrl = url;
     }
     return this.operation;

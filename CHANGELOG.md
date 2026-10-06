@@ -21,12 +21,15 @@ All notable changes to this package are documented in this file.
 
 ### Changed
 
-- Reject conflicting OpenTelemetry installations before startup, with stable diagnostics and
-  protection against concurrent initialization by independently bundled distribution copies.
+- Share routing and page-context state across compatible distribution copies while preserving
+  foreign OpenTelemetry globals and isolated instance pipelines.
 - Cover shared and duplicate APIs through webpack Module Federation, with independent iframe
   and worker initialization. Defer API version compatibility to the loaded API's registration.
 - Reject re-entrant context-manager and propagator conflicts, and roll back only registrations
   still owned by the failed initialization.
+- Isolate telemetry pipelines per initialization: each instance owns its tracer and logger
+  providers, instrumentations bind to their own instance, and global tracers and loggers bind to
+  the earliest running instance that collects that signal when acquired.
 - The prerelease browser lifecycle handle now includes the required `userContext` identity and
   persistence controls.
 - Spans and logs without an application or resource `enduser.pseudo.id` now receive an anonymous

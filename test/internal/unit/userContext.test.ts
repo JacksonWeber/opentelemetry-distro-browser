@@ -103,8 +103,6 @@ it("persists, restores, and removes identity when persistence is enabled or disa
   handles.delete(first.handle);
   trace.disable();
   logs.disable();
-  propagation.disable();
-  context.disable();
 
   const restored = await initialize(true);
   expect(restored.emit().span.attributes).toMatchObject({
@@ -499,8 +497,6 @@ it("clears previously persisted authentication when persistence is disabled", as
   handles.delete(current.handle);
   trace.disable();
   logs.disable();
-  propagation.disable();
-  context.disable();
 
   const restored = await initialize(true);
   expect(restored.emit().span.attributes).toMatchObject({

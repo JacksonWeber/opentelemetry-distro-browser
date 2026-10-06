@@ -33,10 +33,10 @@ milestone.
 
 | Area | Required outcome | Status |
 | --- | --- | --- |
-| Multi-instance isolation | One global routing layer binds each acquired tracer and logger to its owning instance. Unknown instances, replacement, shutdown races and single-signal configurations never cross-route telemetry. | Not started |
+| Multi-instance isolation | One global routing layer binds each acquired tracer and logger to its owning instance. Unknown instances, replacement, shutdown races and single-signal configurations never cross-route telemetry. | In progress |
 | Shared browser instrumentation | Patch each browser global once and fan out to instance-owned subscribers, preventing duplicate collection while preserving per-instance configuration and context. | Not started |
 | Lifecycle and cleanup | Transactional startup and rollback, per-instance flush and idempotent shutdown, coordinated distribution shutdown, and leak tests for hooks, observers, listeners, timers and subscriptions. | Not started |
-| Coexistence | Diagnose foreign global providers rather than overwriting them, and test duplicate API copies, module federation, iframes, workers and multiple distribution copies. | Implemented for the current single-instance initializer. Conflicting or concurrent initialization rejects without adopting another pipeline. Router integration remains part of multi-instance isolation. |
+| Coexistence | Diagnose foreign global providers rather than overwriting them, and test duplicate API copies, module federation, iframes, workers and multiple distribution copies. | Integrated with multi-instance routing. Compatible copies share realm-local routers and page context, while foreign globals remain untouched and instance instrumentations stay isolated. Re-entrant registration conflicts reject startup without disturbing other instances. |
 | Browser support | Declare the npm target and exact supported Chrome, Edge, Firefox and Safari versions, with real-browser acceptance tests. The npm package remains ES2022. | Not started |
 | Bundle constraints | Work item `39720153` owns size reporting and gating. #46 provides report-only base comparison. Absolute minified, gzip and Brotli budgets are report-only during alpha and become blocking starting with beta; tree-shaking completion and isolation of optional instrumentations and exporters remain under `39720153`. | In progress |
 

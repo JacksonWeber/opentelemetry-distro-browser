@@ -1,9 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { diag, trace } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
-import { startBrowserSdk } from "@opentelemetry/browser-sdk";
+import { diag } from "@opentelemetry/api";
 import { afterEach, expect, it, vi } from "vitest";
 import {
   useMicrosoftOpenTelemetry,
@@ -11,13 +9,18 @@ import {
   type MicrosoftOpenTelemetryBrowser,
   type MicrosoftOpenTelemetryBrowserOptions,
 } from "../../../src/index.js";
+import { startTelemetryInstance } from "../../../src/routing/telemetryInstance.js";
 
-vi.mock("@opentelemetry/browser-sdk", () => ({ startBrowserSdk: vi.fn() }));
-// Stubbed SDK handles do not register globals. Coexistence tests verify the real SDK.
-vi.mock("../../../src/shared/globalOwnership.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/shared/globalOwnership.js")>()),
-  assertGlobalsRegistered: vi.fn(),
-}));
+vi.mock("../../../src/routing/telemetryInstance.js", () => ({ startTelemetryInstance: vi.fn() }));
+
+function fakeInstance() {
+  return {
+    tracerProvider: { getTracer: vi.fn() },
+    loggerProvider: { getLogger: vi.fn() },
+    detach: vi.fn(),
+    shutdown: vi.fn(async () => {}),
+  };
+}
 
 const handles = new Set<MicrosoftOpenTelemetryBrowser>();
 
@@ -25,7 +28,7 @@ afterEach(async () => {
   const results = await Promise.allSettled([...handles].map((handle) => handle.shutdown()));
   handles.clear();
   vi.restoreAllMocks();
-  vi.mocked(startBrowserSdk).mockReset();
+  vi.mocked(startTelemetryInstance).mockReset();
   for (const result of results) {
     if (result.status === "rejected") throw result.reason;
   }
@@ -46,8 +49,8 @@ async function initialize(
   instrumentations: readonly BrowserInstrumentation[],
   options: Partial<MicrosoftOpenTelemetryBrowserOptions> = {},
 ) {
-  const sdk = { shutdown: vi.fn(async () => {}) };
-  vi.mocked(startBrowserSdk).mockReturnValueOnce(sdk);
+  const sdk = fakeInstance();
+  vi.mocked(startTelemetryInstance).mockResolvedValueOnce(sdk);
   // Page view is owned by the distribution and on by default. These tests cover the registration
   // mechanics for caller-supplied instances, so it is switched off to keep the list exact.
   const handle = await useMicrosoftOpenTelemetry({
@@ -59,16 +62,12 @@ async function initialize(
   return { handle, sdk };
 }
 
-it("binds providers after SDK startup and before enabling deferred instrumentation", async () => {
+it("binds the instance's own providers before enabling deferred instrumentation", async () => {
   const instrumentation = createInstrumentation();
   const { handle, sdk } = await initialize(Object.freeze([instrumentation]));
-  expect(instrumentation.setTracerProvider).toHaveBeenCalledExactlyOnceWith(
-    trace.getTracerProvider(),
-  );
-  expect(instrumentation.setLoggerProvider).toHaveBeenCalledExactlyOnceWith(
-    logs.getLoggerProvider(),
-  );
-  expect(startBrowserSdk).toHaveBeenCalledBefore(instrumentation.setTracerProvider);
+  expect(instrumentation.setTracerProvider).toHaveBeenCalledExactlyOnceWith(sdk.tracerProvider);
+  expect(instrumentation.setLoggerProvider).toHaveBeenCalledExactlyOnceWith(sdk.loggerProvider);
+  expect(startTelemetryInstance).toHaveBeenCalledBefore(instrumentation.setTracerProvider);
   expect(instrumentation.setTracerProvider).toHaveBeenCalledBefore(instrumentation.enable);
   expect(instrumentation.setLoggerProvider).toHaveBeenCalledBefore(instrumentation.enable);
   expect(instrumentation.enable).toHaveBeenCalledOnce();
@@ -191,8 +190,8 @@ it.each(["setTracerProvider", "setLoggerProvider", "getConfig", "enable"] as con
     failing[method].mockImplementation(() => {
       throw failure;
     });
-    const sdk = { shutdown: vi.fn(async () => {}) };
-    vi.mocked(startBrowserSdk).mockReturnValueOnce(sdk);
+    const sdk = fakeInstance();
+    vi.mocked(startTelemetryInstance).mockResolvedValueOnce(sdk);
     await expect(
       useMicrosoftOpenTelemetry({ instrumentations: [first, failing, last] }),
     ).rejects.toThrow(failure);
@@ -212,7 +211,8 @@ it("reports asynchronous rollback failures without replacing the initialization 
     throw failure;
   });
   const report = vi.spyOn(diag, "error").mockImplementation(() => {});
-  vi.mocked(startBrowserSdk).mockReturnValueOnce({
+  vi.mocked(startTelemetryInstance).mockResolvedValueOnce({
+    ...fakeInstance(),
     shutdown: vi.fn().mockRejectedValue(cleanupFailure),
   });
   await expect(useMicrosoftOpenTelemetry({ instrumentations: [instrumentation] })).rejects.toThrow(
