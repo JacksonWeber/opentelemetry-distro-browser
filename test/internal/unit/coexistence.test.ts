@@ -618,5 +618,90 @@ it.each(["context", "router"] as const)(
       "Telemetry initialization cleanup failed",
       expect.any(Error),
     );
+    expect(getRegisteredGlobal("trace")).toBeUndefined();
+    expect(getRegisteredGlobal("logs")).toBeUndefined();
   },
 );
+
+it.each(["none", "existing instance", "foreign replacement"] as const)(
+  "rolls back partial router installation while preserving %s",
+  async (existing) => {
+    const first = createInMemoryPipeline();
+    if (existing === "existing instance") {
+      const handle = await useMicrosoftOpenTelemetry({
+        ...first.options,
+        logRecordProcessors: [],
+        pageView: { enabled: false },
+      });
+      cleanup.push(
+        () => handle.shutdown(),
+        () => first.logProcessor.shutdown(),
+      );
+    } else {
+      cleanup.push(() => first.shutdown());
+    }
+    let preservedTrace = getRegisteredGlobal("trace");
+    const failure = new Error("logger registration failed");
+    vi.spyOn(logs, "setGlobalLoggerProvider").mockImplementationOnce(() => {
+      if (existing === "foreign replacement") {
+        trace.disable();
+        const foreign = new BasicTracerProvider({ spanProcessors: [first.spanProcessor] });
+        cleanup.push(() => foreign.shutdown());
+        trace.setGlobalTracerProvider(foreign);
+        preservedTrace = getRegisteredGlobal("trace");
+      }
+      throw failure;
+    });
+    const pipeline = createInMemoryPipeline();
+    const spanShutdown = vi.spyOn(pipeline.spanProcessor, "shutdown");
+    const logShutdown = vi.spyOn(pipeline.logProcessor, "shutdown");
+    await expect(
+      useMicrosoftOpenTelemetry({
+        ...pipeline.options,
+        pageView: { enabled: false },
+      }),
+    ).rejects.toBe(failure);
+    expect(getRegisteredGlobal("trace")).toBe(preservedTrace);
+    expect(getRegisteredGlobal("logs")).toBeUndefined();
+    expect(spanShutdown).toHaveBeenCalledOnce();
+    expect(logShutdown).toHaveBeenCalledOnce();
+
+    if (existing === "none") {
+      const foreign = new BasicTracerProvider({ spanProcessors: [first.spanProcessor] });
+      cleanup.push(() => foreign.shutdown());
+      expect(trace.setGlobalTracerProvider(foreign)).toBe(true);
+    }
+    trace.getTracer("survivor").startSpan("survivor").end();
+    await first.forceFlush();
+    expect(first.spanExporter.getFinishedSpans().map((span) => span.name)).toEqual(["survivor"]);
+  },
+);
+
+it("removes the new trace proxy when its registration diagnostic throws", async () => {
+  const failure = new Error("trace registration diagnostic failed");
+  vi.spyOn(diag, "debug").mockImplementation((message) => {
+    if (typeof message === "string" && message.includes("Registered a global for trace")) {
+      throw failure;
+    }
+  });
+  const pipeline = createInMemoryPipeline();
+  const spanShutdown = vi.spyOn(pipeline.spanProcessor, "shutdown");
+  const logShutdown = vi.spyOn(pipeline.logProcessor, "shutdown");
+  await expect(
+    useMicrosoftOpenTelemetry({
+      ...pipeline.options,
+      pageView: { enabled: false },
+    }),
+  ).rejects.toBe(failure);
+  expect(getRegisteredGlobal("trace")).toBeUndefined();
+  expect(getRegisteredGlobal("logs")).toBeUndefined();
+  expect(spanShutdown).toHaveBeenCalledOnce();
+  expect(logShutdown).toHaveBeenCalledOnce();
+  vi.mocked(diag.debug).mockRestore();
+  const next = createInMemoryPipeline();
+  const handle = await useMicrosoftOpenTelemetry({ ...next.options, pageView: { enabled: false } });
+  cleanup.push(() => handle.shutdown());
+  trace.getTracer("retry").startSpan("retry").end();
+  await handle.forceFlush();
+  expect(next.spanExporter.getFinishedSpans()).toHaveLength(1);
+});

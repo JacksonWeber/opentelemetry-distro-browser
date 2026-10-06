@@ -10,7 +10,7 @@ import {
   type TracerProvider,
 } from "@opentelemetry/api";
 import { createNoopLogger, logs, type LoggerProvider } from "@opentelemetry/api-logs";
-import { getRegisteredGlobal, getSharedRegistry } from "../shared/globalOwnership.js";
+import { getRegisteredGlobal, getSharedRegistry, reportError } from "../shared/globalOwnership.js";
 
 /** Instance-owned providers. Omitted signals never fall back to another instance. */
 export interface InstancePipelines {
@@ -76,39 +76,60 @@ function selectProvider<K extends keyof InstancePipelines>(
  */
 export function addInstance(instance: InstancePipelines): () => void {
   const state = getRouter();
-  const traceRegistration = getRegisteredGlobal("trace");
-  if (
-    instance.tracerProvider &&
-    (!traceRegistration || traceRegistration !== state.traceRegistration)
-  ) {
-    if (!traceRegistration && trace.setGlobalTracerProvider(state.tracerRouter)) {
-      state.traceRegistration = getRegisteredGlobal("trace");
-    } else if (!traceRegistration || traceRegistration !== state.foreignTracerProvider) {
-      state.foreignTracerProvider = traceRegistration;
-      diag.error(
-        "[tracer-provider-conflict] Global traces remain with another installation. Instance pipelines are isolated.",
-      );
-    }
-  }
-  const logsRegistration = getRegisteredGlobal("logs");
-  if (
-    instance.loggerProvider &&
-    (!logsRegistration || logsRegistration !== state.logsRegistration)
-  ) {
+  let installedTrace: unknown;
+  let installedLogs: unknown;
+  try {
+    const traceRegistration = getRegisteredGlobal("trace");
     if (
-      !logsRegistration &&
-      logs.setGlobalLoggerProvider(state.loggerRouter) === state.loggerRouter
+      instance.tracerProvider &&
+      (!traceRegistration || traceRegistration !== state.traceRegistration)
     ) {
-      state.logsRegistration = getRegisteredGlobal("logs");
-    } else if (!logsRegistration || logsRegistration !== state.foreignLoggerProvider) {
-      state.foreignLoggerProvider = logsRegistration;
-      diag.warn(
-        "[logger-provider-conflict] Global logs remain with another installation. Instance pipelines are isolated.",
-      );
+      // The API installs its local proxy before calling diagnostic callbacks.
+      if (!traceRegistration) installedTrace = trace.getTracerProvider();
+      if (!traceRegistration && trace.setGlobalTracerProvider(state.tracerRouter)) {
+        state.traceRegistration = getRegisteredGlobal("trace");
+      } else if (!traceRegistration || traceRegistration !== state.foreignTracerProvider) {
+        state.foreignTracerProvider = traceRegistration;
+        diag.error(
+          "[tracer-provider-conflict] Global traces remain with another installation. Instance pipelines are isolated.",
+        );
+      }
     }
+    const logsRegistration = getRegisteredGlobal("logs");
+    if (
+      instance.loggerProvider &&
+      (!logsRegistration || logsRegistration !== state.logsRegistration)
+    ) {
+      if (
+        !logsRegistration &&
+        logs.setGlobalLoggerProvider(state.loggerRouter) === state.loggerRouter
+      ) {
+        installedLogs = getRegisteredGlobal("logs");
+        state.logsRegistration = installedLogs;
+      } else if (!logsRegistration || logsRegistration !== state.foreignLoggerProvider) {
+        state.foreignLoggerProvider = logsRegistration;
+        diag.warn(
+          "[logger-provider-conflict] Global logs remain with another installation. Instance pipelines are isolated.",
+        );
+      }
+    }
+    state.reportedDrops.clear();
+    state.running.push(instance);
+  } catch (error) {
+    for (const [signal, registration, disable] of [
+      ["logs", installedLogs, () => logs.disable()],
+      ["trace", installedTrace, () => trace.disable()],
+    ] as const) {
+      if (registration && getRegisteredGlobal(signal) === registration) {
+        try {
+          disable();
+        } catch (cleanupError) {
+          reportError("Telemetry router rollback failed", cleanupError);
+        }
+      }
+    }
+    throw error;
   }
-  state.reportedDrops.clear();
-  state.running.push(instance);
   return () => {
     const index = state.running.indexOf(instance);
     if (index >= 0) state.running.splice(index, 1);
