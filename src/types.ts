@@ -97,8 +97,9 @@ export interface BrowserInstrumentation {
  * when there is no active span. Pass explicit context across asynchronous boundaries.
  *
  * The OpenTelemetry global context and propagation APIs are page-lifetime registrations. Like the
- * tracer and logger providers, they are not unregistered by `shutdown`; initialize this
- * distribution once per page.
+ * tracer and logger providers, they are not unregistered by `shutdown`. Initialize this
+ * distribution once per page. Failed initialization removes only registrations it installed,
+ * allowing a retry with fresh processors and instrumentations.
  *
  * @public
  */

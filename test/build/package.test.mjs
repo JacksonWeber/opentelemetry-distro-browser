@@ -381,6 +381,40 @@ for (const suffix of [".js", ".min.js"]) {
     assert.equal(distro.OPENTELEMETRY_BROWSER_VERSION, pkg.version);
     await exerciseNpmPackage(distro);
   });
+
+  test(`the ${suffix} bundle exports telemetry after failed initialization`, async () => {
+    const distro = await import(new URL(`${esmBundle}${suffix}`, root));
+    const failure = new Error("instrumentation initialization failed");
+    try {
+      await assert.rejects(
+        distro.useMicrosoftOpenTelemetry({
+          spanProcessors: [new SimpleSpanProcessor(new InMemorySpanExporter())],
+          logRecordProcessors: [
+            new SimpleLogRecordProcessor({ exporter: new InMemoryLogRecordExporter() }),
+          ],
+          instrumentations: [
+            {
+              setTracerProvider() {},
+              setLoggerProvider() {},
+              getConfig: () => ({ enabled: false }),
+              enable() {
+                throw failure;
+              },
+              disable() {},
+            },
+          ],
+        }),
+        (error) => error === failure,
+      );
+      await exerciseNpmPackage(distro);
+    } finally {
+      trace.disable();
+      logs.disable();
+      propagation.disable();
+      context.disable();
+      diag.disable();
+    }
+  });
 }
 
 test("Terser produces a smaller ESM bundle", async () => {

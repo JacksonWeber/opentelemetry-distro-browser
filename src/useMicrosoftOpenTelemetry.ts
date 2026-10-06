@@ -1,7 +1,15 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { context, diag, trace } from "@opentelemetry/api";
+import {
+  context,
+  diag,
+  propagation,
+  trace,
+  type ContextManager,
+  type TextMapPropagator,
+  type TracerProvider,
+} from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { startBrowserSdk } from "@opentelemetry/browser-sdk";
 import { SessionLogRecordProcessor, SessionSpanProcessor } from "./session/sessionProcessors.js";
@@ -25,6 +33,24 @@ import type {
   MicrosoftOpenTelemetryBrowser,
   MicrosoftOpenTelemetryBrowserOptions,
 } from "./types.js";
+
+function snapshotRegistrations() {
+  // API 1.x has no public context/propagator getters, and its tracer getter returns a proxy
+  // even before registration. Read the shared registry only for identity, never mutate it.
+  const api = Reflect.get(globalThis, Symbol.for("opentelemetry.js.api.1")) as
+    | {
+        trace?: TracerProvider;
+        context?: ContextManager;
+        propagation?: TextMapPropagator;
+      }
+    | undefined;
+  return {
+    trace: api?.trace,
+    context: api?.context,
+    propagation: api?.propagation,
+    logs: logs.getLoggerProvider(),
+  };
+}
 
 /**
  * Builds the instrumentations this distribution owns and turns on by itself.
@@ -64,6 +90,8 @@ function createOwnedInstrumentations(
  * Captures the initial page operation from the supplied manager or global context before awaiting
  * session restoration, so synchronous context scopes are preserved.
  * Await completion before emitting telemetry.
+ * If initialization fails, unregisters globals installed by that attempt so initialization can
+ * be retried with fresh processors and instrumentations. Existing global registrations are kept.
  * @public
  */
 export async function useMicrosoftOpenTelemetry(
@@ -100,6 +128,8 @@ export async function useMicrosoftOpenTelemetry(
   // Publish the initial page operation before caller instrumentations can emit.
   const instrumentations = [...owned, ...(options.instrumentations ?? [])];
   let sdk: ReturnType<typeof startBrowserSdk> | undefined;
+  let previousRegistrations: ReturnType<typeof snapshotRegistrations> | undefined;
+  let installedRegistrations: ReturnType<typeof snapshotRegistrations> | undefined;
   let stopping = false;
   // Upstream stale tracers can still call processors after provider shutdown.
   const sessionProvider = {
@@ -199,6 +229,7 @@ export async function useMicrosoftOpenTelemetry(
       ...(session ? [new SessionLogRecordProcessor(sessionProvider)] : []),
       ...(correlation ? [correlation] : []),
     ];
+    previousRegistrations = snapshotRegistrations();
     sdk = startBrowserSdk({
       // Spread last: the caller's attributes win, and each call gets a fresh object because the
       // SDK mutates this one in place and shares it between the traces and logs SDKs.
@@ -233,6 +264,7 @@ export async function useMicrosoftOpenTelemetry(
           : {}),
       },
     });
+    installedRegistrations = snapshotRegistrations();
     if (instrumentations.length === 0) return handle;
 
     const tracerProvider = trace.getTracerProvider();
@@ -243,10 +275,27 @@ export async function useMicrosoftOpenTelemetry(
       if (!instrumentation.getConfig().enabled) instrumentation.enable();
     }
   } catch (error) {
+    // Capture partial startup too, before asynchronous cleanup can yield to another initializer.
+    if (previousRegistrations) installedRegistrations ??= snapshotRegistrations();
     try {
       await shutdown();
     } catch (cleanupError) {
       diag.error("Telemetry initialization cleanup failed", cleanupError);
+    }
+    if (previousRegistrations && installedRegistrations) {
+      const apis = { trace, logs, propagation, context };
+      for (const name of ["trace", "logs", "propagation", "context"] as const) {
+        if (
+          installedRegistrations[name] !== previousRegistrations[name] &&
+          snapshotRegistrations()[name] === installedRegistrations[name]
+        ) {
+          try {
+            apis[name].disable();
+          } catch (cleanupError) {
+            diag.error("Telemetry initialization cleanup failed", cleanupError);
+          }
+        }
+      }
     }
     throw error;
   }
