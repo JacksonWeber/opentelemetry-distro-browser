@@ -66,8 +66,12 @@ function parseFields(connectionString: string): ParsedConnectionString | undefin
   const fields: ParsedConnectionString = {};
 
   for (const field of connectionString.split(";")) {
+    if (!field.trim()) {
+      continue;
+    }
+
     const separatorIndex = field.indexOf("=");
-    if (separatorIndex <= 0 || separatorIndex !== field.lastIndexOf("=")) {
+    if (separatorIndex <= 0) {
       diag.error(
         "Connection string key-value pair is invalid: Entire connection string will be discarded",
       );

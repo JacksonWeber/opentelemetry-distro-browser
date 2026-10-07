@@ -36,6 +36,8 @@ All notable changes to this package are documented in this file.
 - Remove newly installed routers when startup fails, without replacing existing owners.
 - Keep global registrations provisional through instrumentation setup and finish context
   unregistration even when manager cleanup throws.
+- Ignore empty connection-string fields so trailing semicolons and surrounding whitespace do not
+  discard otherwise valid exporter configuration.
 - Isolate telemetry pipelines per initialization: each instance owns its tracer and logger
   providers, instrumentations bind to their own instance, and global tracers and loggers bind to
   the earliest running instance that collects that signal when acquired.
