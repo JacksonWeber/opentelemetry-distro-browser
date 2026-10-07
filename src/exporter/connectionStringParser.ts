@@ -38,17 +38,28 @@ const connectionStringKeys = new Set<ConnectionStringKey>([
   "endpointsuffix",
 ]);
 
-function sanitizeEndpoint(endpoint: string): string | undefined {
+function sanitizeEndpoint(endpoint: string | undefined, name: string): string | undefined {
+  if (endpoint === undefined) return undefined;
+
   try {
     const sanitizedEndpoint = new URL(endpoint.trim());
-    if (sanitizedEndpoint.protocol !== "http:" && sanitizedEndpoint.protocol !== "https:") {
-      return undefined;
+    const { hostname, protocol } = sanitizedEndpoint;
+    const isLoopback =
+      hostname === "localhost" ||
+      hostname === "localhost." ||
+      hostname === "[::1]" ||
+      /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname);
+    if (protocol === "https:" || (protocol === "http:" && isLoopback)) {
+      const value = sanitizedEndpoint.toString();
+      return value.endsWith("/") ? value.slice(0, -1) : value;
     }
-    const value = sanitizedEndpoint.toString();
-    return value.endsWith("/") ? value.slice(0, -1) : value;
   } catch {
-    return undefined;
+    // Report invalid URLs below.
   }
+  diag.warn(
+    `Invalid ${name}: use HTTPS, or HTTP only for localhost or a loopback IP address. Using a fallback endpoint.`,
+  );
+  return undefined;
 }
 
 function parseFields(connectionString: string): ParsedConnectionString | undefined {
@@ -99,12 +110,12 @@ export function parseConnectionString(connectionString: string): ResolvedConnect
   return {
     instrumentationKey: fields.instrumentationkey,
     ingestionEndpoint:
-      sanitizeEndpoint(fields.ingestionendpoint ?? "") ??
-      sanitizeEndpoint(fallbackIngestionEndpoint) ??
+      sanitizeEndpoint(fields.ingestionendpoint, "IngestionEndpoint") ??
+      sanitizeEndpoint(fallbackIngestionEndpoint, "IngestionEndpoint") ??
       DEFAULT_INGESTION_ENDPOINT,
     liveEndpoint:
-      sanitizeEndpoint(fields.liveendpoint ?? "") ??
-      sanitizeEndpoint(fallbackLiveEndpoint) ??
+      sanitizeEndpoint(fields.liveendpoint, "LiveEndpoint") ??
+      sanitizeEndpoint(fallbackLiveEndpoint, "LiveEndpoint") ??
       DEFAULT_LIVE_ENDPOINT,
     aadAudience: fields.aadaudience,
     applicationId: fields.applicationid,

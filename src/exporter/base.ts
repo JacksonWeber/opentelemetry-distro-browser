@@ -17,7 +17,11 @@ const CONTENT_TYPE = "application/json";
  * @public
  */
 export interface AzureMonitorOptions {
-  /** Azure Monitor connection string containing a valid UUID instrumentation key. */
+  /**
+   * Azure Monitor connection string containing a valid UUID instrumentation key.
+   * Endpoints require HTTPS except on localhost or loopback IPs.
+   * Invalid endpoints warn and fall back to suffix-derived or public cloud endpoints.
+   */
   readonly connectionString: string;
   /**
    * Disables `sendBeacon` fallback when a keepalive request cannot be queued during page unload.

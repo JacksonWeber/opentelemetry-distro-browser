@@ -22,6 +22,8 @@ All notable changes to this package are documented in this file.
 
 ### Changed
 
+- Require HTTPS for Azure Monitor endpoints, except HTTP on localhost and loopback IP addresses.
+  Invalid endpoints now emit a diagnostic warning and use the existing fallback endpoints.
 - Share routing and page-context state across compatible distribution copies while preserving
   foreign OpenTelemetry globals and isolated instance pipelines.
 - Cover shared and duplicate APIs using emitted bundles, with independent iframe and worker
