@@ -81,6 +81,8 @@ describe("Azure Monitor connection string", () => {
   it.each([
     ["http://localhost:4318/", "http://localhost:4318"],
     ["HTTP://LOCALHOST:4318/ingest/", "http://localhost:4318/ingest"],
+    ["http://localhost.:4318/", "http://localhost.:4318"],
+    ["HTTP://LOCALHOST.:4318/ingest/", "http://localhost.:4318/ingest"],
     ["http://127.0.0.1:4318/", "http://127.0.0.1:4318"],
     ["http://127.0.0.2/", "http://127.0.0.2"],
     ["http://127.255.255.254/", "http://127.255.255.254"],
@@ -103,6 +105,9 @@ describe("Azure Monitor connection string", () => {
     "http://example.test/",
     " HTTP://EXAMPLE.TEST/ ",
     "http://localhost.example.test/",
+    "http://localhost.example.test./",
+    "http://localhost..:4318/",
+    "http://localhost.@example.test/",
     "http://127.0.0.1.example.test/",
     "http://127.example.test/",
     "http://localhost@example.test/",

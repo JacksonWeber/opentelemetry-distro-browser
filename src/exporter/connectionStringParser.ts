@@ -46,6 +46,7 @@ function sanitizeEndpoint(endpoint: string | undefined, name: string): string | 
     const { hostname, protocol } = sanitizedEndpoint;
     const isLoopback =
       hostname === "localhost" ||
+      hostname === "localhost." ||
       hostname === "[::1]" ||
       /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname);
     if (protocol === "https:" || (protocol === "http:" && isLoopback)) {
