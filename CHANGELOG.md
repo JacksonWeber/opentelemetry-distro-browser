@@ -18,6 +18,7 @@ All notable changes to this package are documented in this file.
   viewer.
 - Add CommonJS npm entries and self-contained UMD and IIFE browser bundles; the UMD bundles also
   register with AMD loaders such as RequireJS.
+- Add Azure Monitor page-view performance telemetry
 
 ### Changed
 

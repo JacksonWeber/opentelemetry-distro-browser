@@ -84,7 +84,7 @@ describe.each(["index.js", "index.min.js"])("export instrumentation through %s",
       const captured: AzureMonitorEnvelope[] = await nativeFetch(
         `${new URL(ingestionEndpoint).origin}/captured?runId=${runId}`,
       ).then((response) => response.json());
-      expect(captured).toHaveLength(pageViewsEnabled ? 2 : 1);
+      expect(captured).toHaveLength(pageViewsEnabled ? 3 : 1);
       expect(
         captured.filter((envelope) => envelope.data.baseType === "RemoteDependencyData"),
       ).toEqual([
@@ -97,6 +97,9 @@ describe.each(["index.js", "index.min.js"])("export instrumentation through %s",
       if (pageViewsEnabled) {
         expect(
           captured.filter((envelope) => envelope.data.baseType === "PageViewData"),
+        ).toHaveLength(1);
+        expect(
+          captured.filter((envelope) => envelope.data.baseType === "PageviewPerformanceData"),
         ).toHaveLength(1);
       }
     },

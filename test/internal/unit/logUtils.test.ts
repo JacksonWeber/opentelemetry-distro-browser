@@ -4,8 +4,8 @@
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { describe, expect, it } from "vitest";
 import { MAX_BEACON_BODY_SIZE } from "../../../src/exporter/constants.js";
-import { logToEnvelope } from "../../../src/exporter/logUtils.js";
 import type { ExceptionData } from "../../../src/exporter/telemetryModels.js";
+import { logToEnvelope, logToEnvelopes } from "../../../src/exporter/logUtils.js";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../../src/shared/constants.js";
 import { TEST_INSTRUMENTATION_KEY as instrumentationKey } from "../../fixtures/azureMonitor.js";
 import { createReadableLogRecord as makeLog, createSpanContext } from "../../fixtures/telemetry.js";
@@ -566,6 +566,91 @@ describe("Azure Monitor log envelope mapping", () => {
       });
     },
   );
+
+  it("maps page-view performance phases to a correlated companion envelope", () => {
+    const envelopes = logToEnvelopes(
+      makeLog({
+        eventName: "browser.page_view",
+        attributes: {
+          "browser.page_view.name": "Cart",
+          "browser.page_view.duration": 425.25,
+          "browser.page_view.performance.total": 425.25,
+          "browser.page_view.performance.network_connect": 25,
+          "browser.page_view.performance.sent_request": 100.5,
+          "browser.page_view.performance.received_response": 50.25,
+          "browser.page_view.performance.dom_processing": 249.5,
+          "url.full": "https://shop.example.test/cart",
+          "browser.page_view.same_document": false,
+        },
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelopes).toHaveLength(2);
+    expect(envelopes[1]).toEqual({
+      name: "Microsoft.ApplicationInsights.PageviewPerformance",
+      time: envelopes[0]?.time,
+      iKey: instrumentationKey,
+      sampleRate: 100,
+      tags: envelopes[0]?.tags,
+      ver: 1,
+      data: {
+        baseType: "PageviewPerformanceData",
+        baseData: {
+          ver: 2,
+          name: "Cart",
+          url: "https://shop.example.test/cart",
+          duration: "00:00:00.4252500",
+          perfTotal: "00:00:00.4252500",
+          networkConnect: "00:00:00.0250000",
+          sentRequest: "00:00:00.1005000",
+          receivedResponse: "00:00:00.0502500",
+          domProcessing: "00:00:00.2495000",
+          properties: { "browser.page_view.same_document": "false" },
+          measurements: undefined,
+        },
+      },
+    });
+    expect(envelopes[1]?.tags["ai.operation.id"]).toBe(spanContext.traceId);
+  });
+
+  it("does not emit page-view performance when any phase is missing", () => {
+    const envelopes = logToEnvelopes(
+      makeLog({
+        eventName: "browser.page_view",
+        attributes: {
+          "browser.page_view.performance.total": 425.25,
+          "browser.page_view.performance.network_connect": 25,
+          "browser.page_view.performance.sent_request": 100.5,
+          "browser.page_view.performance.received_response": 50.25,
+        },
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelopes).toHaveLength(1);
+    expect(envelopes[0]?.data.baseType).toBe("PageViewData");
+  });
+
+  it("does not emit page-view performance when the record maps to an exception", () => {
+    const envelopes = logToEnvelopes(
+      makeLog({
+        eventName: "browser.page_view",
+        attributes: {
+          "exception.type": "NavigationError",
+          "browser.page_view.performance.total": 425.25,
+          "browser.page_view.performance.network_connect": 25,
+          "browser.page_view.performance.sent_request": 100.5,
+          "browser.page_view.performance.received_response": 50.25,
+          "browser.page_view.performance.dom_processing": 249.5,
+        },
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelopes).toHaveLength(1);
+    expect(envelopes[0]?.data.baseType).toBe("ExceptionData");
+  });
 
   it("maps legacy browser.navigation to PageViewData", () => {
     const envelope = logToEnvelope(

@@ -26,6 +26,11 @@ import {
   ATTR_PAGE_VIEW_INDEX,
   ATTR_PAGE_VIEW_NAME,
   ATTR_PAGE_VIEW_NAME_SOURCE,
+  ATTR_PAGE_VIEW_PERF_DOM_PROCESSING,
+  ATTR_PAGE_VIEW_PERF_NETWORK_CONNECT,
+  ATTR_PAGE_VIEW_PERF_RECEIVED_RESPONSE,
+  ATTR_PAGE_VIEW_PERF_SENT_REQUEST,
+  ATTR_PAGE_VIEW_PERF_TOTAL,
   ATTR_PAGE_VIEW_REFERRER,
   ATTR_PAGE_VIEW_SAME_DOCUMENT,
   ATTR_PAGE_VIEW_TYPE,
@@ -186,6 +191,17 @@ describe("PageViewInstrumentation", () => {
 
   describe("document load", () => {
     it("emits one record with a browser-reported duration", async () => {
+      vi.spyOn(performance, "getEntriesByType").mockReturnValue([
+        {
+          startTime: 0,
+          connectEnd: 20,
+          requestStart: 30,
+          responseStart: 80,
+          responseEnd: 110,
+          loadEventEnd: 170,
+          type: "navigate",
+        } as PerformanceNavigationTiming,
+      ]);
       const { instrumentation, provider } = createInstrumentation();
 
       instrumentation.enable();
@@ -200,8 +216,36 @@ describe("PageViewInstrumentation", () => {
       expect(attributes[ATTR_PAGE_VIEW_SAME_DOCUMENT]).toBe(false);
       expect(attributes[ATTR_PAGE_VIEW_INDEX]).toBe(0);
       expect(attributes[ATTR_PAGE_VIEW_DURATION_SOURCE]).toBe("navigation_timing");
-      expect(attributes[ATTR_PAGE_VIEW_DURATION]).toBeGreaterThan(0);
+      expect(attributes[ATTR_PAGE_VIEW_DURATION]).toBe(170);
+      expect(attributes[ATTR_PAGE_VIEW_PERF_TOTAL]).toBe(170);
+      expect(attributes[ATTR_PAGE_VIEW_PERF_NETWORK_CONNECT]).toBe(20);
+      expect(attributes[ATTR_PAGE_VIEW_PERF_SENT_REQUEST]).toBe(50);
+      expect(attributes[ATTR_PAGE_VIEW_PERF_RECEIVED_RESPONSE]).toBe(30);
+      expect(attributes[ATTR_PAGE_VIEW_PERF_DOM_PROCESSING]).toBe(60);
       expect(attributes[ATTR_URL_FULL]).toBe(location.href);
+    });
+
+    it("omits performance phases when navigation boundaries are invalid", async () => {
+      vi.spyOn(performance, "getEntriesByType").mockReturnValue([
+        {
+          startTime: 0,
+          connectEnd: 20,
+          requestStart: 10,
+          responseStart: 30,
+          responseEnd: 110,
+          loadEventEnd: 170,
+          type: "navigate",
+        } as PerformanceNavigationTiming,
+      ]);
+      const { instrumentation, provider } = createInstrumentation();
+
+      instrumentation.enable();
+      await settle();
+
+      const attributes = attributesOf(provider.records[0] as LogRecord);
+      expect(attributes[ATTR_PAGE_VIEW_DURATION]).toBe(170);
+      expect(attributes[ATTR_PAGE_VIEW_PERF_TOTAL]).toBeUndefined();
+      expect(attributes[ATTR_PAGE_VIEW_PERF_SENT_REQUEST]).toBeUndefined();
     });
 
     it("always sets a navigation type, unlike upstream browser.navigation", async () => {
@@ -336,6 +380,7 @@ describe("PageViewInstrumentation", () => {
       expect(attributes[ATTR_PAGE_VIEW_SAME_DOCUMENT]).toBe(true);
       expect(attributes[ATTR_PAGE_VIEW_TYPE]).toBe("push");
       expect(attributes[ATTR_PAGE_VIEW_DURATION_SOURCE]).toBe("soft_navigation_settled");
+      expect(attributes[ATTR_PAGE_VIEW_PERF_TOTAL]).toBeUndefined();
       expect(String(attributes[ATTR_URL_FULL])).toContain("/orders/42");
     });
 

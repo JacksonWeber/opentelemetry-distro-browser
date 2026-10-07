@@ -58,6 +58,18 @@ export const ATTR_PAGE_VIEW_NAME_SOURCE = "browser.page_view.name_source";
 /** Page-view duration in milliseconds, as a double. */
 export const ATTR_PAGE_VIEW_DURATION = "browser.page_view.duration";
 
+/** Total browser-reported document navigation time, in milliseconds. */
+export const ATTR_PAGE_VIEW_PERF_TOTAL = "browser.page_view.performance.total";
+/** Navigation time through connection establishment, in milliseconds. */
+export const ATTR_PAGE_VIEW_PERF_NETWORK_CONNECT = "browser.page_view.performance.network_connect";
+/** Request send and server wait time, in milliseconds. */
+export const ATTR_PAGE_VIEW_PERF_SENT_REQUEST = "browser.page_view.performance.sent_request";
+/** Response download time, in milliseconds. */
+export const ATTR_PAGE_VIEW_PERF_RECEIVED_RESPONSE =
+  "browser.page_view.performance.received_response";
+/** DOM processing time after the response completed, in milliseconds. */
+export const ATTR_PAGE_VIEW_PERF_DOM_PROCESSING = "browser.page_view.performance.dom_processing";
+
 /**
  * How the duration was obtained. A browser-reported navigation duration and a heuristic
  * soft-navigation duration are not comparable, so they must be distinguishable at query time.

@@ -23,6 +23,11 @@ import {
   ATTR_PAGE_VIEW_INDEX,
   ATTR_PAGE_VIEW_NAME,
   ATTR_PAGE_VIEW_NAME_SOURCE,
+  ATTR_PAGE_VIEW_PERF_DOM_PROCESSING,
+  ATTR_PAGE_VIEW_PERF_NETWORK_CONNECT,
+  ATTR_PAGE_VIEW_PERF_RECEIVED_RESPONSE,
+  ATTR_PAGE_VIEW_PERF_SENT_REQUEST,
+  ATTR_PAGE_VIEW_PERF_TOTAL,
   ATTR_PAGE_VIEW_REFERRER,
   ATTR_PAGE_VIEW_SAME_DOCUMENT,
   ATTR_PAGE_VIEW_TYPE,
@@ -430,10 +435,47 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     }
     const timing = this.getNavigationTiming();
     if (timing && timing.loadEventEnd > 0) {
-      this.emit(target, timing.loadEventEnd - timing.startTime, DURATION_SOURCE_NAVIGATION_TIMING);
+      this.emit(
+        target,
+        timing.loadEventEnd - timing.startTime,
+        DURATION_SOURCE_NAVIGATION_TIMING,
+        this.getNavigationPerformanceAttributes(timing) ?? {},
+      );
       return;
     }
     this.emit(target, performance.now() - target.startedAt, DURATION_SOURCE_DOCUMENT_LOAD);
+  }
+
+  private getNavigationPerformanceAttributes(
+    timing: PerformanceNavigationTiming,
+  ): Record<string, number> | undefined {
+    const boundaries = [
+      timing.startTime,
+      timing.connectEnd,
+      timing.requestStart,
+      timing.responseStart,
+      timing.responseEnd,
+      timing.loadEventEnd,
+    ];
+    if (
+      !boundaries.every(Number.isFinite) ||
+      boundaries.some((boundary, index) => {
+        const previousBoundary = boundaries[index - 1];
+        return previousBoundary !== undefined && boundary < previousBoundary;
+      })
+    ) {
+      return undefined;
+    }
+    return {
+      [ATTR_PAGE_VIEW_PERF_TOTAL]: Math.max(0, timing.loadEventEnd - timing.startTime),
+      [ATTR_PAGE_VIEW_PERF_NETWORK_CONNECT]: Math.max(0, timing.connectEnd - timing.startTime),
+      [ATTR_PAGE_VIEW_PERF_SENT_REQUEST]: Math.max(0, timing.responseStart - timing.requestStart),
+      [ATTR_PAGE_VIEW_PERF_RECEIVED_RESPONSE]: Math.max(
+        0,
+        timing.responseEnd - timing.responseStart,
+      ),
+      [ATTR_PAGE_VIEW_PERF_DOM_PROCESSING]: Math.max(0, timing.loadEventEnd - timing.responseEnd),
+    };
   }
 
   private getNavigationTiming(): PerformanceNavigationTiming | undefined {
@@ -844,6 +886,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     pending: PendingPageView,
     durationMs: number,
     durationSource: PageViewDurationSource,
+    additionalAttributes: Readonly<Record<string, number>> = {},
   ): void {
     if (this.pending !== pending) {
       return;
@@ -876,6 +919,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
         [ATTR_PAGE_VIEW_TYPE]: pageView.navigationType,
         [ATTR_PAGE_VIEW_SAME_DOCUMENT]: pageView.sameDocument,
         ...(pageView.referrer ? { [ATTR_PAGE_VIEW_REFERRER]: pageView.referrer } : {}),
+        ...additionalAttributes,
       },
     };
 

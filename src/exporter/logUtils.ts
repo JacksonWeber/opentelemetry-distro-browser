@@ -8,6 +8,11 @@ import {
   ATTR_PAGE_VIEW_DURATION,
   ATTR_PAGE_VIEW_ID,
   ATTR_PAGE_VIEW_NAME,
+  ATTR_PAGE_VIEW_PERF_DOM_PROCESSING,
+  ATTR_PAGE_VIEW_PERF_NETWORK_CONNECT,
+  ATTR_PAGE_VIEW_PERF_RECEIVED_RESPONSE,
+  ATTR_PAGE_VIEW_PERF_SENT_REQUEST,
+  ATTR_PAGE_VIEW_PERF_TOTAL,
   ATTR_PAGE_VIEW_REFERRER,
   EVENT_BROWSER_PAGE_VIEW,
 } from "../instrumentation/pageView/semconv.js";
@@ -35,6 +40,7 @@ import type {
   ExceptionData,
   MessageData,
   PageViewData,
+  PageViewPerformanceData,
   SeverityLevel,
   StackFrame,
 } from "./telemetryModels.js";
@@ -63,6 +69,11 @@ const promotedPageViewAttributes = /* @__PURE__ */ new Set([
   ATTR_PAGE_VIEW_DURATION,
   ATTR_PAGE_VIEW_ID,
   ATTR_PAGE_VIEW_NAME,
+  ATTR_PAGE_VIEW_PERF_DOM_PROCESSING,
+  ATTR_PAGE_VIEW_PERF_NETWORK_CONNECT,
+  ATTR_PAGE_VIEW_PERF_RECEIVED_RESPONSE,
+  ATTR_PAGE_VIEW_PERF_SENT_REQUEST,
+  ATTR_PAGE_VIEW_PERF_TOTAL,
   ATTR_PAGE_VIEW_REFERRER,
   URL_FULL,
   ATTR_ENDUSER_ID,
@@ -83,6 +94,14 @@ const MAX_PARSED_STACK_SIZE_IN_BYTES = 32 * 1024;
 // custom-field fitting drops the largest ones first instead of truncating the exception here.
 const MAX_EXCEPTION_ENVELOPE_SIZE_IN_BYTES = MAX_BEACON_BODY_SIZE;
 let textEncoder: TextEncoder | undefined;
+
+const pageViewPerformanceAttributes = [
+  ATTR_PAGE_VIEW_PERF_TOTAL,
+  ATTR_PAGE_VIEW_PERF_NETWORK_CONNECT,
+  ATTR_PAGE_VIEW_PERF_SENT_REQUEST,
+  ATTR_PAGE_VIEW_PERF_RECEIVED_RESPONSE,
+  ATTR_PAGE_VIEW_PERF_DOM_PROCESSING,
+] as const;
 
 function isPageView(eventName: string | undefined): boolean {
   return eventName === EVENT_BROWSER_PAGE_VIEW || eventName === NAVIGATION_EVENT_NAME;
@@ -464,4 +483,51 @@ export function logToEnvelope(
   }
 
   return createEnvelope(instrumentationKey, name, time, tags, baseType, baseData);
+}
+
+export function logToEnvelopes(
+  logRecord: ReadableLogRecord,
+  instrumentationKey: string,
+): readonly AzureMonitorEnvelope[] {
+  const pageViewEnvelope = logToEnvelope(logRecord, instrumentationKey);
+  if (
+    logRecord.eventName !== EVENT_BROWSER_PAGE_VIEW ||
+    pageViewEnvelope.data.baseType !== "PageViewData"
+  ) {
+    return [pageViewEnvelope];
+  }
+
+  const durations = pageViewPerformanceAttributes.map(
+    (attribute) => logRecord.attributes[attribute],
+  );
+  if (!durations.every((duration) => typeof duration === "number" && Number.isFinite(duration))) {
+    return [pageViewEnvelope];
+  }
+
+  const pageView = pageViewEnvelope.data.baseData as PageViewData;
+  const [perfTotal, networkConnect, sentRequest, receivedResponse, domProcessing] =
+    durations as number[];
+  const totalDuration = millisecondsToTimeSpan(perfTotal);
+  const performanceData: PageViewPerformanceData = {
+    ver: 2,
+    name: pageView.name,
+    url: pageView.url,
+    duration: totalDuration,
+    perfTotal: totalDuration,
+    networkConnect: millisecondsToTimeSpan(networkConnect),
+    sentRequest: millisecondsToTimeSpan(sentRequest),
+    receivedResponse: millisecondsToTimeSpan(receivedResponse),
+    domProcessing: millisecondsToTimeSpan(domProcessing),
+    properties: pageView.properties,
+    measurements: pageView.measurements,
+  };
+  const performanceEnvelope = createEnvelope(
+    instrumentationKey,
+    "Microsoft.ApplicationInsights.PageviewPerformance",
+    pageViewEnvelope.time,
+    pageViewEnvelope.tags,
+    "PageviewPerformanceData",
+    performanceData,
+  );
+  return [pageViewEnvelope, performanceEnvelope];
 }
