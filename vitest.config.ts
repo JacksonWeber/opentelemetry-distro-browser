@@ -1,11 +1,18 @@
 import { playwright } from "@vitest/browser-playwright";
-import { defineConfig } from "vitest/config";
+import { defineConfig, type TestUserConfig } from "vitest/config";
+
+export const browserInstances = [
+  { browser: "chromium" },
+  { browser: "firefox" },
+  { browser: "webkit" },
+] satisfies NonNullable<NonNullable<TestUserConfig["browser"]>["instances"]>;
 
 export default defineConfig({
   optimizeDeps: {
     include: [
       "@opentelemetry/api",
       "@opentelemetry/api-logs",
+      "@opentelemetry/browser-instrumentation/experimental/errors",
       "@opentelemetry/browser-instrumentation/experimental/fetch",
       "@opentelemetry/browser-instrumentation/experimental/navigation",
       "@opentelemetry/browser-sdk",
@@ -17,6 +24,7 @@ export default defineConfig({
       "@opentelemetry/resources",
       "@opentelemetry/sdk-logs",
       "@opentelemetry/sdk-trace-base",
+      "@opentelemetry/sdk-trace-web",
       "@opentelemetry/semantic-conventions",
       "@opentelemetry/semantic-conventions/incubating",
     ],

@@ -3,7 +3,6 @@
 
 import { context, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
-import { startBrowserSdk } from "@opentelemetry/browser-sdk";
 import type { ReadWriteLogRecord } from "@opentelemetry/sdk-logs";
 import type { Span } from "@opentelemetry/sdk-trace-base";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -12,8 +11,11 @@ import {
   type MicrosoftOpenTelemetryBrowser,
   type MicrosoftOpenTelemetryBrowserOptions,
 } from "../../../src/index.js";
+import { noopLoggerProvider, noopTracerProvider } from "../../../src/routing/instanceRouter.js";
+import { startTelemetryInstance } from "../../../src/routing/telemetryInstance.js";
+import { WRITE_BACKOFF_MS } from "../../../src/storage/keyValueStorage.js";
 
-vi.mock("@opentelemetry/browser-sdk", { spy: true });
+vi.mock("../../../src/routing/telemetryInstance.js", { spy: true });
 
 const storageKey = "opentelemetry-session";
 const handles = new Set<MicrosoftOpenTelemetryBrowser>();
@@ -32,7 +34,7 @@ beforeEach(() => {
   localStorage.removeItem(storageKey);
   vi.useFakeTimers();
   vi.setSystemTime(1_000_000);
-  vi.mocked(startBrowserSdk).mockClear();
+  vi.mocked(startTelemetryInstance).mockClear();
 });
 
 afterEach(async () => {
@@ -127,22 +129,28 @@ it.each([undefined, {}, { enabled: false }])(
   },
 );
 
-it.each(["application-session", ""])(
-  "preserves application-provided session IDs (%j) and enriches only missing IDs",
-  async (id) => {
-    const { emit, spans, records } = await initialize();
-    trace
-      .getTracer("application")
-      .startSpan("manual", { attributes: { "session.id": id } })
-      .end();
-    logs.getLogger("application").emit({ attributes: { "session.id": id } });
-    expect(spans.at(-1)?.attributes["session.id"]).toBe(id);
-    expect(records.at(-1)?.attributes["session.id"]).toBe(id);
-    const generated = emit();
-    expect(generated).toMatch(/^[0-9a-f]{32}$/);
-    expect(generated).not.toBe(id);
-  },
-);
+it("preserves a valid application-provided session ID", async () => {
+  const { emit, spans, records } = await initialize();
+  trace
+    .getTracer("application")
+    .startSpan("manual", { attributes: { "session.id": "application-session" } })
+    .end();
+  logs.getLogger("application").emit({ attributes: { "session.id": "application-session" } });
+  expect(spans.at(-1)?.attributes["session.id"]).toBe("application-session");
+  expect(records.at(-1)?.attributes["session.id"]).toBe("application-session");
+  expect(emit()).not.toBe("application-session");
+});
+
+it("replaces an empty application session ID with managed context", async () => {
+  const { spans, records } = await initialize();
+  trace
+    .getTracer("application")
+    .startSpan("manual", { attributes: { "session.id": "" } })
+    .end();
+  logs.getLogger("application").emit({ attributes: { "session.id": "" } });
+  expect(spans.at(-1)?.attributes["session.id"]).toMatch(/^[0-9a-f]{32}$/);
+  expect(records.at(-1)?.attributes["session.id"]).toBe(spans.at(-1)?.attributes["session.id"]);
+});
 
 it("awaits persisted restoration before starting providers or enabling instrumentation", async () => {
   const restored = { id: "restored-session", startTimestamp: Date.now() - 1000 };
@@ -185,7 +193,7 @@ it("awaits persisted restoration before starting providers or enabling instrumen
       },
     ],
   });
-  expect(startBrowserSdk).not.toHaveBeenCalled();
+  expect(startTelemetryInstance).not.toHaveBeenCalled();
   expect(enable).not.toHaveBeenCalled();
   handles.add(await pending);
   expect(read).toHaveBeenCalledExactlyOnceWith(storageKey);
@@ -348,6 +356,44 @@ it("keeps the in-memory session if persisting later activity becomes unavailable
   );
 });
 
+it.each(["QuotaExceededError", "SecurityError"])(
+  "resumes session persistence after the %s backoff window",
+  async (errorName) => {
+    const { emit } = await initialize();
+    const id = emit();
+    vi.spyOn(diag, "warn").mockImplementation(() => {});
+    const write = vi.spyOn(Storage.prototype, "setItem").mockImplementationOnce(() => {
+      throw new DOMException("unavailable", errorName);
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    emit();
+    await vi.advanceTimersByTimeAsync(1000);
+    emit();
+    expect(write).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(WRITE_BACKOFF_MS);
+    expect(emit()).toBe(id);
+    expect(write).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(localStorage.getItem("opentelemetry-session")!)).toMatchObject({ id });
+  },
+);
+
+it("does not extend the quota backoff when the clock moves backwards", async () => {
+  const { emit } = await initialize();
+  vi.spyOn(diag, "warn").mockImplementation(() => {});
+  const write = vi.spyOn(Storage.prototype, "setItem").mockImplementationOnce(() => {
+    throw new DOMException("full", "QuotaExceededError");
+  });
+  await vi.advanceTimersByTimeAsync(1000);
+  emit();
+  expect(write).toHaveBeenCalledOnce();
+
+  vi.setSystemTime(Date.now() - 60 * 60_000);
+  await vi.advanceTimersByTimeAsync(1000);
+  emit();
+  expect(write).toHaveBeenCalledTimes(2);
+});
+
 it.each([
   {},
   [],
@@ -456,13 +502,13 @@ it.each(["getItem", "setItem"] as const)(
       throw failure;
     });
     await expect(useMicrosoftOpenTelemetry({ session: { enabled: true } })).rejects.toBe(failure);
-    expect(startBrowserSdk).not.toHaveBeenCalled();
+    expect(startTelemetryInstance).not.toHaveBeenCalled();
   },
 );
 
 it("stops session timers on SDK startup failure", async () => {
   const failure = new Error("SDK startup failed");
-  vi.mocked(startBrowserSdk).mockImplementationOnce(() => {
+  vi.mocked(startTelemetryInstance).mockImplementationOnce(() => {
     throw failure;
   });
   await expect(useMicrosoftOpenTelemetry({ session: { enabled: true } })).rejects.toBe(failure);
@@ -472,7 +518,10 @@ it("stops session timers on SDK startup failure", async () => {
 it("stops session timers even when instrumentation and SDK shutdown fail", async () => {
   const sdkFailure = new Error("SDK shutdown failed");
   const instrumentationFailure = new Error("disable failed");
-  vi.mocked(startBrowserSdk).mockReturnValueOnce({
+  vi.mocked(startTelemetryInstance).mockResolvedValueOnce({
+    tracerProvider: noopTracerProvider,
+    loggerProvider: noopLoggerProvider,
+    detach: vi.fn(),
     shutdown: vi.fn().mockRejectedValue(sdkFailure),
   });
   const handle = await useMicrosoftOpenTelemetry({

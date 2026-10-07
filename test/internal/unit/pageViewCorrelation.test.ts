@@ -140,14 +140,19 @@ it.each([false, true])(
       propagation.inject(trace.setSpan(context.active(), span), headers);
       expect(headers.traceparent?.split("-")[1]).toBe(id);
       expect(log.spanContext?.traceId).toBe(id);
-      expect(log.attributes).toEqual({});
-      expect(pipeline.onSpan.mock.calls.at(-1)![0].attributes).toEqual({});
+      const anonymousUserId = log.attributes["enduser.pseudo.id"];
+      expect(anonymousUserId).toMatch(/^[0-9a-f]{32}$/);
+      expect(log.attributes).toEqual({ "enduser.pseudo.id": anonymousUserId });
+      expect(pipeline.onSpan.mock.calls.at(-1)![0].attributes).toEqual({
+        "enduser.pseudo.id": anonymousUserId,
+      });
       const routeLog = pipeline.onLog.mock.calls.find(
         ([record]) =>
           record.eventName === "browser.navigation" &&
           record.attributes["url.full"] === location.href,
       )![0];
       expect(routeLog.spanContext?.traceId).toBe(id);
+      expect(routeLog.attributes["enduser.pseudo.id"]).toBe(anonymousUserId);
       window.dispatchEvent(new Event("pagehide"));
       const page = pipeline.onLog.mock.calls.find(
         ([record]) =>

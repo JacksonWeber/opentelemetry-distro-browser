@@ -4,7 +4,7 @@
 import type { ExportResult } from "@opentelemetry/core";
 import type { LogRecordExporter, ReadableLogRecord } from "@opentelemetry/sdk-logs";
 import { AzureMonitorExportClient, type AzureMonitorOptions } from "./base.js";
-import { logToEnvelope } from "./logUtils.js";
+import { logToEnvelopes } from "./logUtils.js";
 
 /**
  * Exports OpenTelemetry log records to Azure Monitor.
@@ -24,7 +24,7 @@ export class AzureMonitorLogRecordExporter implements LogRecordExporter {
 
   public export(logs: ReadableLogRecord[], callback: (result: ExportResult) => void): void {
     this.client.export(
-      logs.map((log) => logToEnvelope(log, this.client.instrumentationKey)),
+      logs.flatMap((log) => logToEnvelopes(log, this.client.instrumentationKey)),
       callback,
     );
   }

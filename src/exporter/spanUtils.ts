@@ -19,6 +19,12 @@ import {
   URL_FULL,
 } from "./constants.js";
 import type { AzureMonitorEnvelope, RemoteDependencyData, RequestData } from "./telemetryModels.js";
+import {
+  ATTR_ENDUSER_ID,
+  ATTR_ENDUSER_PSEUDO_ID,
+  ATTR_USER_ACCOUNT_ID,
+  ATTR_USER_ID,
+} from "../user/constants.js";
 
 const promotedSpanAttributes = /* @__PURE__ */ new Set([
   HTTP_METHOD,
@@ -26,6 +32,10 @@ const promotedSpanAttributes = /* @__PURE__ */ new Set([
   SERVER_ADDRESS,
   SERVER_PORT,
   URL_FULL,
+  ATTR_ENDUSER_ID,
+  ATTR_ENDUSER_PSEUDO_ID,
+  ATTR_USER_ACCOUNT_ID,
+  ATTR_USER_ID,
 ]);
 
 function spanSucceeded(span: ReadableSpan, statusCode: number): boolean {
@@ -49,6 +59,8 @@ export function spanToEnvelope(
     spanContext.traceId,
     span.parentSpanContext,
     span.resource.attributes["service.name"],
+    span.attributes,
+    span.resource.attributes,
   );
 
   if (span.kind === SpanKind.SERVER || span.kind === SpanKind.CONSUMER) {

@@ -10,6 +10,7 @@ import {
 } from "@opentelemetry/api-logs";
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import type { BrowserInstrumentation } from "../../../src/types.js";
+import { BROWSER_ASYNC_TIMEOUT_MS } from "../../fixtures/timeouts.js";
 import {
   createPageViewContext,
   generatePageViewId,
@@ -25,6 +26,11 @@ import {
   ATTR_PAGE_VIEW_INDEX,
   ATTR_PAGE_VIEW_NAME,
   ATTR_PAGE_VIEW_NAME_SOURCE,
+  ATTR_PAGE_VIEW_PERF_DOM_PROCESSING,
+  ATTR_PAGE_VIEW_PERF_NETWORK_CONNECT,
+  ATTR_PAGE_VIEW_PERF_RECEIVED_RESPONSE,
+  ATTR_PAGE_VIEW_PERF_SENT_REQUEST,
+  ATTR_PAGE_VIEW_PERF_TOTAL,
   ATTR_PAGE_VIEW_REFERRER,
   ATTR_PAGE_VIEW_SAME_DOCUMENT,
   ATTR_PAGE_VIEW_TYPE,
@@ -74,19 +80,38 @@ async function settle(): Promise<void> {
   });
 }
 
+function waitForPopState(): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const state: { timeout?: number } = {};
+    const onPopState = (): void => {
+      clearTimeout(state.timeout);
+      resolve();
+    };
+    state.timeout = window.setTimeout(() => {
+      window.removeEventListener("popstate", onPopState);
+      reject(new Error("Timed out waiting for popstate"));
+    }, BROWSER_ASYNC_TIMEOUT_MS);
+    window.addEventListener("popstate", onPopState, { once: true });
+  });
+}
+
 function attributesOf(record: LogRecord): Record<string, unknown> {
   return (record.attributes ?? {}) as Record<string, unknown>;
 }
 
 beforeEach(() => {
-  history.replaceState(null, "", originalUrl);
+  if (location.href !== originalUrl) {
+    history.replaceState(null, "", originalUrl);
+  }
   document.title = originalTitle;
 });
 
 afterEach(() => {
   active?.disable();
   active = undefined;
-  history.replaceState(null, "", originalUrl);
+  if (location.href !== originalUrl) {
+    history.replaceState(null, "", originalUrl);
+  }
   document.title = originalTitle;
 });
 
@@ -166,6 +191,17 @@ describe("PageViewInstrumentation", () => {
 
   describe("document load", () => {
     it("emits one record with a browser-reported duration", async () => {
+      vi.spyOn(performance, "getEntriesByType").mockReturnValue([
+        {
+          startTime: 0,
+          connectEnd: 20,
+          requestStart: 30,
+          responseStart: 80,
+          responseEnd: 110,
+          loadEventEnd: 170,
+          type: "navigate",
+        } as PerformanceNavigationTiming,
+      ]);
       const { instrumentation, provider } = createInstrumentation();
 
       instrumentation.enable();
@@ -180,8 +216,36 @@ describe("PageViewInstrumentation", () => {
       expect(attributes[ATTR_PAGE_VIEW_SAME_DOCUMENT]).toBe(false);
       expect(attributes[ATTR_PAGE_VIEW_INDEX]).toBe(0);
       expect(attributes[ATTR_PAGE_VIEW_DURATION_SOURCE]).toBe("navigation_timing");
-      expect(attributes[ATTR_PAGE_VIEW_DURATION]).toBeGreaterThan(0);
+      expect(attributes[ATTR_PAGE_VIEW_DURATION]).toBe(170);
+      expect(attributes[ATTR_PAGE_VIEW_PERF_TOTAL]).toBe(170);
+      expect(attributes[ATTR_PAGE_VIEW_PERF_NETWORK_CONNECT]).toBe(20);
+      expect(attributes[ATTR_PAGE_VIEW_PERF_SENT_REQUEST]).toBe(50);
+      expect(attributes[ATTR_PAGE_VIEW_PERF_RECEIVED_RESPONSE]).toBe(30);
+      expect(attributes[ATTR_PAGE_VIEW_PERF_DOM_PROCESSING]).toBe(60);
       expect(attributes[ATTR_URL_FULL]).toBe(location.href);
+    });
+
+    it("omits performance phases when navigation boundaries are invalid", async () => {
+      vi.spyOn(performance, "getEntriesByType").mockReturnValue([
+        {
+          startTime: 0,
+          connectEnd: 20,
+          requestStart: 10,
+          responseStart: 30,
+          responseEnd: 110,
+          loadEventEnd: 170,
+          type: "navigate",
+        } as PerformanceNavigationTiming,
+      ]);
+      const { instrumentation, provider } = createInstrumentation();
+
+      instrumentation.enable();
+      await settle();
+
+      const attributes = attributesOf(provider.records[0] as LogRecord);
+      expect(attributes[ATTR_PAGE_VIEW_DURATION]).toBe(170);
+      expect(attributes[ATTR_PAGE_VIEW_PERF_TOTAL]).toBeUndefined();
+      expect(attributes[ATTR_PAGE_VIEW_PERF_SENT_REQUEST]).toBeUndefined();
     });
 
     it("always sets a navigation type, unlike upstream browser.navigation", async () => {
@@ -316,6 +380,7 @@ describe("PageViewInstrumentation", () => {
       expect(attributes[ATTR_PAGE_VIEW_SAME_DOCUMENT]).toBe(true);
       expect(attributes[ATTR_PAGE_VIEW_TYPE]).toBe("push");
       expect(attributes[ATTR_PAGE_VIEW_DURATION_SOURCE]).toBe("soft_navigation_settled");
+      expect(attributes[ATTR_PAGE_VIEW_PERF_TOTAL]).toBeUndefined();
       expect(String(attributes[ATTR_URL_FULL])).toContain("/orders/42");
     });
 
@@ -440,7 +505,9 @@ describe("PageViewInstrumentation", () => {
       history.pushState(null, "", "#hash-a");
       await settle();
       provider.records.length = 0;
+      const traversed = waitForPopState();
       history.back();
+      await traversed;
       await settle();
 
       expect(attributesOf(provider.records[0] as LogRecord)[ATTR_PAGE_VIEW_TYPE]).toBe("traverse");

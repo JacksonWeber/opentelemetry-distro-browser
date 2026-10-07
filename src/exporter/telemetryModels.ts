@@ -40,8 +40,17 @@ export interface ExceptionData extends EnvelopeData {
     readonly message: string;
     readonly hasFullStack: boolean;
     readonly stack?: string;
+    readonly parsedStack?: readonly StackFrame[];
   }[];
   readonly severityLevel?: SeverityLevel;
+}
+
+export interface StackFrame {
+  readonly level: number;
+  readonly method: string;
+  readonly assembly: string;
+  readonly fileName: string;
+  readonly line: number;
 }
 
 export interface PageViewData extends EnvelopeData {
@@ -52,12 +61,29 @@ export interface PageViewData extends EnvelopeData {
   readonly referredUri?: string;
 }
 
+export interface PageViewPerformanceData extends EnvelopeData {
+  readonly name: string;
+  readonly url?: string;
+  readonly duration: string;
+  readonly perfTotal: string;
+  readonly networkConnect: string;
+  readonly sentRequest: string;
+  readonly receivedResponse: string;
+  readonly domProcessing: string;
+}
+
 export interface CustomEventData extends EnvelopeData {
   readonly name: string;
 }
 
 export type AzureMonitorBaseData =
-  RequestData | RemoteDependencyData | MessageData | ExceptionData | PageViewData | CustomEventData;
+  | RequestData
+  | RemoteDependencyData
+  | MessageData
+  | ExceptionData
+  | PageViewData
+  | PageViewPerformanceData
+  | CustomEventData;
 
 export interface AzureMonitorEnvelope<T extends AzureMonitorBaseData = AzureMonitorBaseData> {
   readonly name: string;
@@ -73,6 +99,7 @@ export interface AzureMonitorEnvelope<T extends AzureMonitorBaseData = AzureMoni
       | "MessageData"
       | "ExceptionData"
       | "PageViewData"
+      | "PageviewPerformanceData"
       | "EventData";
     readonly baseData: T;
   };

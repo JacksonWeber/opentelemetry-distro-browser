@@ -71,6 +71,7 @@ export interface BrowserInstrumentation {
 export interface MicrosoftOpenTelemetryBrowser {
     forceFlush(): Promise<void>;
     shutdown(): Promise<void>;
+    readonly userContext: MicrosoftOpenTelemetryBrowserUserContext;
 }
 
 // @public
@@ -85,12 +86,22 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
     };
     spanProcessors?: SpanProcessor[];
     traces?: MicrosoftOpenTelemetryBrowserTraceOptions;
+    userContext?: {
+        enabled?: boolean;
+    };
 }
 
 // @public
 export interface MicrosoftOpenTelemetryBrowserTraceOptions {
     contextManager?: ContextManager;
     propagators?: readonly TextMapPropagator[];
+}
+
+// @public
+export interface MicrosoftOpenTelemetryBrowserUserContext {
+    clearAuthenticatedUserContext(): void;
+    setAuthenticatedUserContext(userId: string, accountId?: string): void;
+    setEnabled(enabled: boolean): void;
 }
 
 // @public

@@ -131,16 +131,16 @@ describe("AzureMonitorSpanExporter", () => {
     expect(new TextEncoder().encode(await requestBody(fetch, 1)).byteLength).toBeLessThanOrEqual(
       MAX_BATCH_SIZE_IN_BYTES,
     );
-    await expect(requestEnvelopes(fetch, 0)).resolves.toEqual([
-      expect.objectContaining({
-        data: expect.objectContaining({ baseData: expect.objectContaining({ name: "first" }) }),
-      }),
-    ]);
-    await expect(requestEnvelopes(fetch, 1)).resolves.toEqual([
-      expect.objectContaining({
-        data: expect.objectContaining({ baseData: expect.objectContaining({ name: "second" }) }),
-      }),
-    ]);
+    // Batches are compressed concurrently, so fetch call order is not deterministic across engines.
+    const batchNames = await Promise.all(
+      [0, 1].map(async (call) =>
+        (await requestEnvelopes(fetch, call)).map(
+          (envelope) => (envelope as { data: { baseData: { name: string } } }).data.baseData.name,
+        ),
+      ),
+    );
+    expect(batchNames).toHaveLength(2);
+    expect(batchNames).toEqual(expect.arrayContaining([["first"], ["second"]]));
 
     const oversized = {
       ...makeSpan("oversized"),
