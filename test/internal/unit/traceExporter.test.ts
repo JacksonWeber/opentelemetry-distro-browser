@@ -90,6 +90,22 @@ describe("AzureMonitorSpanExporter", () => {
     }
   });
 
+  it("falls back to HTTPS instead of exporting spans to a non-loopback HTTP endpoint", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetch);
+    const exporter = new AzureMonitorSpanExporter({
+      connectionString: connectionString.replace("https:", "http:"),
+    });
+
+    try {
+      await expect(exportSpan(exporter)).resolves.toEqual({ code: ExportResultCode.SUCCESS });
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(fetch.mock.calls[0][0]).toBe("https://dc.services.visualstudio.com/v2/track");
+    } finally {
+      await exporter.shutdown();
+    }
+  });
+
   it("splits envelopes into request-sized batches without rejecting an oversized envelope", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response("", { status: 200 }));
     vi.stubGlobal("fetch", fetch);
