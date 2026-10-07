@@ -22,6 +22,12 @@ import { TracerProvider, type SpanProcessor } from "@opentelemetry/sdk-trace";
 import { StackContextManager } from "@opentelemetry/sdk-trace-web";
 import { addInstance, noopLoggerProvider, noopTracerProvider } from "./instanceRouter.js";
 import { addPageCorrelation, registerPageContext, type PageCorrelation } from "./pageContext.js";
+import {
+  commitGlobals,
+  getSharedRegistry,
+  reportError,
+  rollbackGlobals,
+} from "../shared/globalOwnership.js";
 
 /** Resolved pipeline configuration for one distribution instance. */
 export interface TelemetryInstanceOptions {
@@ -40,48 +46,31 @@ export interface TelemetryInstanceOptions {
 export interface TelemetryInstance {
   readonly tracerProvider: TracerProviderApi;
   readonly loggerProvider: LoggerProviderApi;
-  /**
-   * Stops routing new tracers and loggers to the instance and passes the page operation on at
-   * once, before shutdown awaits pending flushes.
-   */
+  /** Commits globals after instrumentation setup succeeds. */
+  commit(): void;
+  /** Releases provisional globals without disturbing surviving instances. */
+  abort(): void;
+  /** Hands off routing and page context before waiting for flushes. */
   detach(): void;
   /** Stops routing to the instance, then shuts down both of its providers. */
   shutdown(): Promise<void>;
 }
 
-let diagLoggerSet = false;
-
 /**
- * Creates an instance's own tracer and logger providers and adds it to the global router.
- *
- * @remarks
- * Nothing is shared with other instances except the page-wide context manager and propagator,
- * which the OpenTelemetry API allows only one SDK to register: the first tracing instance on the
- * page registers them for the page's lifetime. The page operation comes from the earliest running
- * instance with page views, including logs-only instances, and passes on when it shuts down. If startup fails, the providers it created
- * are shut down before the failure is rethrown.
+ * Creates isolated providers behind shared routers and page context.
+ * Takes processor ownership on entry and cleans up every failed startup.
  */
 export async function startTelemetryInstance(
   options: TelemetryInstanceOptions,
 ): Promise<TelemetryInstance> {
-  // Matches the upstream browser SDK, which installs a console diagnostic logger once per page.
-  // Documented on useMicrosoftOpenTelemetry; applications can replace it after initialization.
-  if (!diagLoggerSet) {
-    diagLoggerSet = true;
-    diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.INFO);
-  }
-  const resource = defaultResource().merge(resourceFromAttributes(options.resourceAttributes));
-  const tracerProvider = options.spanProcessors.length
-    ? new TracerProvider({ resource, spanProcessors: options.spanProcessors.slice() })
-    : undefined;
-  const loggerProvider = options.logRecordProcessors.length
-    ? new LoggerProvider({ resource, processors: options.logRecordProcessors.slice() })
-    : undefined;
+  let tracerProvider: TracerProvider | undefined;
+  let loggerProvider: LoggerProvider | undefined;
   const shutdownProviders = async (): Promise<void> => {
-    const results = await Promise.allSettled([
-      tracerProvider?.shutdown(),
-      loggerProvider?.shutdown(),
-    ]);
+    const owners = [
+      ...(tracerProvider ? [tracerProvider] : options.spanProcessors),
+      ...(loggerProvider ? [loggerProvider] : options.logRecordProcessors),
+    ];
+    const results = await Promise.allSettled(owners.map(async (owner) => owner.shutdown()));
     const errors = results.flatMap((result) =>
       result.status === "rejected" ? [result.reason as unknown] : [],
     );
@@ -89,7 +78,27 @@ export async function startTelemetryInstance(
     if (errors.length > 1) throw new AggregateError(errors, "Telemetry provider shutdown failed");
   };
 
+  let removeCorrelation: (() => void) | undefined;
+  let removeInstance: (() => void) | undefined;
   try {
+    const registry = getSharedRegistry();
+    // Matches the upstream browser SDK's once-per-page diagnostic initialization.
+    if (!registry.diagInitialized) {
+      registry.diagInitialized = diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.INFO);
+    }
+    const resource = defaultResource().merge(resourceFromAttributes(options.resourceAttributes));
+    if (options.spanProcessors.length) {
+      tracerProvider = new TracerProvider({
+        resource,
+        spanProcessors: options.spanProcessors.slice(),
+      });
+    }
+    if (options.logRecordProcessors.length) {
+      loggerProvider = new LoggerProvider({
+        resource,
+        processors: options.logRecordProcessors.slice(),
+      });
+    }
     if (tracerProvider) {
       registerPageContext(
         options.contextManager,
@@ -103,26 +112,37 @@ export async function startTelemetryInstance(
           }),
       );
     }
+    removeCorrelation = options.correlation && addPageCorrelation(options.correlation);
+    removeInstance = addInstance({ tracerProvider, loggerProvider });
   } catch (error) {
+    removeCorrelation?.();
+    removeInstance?.();
+    rollbackGlobals();
     try {
       await shutdownProviders();
     } catch (cleanupFailure) {
-      diag.error("Telemetry initialization cleanup failed", cleanupFailure);
+      reportError("Telemetry initialization cleanup failed", cleanupFailure);
     }
     throw error;
   }
 
-  const removeCorrelation = options.correlation && addPageCorrelation(options.correlation);
-  const removeInstance = addInstance({ tracerProvider, loggerProvider });
   return {
     tracerProvider: tracerProvider ?? noopTracerProvider,
     loggerProvider: loggerProvider ?? noopLoggerProvider,
+    commit() {
+      commitGlobals(!!tracerProvider, !!loggerProvider);
+    },
+    abort() {
+      removeInstance?.();
+      removeCorrelation?.();
+      rollbackGlobals();
+    },
     detach() {
-      removeInstance();
+      removeInstance?.();
       removeCorrelation?.();
     },
     async shutdown() {
-      removeInstance();
+      removeInstance?.();
       removeCorrelation?.();
       await shutdownProviders();
     },

@@ -3,12 +3,12 @@
 
 import { isSpanContextValid, trace, type Context, type SpanContext } from "@opentelemetry/api";
 import type { LogRecordProcessor, ReadWriteLogRecord } from "@opentelemetry/sdk-logs";
-import { syntheticPageContexts } from "../../shared/pageOperationContext.js";
+import { isPageContext } from "../../shared/pageOperationContext.js";
 
 /** Removes a synthetic page operation while preserving application contexts and values. */
 export function withoutPageOperation(active: Context): Context {
   const spanContext = trace.getSpanContext(active);
-  return spanContext && syntheticPageContexts.has(spanContext) ? trace.deleteSpan(active) : active;
+  return spanContext && isPageContext(spanContext) ? trace.deleteSpan(active) : active;
 }
 
 /**

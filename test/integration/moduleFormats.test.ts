@@ -13,11 +13,12 @@ import type {
   InstrumentationOptions,
 } from "../../src/instrumentation/browserInstrumentation/index.js";
 import { createInMemoryPipeline } from "../fixtures/telemetry.js";
+import { loadBrowserScript as loadScript } from "../fixtures/browserBundle.js";
 
 interface BrowserBundle {
   readonly context: ContextAPI;
   readonly diag: DiagAPI;
-  readonly logs: LoggerProvider & { disable(): void };
+  readonly logs: LoggerProvider & { getLoggerProvider(): LoggerProvider; disable(): void };
   readonly propagation: PropagationAPI;
   readonly trace: TraceAPI;
   readonly OPENTELEMETRY_BROWSER_VERSION: string;
@@ -43,26 +44,6 @@ declare global {
     };
     define?: AmdDefine;
   }
-}
-
-async function loadScript(file: string): Promise<HTMLScriptElement> {
-  const script = document.createElement("script");
-  const path = `../../dist/browser/${file}`;
-  script.src = new URL(path, import.meta.url).href;
-  const loaded = new Promise<void>((resolve, reject) => {
-    script.addEventListener("load", () => resolve(), { once: true });
-    script.addEventListener("error", () => reject(new Error(`Failed to load ${file}`)), {
-      once: true,
-    });
-  });
-  document.head.append(script);
-  try {
-    await loaded;
-  } catch (error) {
-    script.remove();
-    throw error;
-  }
-  return script;
 }
 
 function getBrowserBundle(): BrowserBundle | undefined {

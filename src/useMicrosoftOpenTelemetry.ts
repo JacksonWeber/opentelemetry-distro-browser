@@ -13,8 +13,9 @@ import { createUserContext } from "./user/createUserContext.js";
 import {
   BatchLogRecordProcessor,
   type BatchLogRecordProcessorBrowserOptions,
+  type LogRecordProcessor,
 } from "@opentelemetry/sdk-logs";
-import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { BatchSpanProcessor, type SpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { beginUnloading, endUnloading } from "./exporter/common.js";
 import { AzureMonitorLogRecordExporter } from "./exporter/log.js";
 import { AzureMonitorSpanExporter } from "./exporter/trace.js";
@@ -25,6 +26,7 @@ import {
   ATTR_TELEMETRY_DISTRO_VERSION,
 } from "@opentelemetry/semantic-conventions";
 import { OPENTELEMETRY_BROWSER_VERSION } from "./shared/constants.js";
+import { getSharedRegistry, reportError } from "./shared/globalOwnership.js";
 import { getPageOperation, isPageContextRegistered } from "./routing/pageContext.js";
 import { startTelemetryInstance, type TelemetryInstance } from "./routing/telemetryInstance.js";
 import type {
@@ -73,50 +75,29 @@ function createOwnedInstrumentations(
  * Await completion before emitting telemetry.
  *
  * @remarks
- * Like the upstream OpenTelemetry browser SDK, the first initialization on a page installs a
- * console logger at INFO level for the global `diag` API, replacing any diagnostic logger set
- * earlier. Call `diag.setLogger` after initialization to use your own logger or level.
+ * First initialization installs an INFO console diagnostic logger, replacing the previous one.
+ * Call `diag.setLogger` afterward to override it.
+ *
+ * Compatible copies share realm-local routing and page context, not pipelines.
+ * Foreign globals stay untouched. Re-entrant registration changes reject startup.
+ *
+ * Share both API packages as singletons or acquire tracers and loggers after initialization.
+ * Early proxies belong to their API copy. Iframes and workers have independent state.
  * @public
  */
 export async function useMicrosoftOpenTelemetry(
   options: MicrosoftOpenTelemetryBrowserOptions = {},
 ): Promise<MicrosoftOpenTelemetryBrowser> {
+  getSharedRegistry();
   const userContext = createUserContext(options.userContext?.enabled === true);
   // The handle flushes owned processors on page hide; avoid a second per-processor hide flush.
   const batchOptions = {
     disableAutoFlushOnDocumentHide: true,
   } satisfies Pick<BatchLogRecordProcessorBrowserOptions, "disableAutoFlushOnDocumentHide">;
-  const spanProcessors =
-    options.spanProcessors?.length === 0
-      ? []
-      : options.azureMonitor
-        ? [
-            new BatchSpanProcessor(
-              new AzureMonitorSpanExporter(options.azureMonitor),
-              batchOptions,
-            ),
-            ...(options.spanProcessors ?? []),
-          ]
-        : (options.spanProcessors?.slice() ?? [
-            new BatchSpanProcessor(new OTLPTraceExporter(), batchOptions),
-          ]);
-  const logRecordProcessors =
-    options.logRecordProcessors?.length === 0
-      ? []
-      : options.azureMonitor
-        ? [
-            new BatchLogRecordProcessor({
-              exporter: new AzureMonitorLogRecordExporter(options.azureMonitor),
-              ...batchOptions,
-            }),
-            ...(options.logRecordProcessors ?? []),
-          ]
-        : (options.logRecordProcessors?.slice() ?? [
-            new BatchLogRecordProcessor({
-              exporter: new OTLPLogExporter(),
-              ...batchOptions,
-            }),
-          ]);
+  const azureMonitor = options.azureMonitor ? { ...options.azureMonitor } : undefined;
+  let spanProcessors: SpanProcessor[] | undefined = options.spanProcessors?.slice();
+  let logRecordProcessors: LogRecordProcessor[] | undefined = options.logRecordProcessors?.slice();
+  const ownedProcessors: (SpanProcessor | LogRecordProcessor)[] = [];
   const session = options.session?.enabled === true ? createSession() : undefined;
   const traceOptions = options.traces;
   // While another instance supplies page correlation, page views adopt its operation.
@@ -128,6 +109,8 @@ export async function useMicrosoftOpenTelemetry(
   // Publish the initial page operation before caller instrumentations can emit.
   const instrumentations = [...owned, ...(options.instrumentations ?? [])];
   let instance: TelemetryInstance | undefined;
+  let processorsTransferred = false;
+  let initialized = false;
   let stopping = false;
   // Upstream stale tracers can still call processors after provider shutdown.
   const sessionProvider = {
@@ -159,11 +142,9 @@ export async function useMicrosoftOpenTelemetry(
   const visibilityChange = (): void => {
     if (globalThis.document?.visibilityState === "hidden") flushForUnload();
   };
-  globalThis.addEventListener?.("pagehide", flushForUnload);
-  globalThis.document?.addEventListener("visibilitychange", visibilityChange);
 
   async function flushProcessors(): Promise<void> {
-    const processors = [...spanProcessors, ...logRecordProcessors];
+    const processors = [...(spanProcessors ?? []), ...(logRecordProcessors ?? [])];
     const results = await Promise.allSettled(
       processors.map((processor) => Promise.resolve().then(() => processor.forceFlush())),
     );
@@ -209,6 +190,7 @@ export async function useMicrosoftOpenTelemetry(
           errors.push(error);
         }
       }
+      if (!initialized) instance?.abort();
       const activeFlushes = [flushPromise, unloadFlushPromise].filter(
         (operation): operation is Promise<void> => operation !== undefined,
       );
@@ -223,6 +205,15 @@ export async function useMicrosoftOpenTelemetry(
       } catch (error) {
         errors.push(error);
       }
+      if (!processorsTransferred) {
+        for (const processor of ownedProcessors) {
+          try {
+            await processor.shutdown();
+          } catch (error) {
+            errors.push(error);
+          }
+        }
+      }
       if (errors.length === 1) throw errors[0];
       if (errors.length > 1) throw new AggregateError(errors, "Telemetry shutdown failed");
     })());
@@ -231,7 +222,27 @@ export async function useMicrosoftOpenTelemetry(
   const handle = { forceFlush, shutdown, userContext: userContext.context };
 
   try {
+    if (spanProcessors?.length !== 0 && (azureMonitor || spanProcessors === undefined)) {
+      const spanProcessor = new BatchSpanProcessor(
+        azureMonitor ? new AzureMonitorSpanExporter(azureMonitor) : new OTLPTraceExporter(),
+        batchOptions,
+      );
+      ownedProcessors.push(spanProcessor);
+      spanProcessors = [spanProcessor, ...(spanProcessors ?? [])];
+    }
+    if (logRecordProcessors?.length !== 0 && (azureMonitor || logRecordProcessors === undefined)) {
+      const logProcessor = new BatchLogRecordProcessor({
+        exporter: azureMonitor
+          ? new AzureMonitorLogRecordExporter(azureMonitor)
+          : new OTLPLogExporter(),
+        ...batchOptions,
+      });
+      ownedProcessors.push(logProcessor);
+      logRecordProcessors = [logProcessor, ...(logRecordProcessors ?? [])];
+    }
     await session?.start();
+    spanProcessors ??= [];
+    logRecordProcessors ??= [];
     if (
       (traceOptions?.contextManager || traceOptions?.propagators) &&
       spanProcessors.length !== 0 &&
@@ -241,7 +252,7 @@ export async function useMicrosoftOpenTelemetry(
         "Trace context options are unused because an earlier instance registered the page context",
       );
     }
-    instance = await startTelemetryInstance({
+    const instanceOptions = {
       // Spread last: the caller's attributes win.
       resourceAttributes: {
         [ATTR_TELEMETRY_DISTRO_NAME]: "@microsoft/opentelemetry-browser",
@@ -256,7 +267,12 @@ export async function useMicrosoftOpenTelemetry(
       contextManager: traceOptions?.contextManager,
       correlation,
       propagators: traceOptions?.propagators,
-    });
+    };
+    // Ownership transfers on call, including failed startup.
+    processorsTransferred = true;
+    instance = await startTelemetryInstance(instanceOptions);
+    globalThis.addEventListener?.("pagehide", flushForUnload);
+    globalThis.document?.addEventListener("visibilitychange", visibilityChange);
 
     // Bind to this instance's own providers, never the global router, so collection stays in
     // this instance's pipelines whichever instance is the default route.
@@ -265,11 +281,13 @@ export async function useMicrosoftOpenTelemetry(
       instrumentation.setLoggerProvider?.(instance.loggerProvider);
       if (!instrumentation.getConfig().enabled) instrumentation.enable();
     }
+    instance.commit();
+    initialized = true;
   } catch (error) {
     try {
       await shutdown();
     } catch (cleanupError) {
-      diag.error("Telemetry initialization cleanup failed", cleanupError);
+      reportError("Telemetry initialization cleanup failed", cleanupError);
     }
     throw error;
   }

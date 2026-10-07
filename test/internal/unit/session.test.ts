@@ -521,6 +521,8 @@ it("stops session timers even when instrumentation and SDK shutdown fail", async
   vi.mocked(startTelemetryInstance).mockResolvedValueOnce({
     tracerProvider: noopTracerProvider,
     loggerProvider: noopLoggerProvider,
+    commit: vi.fn(),
+    abort: vi.fn(),
     detach: vi.fn(),
     shutdown: vi.fn().mockRejectedValue(sdkFailure),
   });
