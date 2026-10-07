@@ -377,7 +377,7 @@ it("reports dropped telemetry once per signal until an instance starts", async (
   expect(warn).toHaveBeenCalledTimes(3);
 });
 
-it("attempts registration once per provider registered by another SDK", async () => {
+it("diagnoses each foreign provider once without attempting to replace it", async () => {
   trace.setGlobalTracerProvider(new BasicTracerProvider());
   vi.spyOn(diag, "error").mockImplementation(() => {});
   const warn = vi.spyOn(diag, "warn").mockImplementation(() => {});
@@ -388,8 +388,8 @@ it("attempts registration once per provider registered by another SDK", async ()
   await start();
   await start();
 
-  expect(registerTracer).toHaveBeenCalledOnce();
-  expect(registerLogger).toHaveBeenCalledOnce();
+  expect(registerTracer).not.toHaveBeenCalled();
+  expect(registerLogger).not.toHaveBeenCalled();
   expect(warn).toHaveBeenCalledOnce();
 });
 

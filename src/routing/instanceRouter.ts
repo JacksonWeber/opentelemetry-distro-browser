@@ -10,39 +10,59 @@ import {
   type TracerProvider,
 } from "@opentelemetry/api";
 import { createNoopLogger, logs, type LoggerProvider } from "@opentelemetry/api-logs";
+import {
+  deferGlobalRollback,
+  getRegisteredGlobal,
+  getSharedRegistry,
+  reportError,
+} from "../shared/globalOwnership.js";
 
-/**
- * The isolated pipelines owned by one distribution instance. A signal the instance does not
- * collect is left undefined, so it is never served by another instance's pipeline.
- */
+/** Instance-owned providers. Omitted signals never fall back to another instance. */
 export interface InstancePipelines {
   readonly tracerProvider?: TracerProvider;
   readonly loggerProvider?: LoggerProvider;
 }
 
-// Running instances in initialization order; per signal, the first that collects it is the default.
-const running: InstancePipelines[] = [];
-const SELECTED_INSTANCE = createContextKey("@microsoft/opentelemetry-browser instance");
-// Signals already reported as dropped; cleared when an instance starts.
-const reportedDrops = new Set<keyof InstancePipelines>();
-// Providers registered by another SDK that the routers already deferred to.
-let foreignTracerProvider: unknown;
-let foreignLoggerProvider: unknown;
+export interface RouterState {
+  running: InstancePipelines[];
+  selection: symbol;
+  reportedDrops: Set<keyof InstancePipelines>;
+  tracerRouter: TracerProvider;
+  loggerRouter: LoggerProvider;
+  traceRegistration?: unknown;
+  logsRegistration?: unknown;
+  foreignTracerProvider?: unknown;
+  foreignLoggerProvider?: unknown;
+}
+
+function getRouter(): RouterState {
+  const registry = getSharedRegistry();
+  return (registry.router ??= {
+    running: [],
+    selection: createContextKey("@microsoft/opentelemetry-browser instance"),
+    reportedDrops: new Set(),
+    tracerRouter: {
+      getTracer: (name, version, options) =>
+        (selectProvider("tracerProvider") ?? noopTracerProvider).getTracer(name, version, options),
+    },
+    loggerRouter: {
+      getLogger: (name, version, options) =>
+        (selectProvider("loggerProvider") ?? noopLoggerProvider).getLogger(name, version, options),
+    },
+  });
+}
 
 /** Hands out no-op tracers: a proxy without a delegate never records. */
 export const noopTracerProvider: TracerProvider = /* @__PURE__ */ new ProxyTracerProvider();
 /** Hands out no-op loggers. */
 export const noopLoggerProvider: LoggerProvider = { getLogger: () => createNoopLogger() };
 
-/**
- * Resolves the provider for one signal: the selected instance's own provider, or by default the
- * first running instance that collects the signal. A selected instance that does not collect it
- * gets none, never another instance's.
- */
+/** Uses the selected instance, or defaults to the first running owner of this signal. */
 function selectProvider<K extends keyof InstancePipelines>(
   signal: K,
 ): InstancePipelines[K] | undefined {
-  const selected = context.active().getValue(SELECTED_INSTANCE) as InstancePipelines | undefined;
+  const { running, selection, reportedDrops } = getRouter();
+  const selected = context.active().getValue(selection) as InstancePipelines | undefined;
   const instance = selected
     ? running.includes(selected)
       ? selected
@@ -56,54 +76,74 @@ function selectProvider<K extends keyof InstancePipelines>(
 }
 
 /**
- * The global tracer provider. Resolves the owning instance once, when a tracer is acquired, and
- * returns that instance's own tracer, so later spans never depend on mutable routing state.
- */
-const tracerRouter: TracerProvider = {
-  getTracer: (name, version, options) =>
-    (selectProvider("tracerProvider") ?? noopTracerProvider).getTracer(name, version, options),
-};
-
-/** The global logger provider, with the same binding rules as {@link tracerRouter}. */
-const loggerRouter: LoggerProvider = {
-  getLogger: (name, version, options) =>
-    (selectProvider("loggerProvider") ?? noopLoggerProvider).getLogger(name, version, options),
-};
-
-/**
- * Adds an instance to the routing table and registers the global router for each signal it
- * collects. Never replaces a provider registered by another SDK, and attempts registration only
- * once per conflicting provider.
- *
- * @returns Removes the instance from routing. Tracers and loggers already bound to it stay bound
- * to its own pipelines rather than moving to another instance.
+ * Adds an instance without replacing foreign providers.
+ * Returns a removal callback. Acquired tracers and loggers stay bound to their instance.
  */
 export function addInstance(instance: InstancePipelines): () => void {
-  const tracerDelegate = () => (trace.getTracerProvider() as ProxyTracerProvider).getDelegate?.();
-  if (
-    instance.tracerProvider &&
-    tracerDelegate() !== tracerRouter &&
-    tracerDelegate() !== foreignTracerProvider &&
-    // The API reports a conflicting registration itself.
-    !trace.setGlobalTracerProvider(tracerRouter)
-  ) {
-    foreignTracerProvider = tracerDelegate();
+  const state = getRouter();
+  let installedTrace: unknown;
+  let installedLogs: unknown;
+  const rollback = (signal: "trace" | "logs", registration: unknown): void => {
+    if (registration && getRegisteredGlobal(signal) === registration) {
+      if (signal === "trace") trace.disable();
+      else logs.disable();
+    }
+  };
+  try {
+    const traceRegistration = getRegisteredGlobal("trace");
+    if (
+      instance.tracerProvider &&
+      (!traceRegistration || traceRegistration !== state.traceRegistration)
+    ) {
+      // The API installs its local proxy before calling diagnostic callbacks.
+      if (!traceRegistration) installedTrace = trace.getTracerProvider();
+      if (!traceRegistration && trace.setGlobalTracerProvider(state.tracerRouter)) {
+        state.traceRegistration = getRegisteredGlobal("trace");
+      } else if (!traceRegistration || traceRegistration !== state.foreignTracerProvider) {
+        state.foreignTracerProvider = traceRegistration;
+        diag.error(
+          "[tracer-provider-conflict] Global traces remain with another installation. Instance pipelines are isolated.",
+        );
+      }
+    }
+    const logsRegistration = getRegisteredGlobal("logs");
+    if (
+      instance.loggerProvider &&
+      (!logsRegistration || logsRegistration !== state.logsRegistration)
+    ) {
+      if (
+        !logsRegistration &&
+        logs.setGlobalLoggerProvider(state.loggerRouter) === state.loggerRouter
+      ) {
+        installedLogs = getRegisteredGlobal("logs");
+        state.logsRegistration = installedLogs;
+      } else if (!logsRegistration || logsRegistration !== state.foreignLoggerProvider) {
+        state.foreignLoggerProvider = logsRegistration;
+        diag.warn(
+          "[logger-provider-conflict] Global logs remain with another installation. Instance pipelines are isolated.",
+        );
+      }
+    }
+    state.reportedDrops.clear();
+    state.running.push(instance);
+    if (installedTrace) deferGlobalRollback("trace", () => rollback("trace", installedTrace));
+    if (installedLogs) deferGlobalRollback("logs", () => rollback("logs", installedLogs));
+  } catch (error) {
+    for (const [signal, registration] of [
+      ["logs", installedLogs],
+      ["trace", installedTrace],
+    ] as const) {
+      try {
+        rollback(signal, registration);
+      } catch (cleanupError) {
+        reportError("Telemetry router rollback failed", cleanupError);
+      }
+    }
+    throw error;
   }
-  const loggerProvider = logs.getLoggerProvider();
-  if (
-    instance.loggerProvider &&
-    loggerProvider !== loggerRouter &&
-    loggerProvider !== foreignLoggerProvider &&
-    logs.setGlobalLoggerProvider(loggerRouter) !== loggerRouter
-  ) {
-    foreignLoggerProvider = logs.getLoggerProvider();
-    diag.warn("Another OpenTelemetry LoggerProvider is registered; it serves the global Logs API");
-  }
-  reportedDrops.clear();
-  running.push(instance);
   return () => {
-    const index = running.indexOf(instance);
-    if (index >= 0) running.splice(index, 1);
+    const index = state.running.indexOf(instance);
+    if (index >= 0) state.running.splice(index, 1);
   };
 }
 
@@ -113,5 +153,5 @@ export function addInstance(instance: InstancePipelines): () => void {
  * @internal Application-facing instance selection is follow-up work.
  */
 export function withInstance<T>(instance: InstancePipelines, callback: () => T): T {
-  return context.with(context.active().setValue(SELECTED_INSTANCE, instance), callback);
+  return context.with(context.active().setValue(getRouter().selection, instance), callback);
 }

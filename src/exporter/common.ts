@@ -4,7 +4,7 @@
 import type { Attributes, HrTime, SpanContext } from "@opentelemetry/api";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../shared/constants.js";
 import { isNonEmptyString, selectNonEmptyString } from "../shared/isNonEmptyString.js";
-import { syntheticPageContexts } from "../shared/pageOperationContext.js";
+import { isPageContext } from "../shared/pageOperationContext.js";
 import type { AzureMonitorBaseData, AzureMonitorEnvelope } from "./telemetryModels.js";
 import {
   ATTR_ENDUSER_ID,
@@ -102,7 +102,7 @@ export function createTags(
     "ai.internal.sdkVersion": `mot${OPENTELEMETRY_BROWSER_VERSION}`,
   };
   if (traceId) tags["ai.operation.id"] = traceId;
-  if (parentContext?.spanId && !syntheticPageContexts.has(parentContext)) {
+  if (parentContext?.spanId && !isPageContext(parentContext)) {
     tags["ai.operation.parentId"] = parentContext.spanId;
   }
   if (serviceName) tags["ai.cloud.role"] = serializeAttribute(serviceName);

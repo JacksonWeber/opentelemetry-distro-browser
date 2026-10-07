@@ -14,7 +14,7 @@ import { type LogRecord } from "@opentelemetry/api-logs";
 import { RandomIdGenerator } from "@opentelemetry/sdk-trace-base";
 import { InstrumentationBase, safeExecuteInTheMiddle } from "@opentelemetry/instrumentation";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../shared/constants.js";
-import { syntheticPageContexts } from "../../shared/pageOperationContext.js";
+import { markPageContext } from "../../shared/pageOperationContext.js";
 import { createPageViewContext, generatePageViewId } from "./pageViewContext.js";
 import {
   ATTR_PAGE_VIEW_DURATION,
@@ -228,7 +228,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
         spanId: new RandomIdGenerator().generateSpanId(),
         traceFlags: 1,
       };
-      syntheticPageContexts.add(this.operation);
+      markPageContext(this.operation);
       this.operationUrl = url;
     }
     return this.operation;

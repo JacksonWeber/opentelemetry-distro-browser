@@ -17,6 +17,8 @@ function fakeInstance() {
   return {
     tracerProvider: { getTracer: vi.fn() },
     loggerProvider: { getLogger: vi.fn() },
+    commit: vi.fn(),
+    abort: vi.fn(),
     detach: vi.fn(),
     shutdown: vi.fn(async () => {}),
   };
@@ -203,23 +205,28 @@ it.each(["setTracerProvider", "setLoggerProvider", "getConfig", "enable"] as con
   },
 );
 
-it("reports asynchronous rollback failures without replacing the initialization error", async () => {
-  const instrumentation = createInstrumentation();
-  const failure = new Error("registration failed");
-  const cleanupFailure = new Error("SDK shutdown failed");
-  instrumentation.enable.mockImplementation(() => {
-    throw failure;
-  });
-  const report = vi.spyOn(diag, "error").mockImplementation(() => {});
-  vi.mocked(startTelemetryInstance).mockResolvedValueOnce({
-    ...fakeInstance(),
-    shutdown: vi.fn().mockRejectedValue(cleanupFailure),
-  });
-  await expect(useMicrosoftOpenTelemetry({ instrumentations: [instrumentation] })).rejects.toThrow(
-    failure,
-  );
-  expect(report).toHaveBeenCalledExactlyOnceWith(
-    "Telemetry initialization cleanup failed",
-    cleanupFailure,
-  );
-});
+it.each([false, true])(
+  "preserves initialization errors when cleanup fails and diagnostics throw=%s",
+  async (diagnosticsThrow) => {
+    const instrumentation = createInstrumentation();
+    const failure = new Error("registration failed");
+    const cleanupFailure = new Error("SDK shutdown failed");
+    instrumentation.enable.mockImplementation(() => {
+      throw failure;
+    });
+    const report = vi.spyOn(diag, "error").mockImplementation(() => {
+      if (diagnosticsThrow) throw new Error("diagnostic logger failed");
+    });
+    vi.mocked(startTelemetryInstance).mockResolvedValueOnce({
+      ...fakeInstance(),
+      shutdown: vi.fn().mockRejectedValue(cleanupFailure),
+    });
+    await expect(useMicrosoftOpenTelemetry({ instrumentations: [instrumentation] })).rejects.toBe(
+      failure,
+    );
+    expect(report).toHaveBeenCalledExactlyOnceWith(
+      "Telemetry initialization cleanup failed",
+      cleanupFailure,
+    );
+  },
+);
