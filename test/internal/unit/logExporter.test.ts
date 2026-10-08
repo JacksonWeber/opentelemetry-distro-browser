@@ -8,6 +8,7 @@ import { beginUnloading, endUnloading } from "../../../src/exporter/common.js";
 import { MAX_BEACON_BODY_SIZE } from "../../../src/exporter/constants.js";
 import { AzureMonitorLogRecordExporter } from "../../../src/exporter/log.js";
 import { createMockIngestionEndpoint } from "../../fixtures/azureMonitor.js";
+import { installFakeClock } from "../../fixtures/clock.js";
 import { createReadableLogRecord } from "../../fixtures/telemetry.js";
 
 const connectionString =
@@ -68,6 +69,38 @@ describe("AzureMonitorLogRecordExporter", () => {
       await exporter.shutdown();
     }
   });
+
+  it.each(["forceFlush", "shutdown"] as const)(
+    "settles %s promptly when ingestion requests a day-long retry delay",
+    async (method) => {
+      const clock = installFakeClock();
+      vi.stubGlobal("CompressionStream", undefined);
+      vi.spyOn(Response.prototype, "text").mockResolvedValue("");
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(
+          new Response(null, { status: 503, headers: { "retry-after": "86400" } }),
+        );
+      vi.stubGlobal("fetch", fetch);
+      const exporter = new AzureMonitorLogRecordExporter({ connectionString });
+      const callback = vi.fn();
+      const finished = vi.fn();
+
+      exporter.export([createReadableLogRecord()], callback);
+      const lifecycle = exporter[method]().then(finished);
+      await clock.advance(1_500);
+
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(finished).toHaveBeenCalledOnce();
+      expect(callback).toHaveBeenCalledExactlyOnceWith({
+        code: ExportResultCode.FAILED,
+        error: expect.objectContaining({ message: expect.stringContaining("retry-wait budget") }),
+      });
+      await lifecycle;
+      expect(vi.getTimerCount()).toBe(0);
+      await exporter.shutdown();
+    },
+  );
 
   it("exports page-view and performance envelopes from one log record", async () => {
     const ingestion = createMockIngestionEndpoint();

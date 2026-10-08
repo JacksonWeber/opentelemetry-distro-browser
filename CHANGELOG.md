@@ -23,6 +23,9 @@ All notable changes to this package are documented in this file.
 
 ### Changed
 
+- Limit Azure Monitor retry waits to a 30-second budget per send so long `Retry-After` values
+  fail exports promptly instead of stalling `forceFlush()` and `shutdown()`, while preserving
+  the server's throttle deadline.
 - Update the development dependency `source-map-js` to 1.2.2.
 - Share unload listeners across instances and release them and the owned context delegate after
   the last instance stops. Bound telemetry stops immediately at shutdown, cleanup attempts every
