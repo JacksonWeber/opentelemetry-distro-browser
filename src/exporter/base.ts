@@ -93,14 +93,14 @@ export class AzureMonitorExportClient {
           if (result.status === "rejected") throw result.reason;
           fulfilled.push(result.value);
         }
-        callback(toExportResult(fulfilled));
+        return toExportResult(fulfilled);
       })
-      .catch((error: unknown) =>
-        callback({
-          code: ExportResultCode.FAILED,
-          error: error instanceof Error ? error : new Error(String(error)),
-        }),
-      )
+      .catch((error: unknown): ExportResult => ({
+        code: ExportResultCode.FAILED,
+        error: error instanceof Error ? error : new Error(String(error)),
+      }))
+      // Callback errors must not be reported back to the same callback as export failures.
+      .then(callback)
       .finally(() => this.pending.delete(operation));
     this.pending.add(operation);
   }
