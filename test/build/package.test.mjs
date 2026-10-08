@@ -79,7 +79,7 @@ function findUndeclaredRequireCalls(code) {
 
 test("the package is configured for a public alpha release", () => {
   assert.equal(pkg.name, "@microsoft/opentelemetry-browser");
-  assert.equal(pkg.version, "0.1.0-alpha.1");
+  assert.equal(pkg.version, "0.1.0-alpha.2");
   assert.equal(Object.hasOwn(pkg, "private"), false);
   assert.deepEqual(pkg.publishConfig, {
     access: "public",
