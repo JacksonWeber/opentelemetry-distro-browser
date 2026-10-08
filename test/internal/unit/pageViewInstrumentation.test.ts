@@ -116,6 +116,46 @@ afterEach(() => {
 });
 
 describe("PageViewInstrumentation", () => {
+  it.each(["first frame", "second frame", "idle"] as const)(
+    "cancels pending %s work on disable",
+    async (stage) => {
+      const frames = new Map<number, FrameRequestCallback>();
+      const idle = new Map<number, IdleRequestCallback>();
+      let nextId = 0;
+      vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+        frames.set(++nextId, callback);
+        return nextId;
+      });
+      vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
+      vi.stubGlobal("requestIdleCallback", (callback: IdleRequestCallback) => {
+        idle.set(++nextId, callback);
+        return nextId;
+      });
+      vi.stubGlobal("cancelIdleCallback", (id: number) => idle.delete(id));
+      try {
+        const { instrumentation, provider } = createInstrumentation();
+        instrumentation.enable();
+        history.pushState(null, "", "/scheduled");
+        const advanceFrame = () => {
+          const [id, callback] = [...frames][0];
+          frames.delete(id);
+          callback(performance.now());
+        };
+        if (stage !== "first frame") advanceFrame();
+        if (stage === "idle") advanceFrame();
+        expect(frames.size + idle.size).toBe(1);
+        const emitted = provider.records.length;
+        instrumentation.disable();
+        expect(frames.size).toBe(0);
+        expect(idle.size).toBe(0);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(provider.records).toHaveLength(emitted);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
   describe("instrumentation contract", () => {
     it("satisfies the distribution's registration contract", () => {
       const { instrumentation } = createInstrumentation();

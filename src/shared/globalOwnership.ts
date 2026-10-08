@@ -16,6 +16,8 @@ interface SharedRegistry {
   pageContexts?: WeakSet<SpanContext>;
   router?: RouterState;
   page?: PageContextState;
+  unloadSubscribers?: Set<() => void>;
+  removeUnloadListeners?: () => void;
   pending?: { signal: "trace" | "logs"; rollback: () => void }[];
 }
 

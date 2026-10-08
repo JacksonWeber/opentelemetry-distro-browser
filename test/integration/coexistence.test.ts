@@ -3,7 +3,7 @@
 
 import { context, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
-import { afterEach, expect, inject, it } from "vitest";
+import { afterEach, expect, inject, it, vi } from "vitest";
 import type { AzureMonitorEnvelope } from "../../src/exporter/telemetryModels.js";
 import {
   useMicrosoftOpenTelemetry,
@@ -42,6 +42,7 @@ afterEach(async () => {
     Reflect.deleteProperty(globalThis, Symbol.for("@microsoft/opentelemetry-browser"));
     for (const script of scripts.splice(0)) script.remove();
     delete window.Microsoft;
+    vi.restoreAllMocks();
   }
 });
 
@@ -65,6 +66,31 @@ async function loadCopies(mode = "isolated"): Promise<[Installation, Installatio
   }
   return [copies[0], copies[1]];
 }
+
+it.each(["shared", "isolated"])(
+  "releases shared lifecycle hooks after the last separately loaded %s installation stops",
+  async (mode) => {
+    const [host, remote] = await loadCopies(mode);
+    const add = vi.spyOn(globalThis, "addEventListener");
+    const remove = vi.spyOn(globalThis, "removeEventListener");
+    const first = createPipeline();
+    const second = createPipeline();
+    const hostHandle = await host.useMicrosoftOpenTelemetry(first.options);
+    const remoteHandle = await remote.useMicrosoftOpenTelemetry(second.options);
+    handles.push(hostHandle, remoteHandle);
+    expect(add.mock.calls.filter(([type]) => type === "pagehide")).toHaveLength(1);
+    await hostHandle.shutdown();
+    expect(remove.mock.calls.filter(([type]) => type === "pagehide")).toHaveLength(0);
+    remote.trace.getTracer("remaining").startSpan("remaining").end();
+    globalThis.dispatchEvent(new Event("pagehide"));
+    await vi.waitFor(() => expect(second.spans.getFinishedSpans()).toHaveLength(1));
+    await remoteHandle.shutdown();
+    expect(remove.mock.calls.filter(([type]) => type === "pagehide")).toHaveLength(1);
+    const restarted = await host.useMicrosoftOpenTelemetry(createPipeline().options);
+    handles.push(restarted);
+    expect(add.mock.calls.filter(([type]) => type === "pagehide")).toHaveLength(2);
+  },
+);
 
 function createPipeline() {
   const { spanExporter: spans, logExporter: records, options } = createInMemoryPipeline();

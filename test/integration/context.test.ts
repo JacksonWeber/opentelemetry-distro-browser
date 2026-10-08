@@ -382,7 +382,7 @@ describe("context lifecycle", () => {
     },
   );
 
-  it("enables the supplied manager once and preserves global context APIs after shutdown", async () => {
+  it("disables owned context at final shutdown while retaining explicit propagation", async () => {
     const manager = new StackContextManager();
     const enable = vi.spyOn(manager, "enable");
     const disable = vi.spyOn(manager, "disable");
@@ -397,8 +397,8 @@ describe("context lifecycle", () => {
     await handle?.shutdown();
     await handle?.shutdown();
 
-    expect(disable).not.toHaveBeenCalled();
-    expect(callback()).toBe(extracted);
+    expect(disable).toHaveBeenCalledOnce();
+    expect(callback()).toBe(ROOT_CONTEXT);
     const injected: Record<string, string> = {};
     propagation.inject(extracted, injected);
     expect(injected).toEqual(incomingHeaders);
