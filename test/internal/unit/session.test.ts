@@ -598,18 +598,22 @@ it("stops session timers and persistence before pending provider shutdown comple
     completed = true;
   });
   try {
+    await vi.advanceTimersByTimeAsync(0);
     expect(providerShutdown).toHaveBeenCalledOnce();
-    expect(vi.getTimerCount()).toBe(0);
-    await vi.advanceTimersByTimeAsync(2 * 1800_000);
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(29_999);
     tracer.startSpan("during-shutdown").end();
     logger.emit({ eventName: "during-shutdown" });
-    expect(vi.getTimerCount()).toBe(0);
+    expect(vi.getTimerCount()).toBe(1);
     expect(write).not.toHaveBeenCalled();
     expect(completed).toBe(false);
   } finally {
     finishShutdown();
     await shutdown;
   }
+  await vi.advanceTimersByTimeAsync(2 * 1800_000);
+  expect(vi.getTimerCount()).toBe(0);
+  expect(write).not.toHaveBeenCalled();
 });
 
 it("stops session timers while failed initialization waits for provider shutdown", async () => {
@@ -662,16 +666,19 @@ it("stops session timers while failed initialization waits for provider shutdown
   try {
     await shutdownStarted;
     const write = vi.spyOn(Storage.prototype, "setItem");
-    expect(vi.getTimerCount()).toBe(0);
-    await vi.advanceTimersByTimeAsync(2 * 1800_000);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(29_999);
     trace.getTracer("rollback").startSpan("after-rollback").end();
     logs.getLogger("rollback").emit({ eventName: "after-rollback" });
-    expect(vi.getTimerCount()).toBe(0);
+    expect(vi.getTimerCount()).toBe(1);
     expect(write).not.toHaveBeenCalled();
   } finally {
     finishShutdown();
     await rejected;
   }
+  await vi.advanceTimersByTimeAsync(2 * 1800_000);
+  expect(vi.getTimerCount()).toBe(0);
   expect(report).toHaveBeenCalledExactlyOnceWith(
     "Telemetry initialization cleanup failed",
     disableFailure,

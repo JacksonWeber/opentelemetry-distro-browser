@@ -98,10 +98,12 @@ export interface BrowserInstrumentation {
  *
  * The OpenTelemetry global context and propagation APIs are page-lifetime registrations that
  * `shutdown` does not unregister. Each initialization owns its own telemetry pipelines, but the
- * first instance on the page that collects traces registers context and propagation, so options
- * supplied to later instances are unused. Propagation is registered even when the application
- * already registered a context manager. Instances with page views share one page operation per
- * navigation, so their page-view IDs and correlated spans and logs match.
+ * first active instance that collects traces supplies context. Its delegate is disabled when the
+ * last instance stops. Implicit context tracking then stops until a later initialization supplies
+ * a new delegate. Application-registered context managers are never disabled. Propagators remain
+ * page-lifetime registrations, so later propagator options are unused. Propagation is registered
+ * even when the application already registered a context manager. Instances with page views share
+ * one page operation per navigation, so their page-view IDs and correlated spans and logs match.
  *
  * @public
  */
@@ -163,13 +165,15 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
   /**
    * Span processors to register with the tracer provider. When omitted, spans export through
    * default OTLP, or only to Azure Monitor when `azureMonitor` is set. An empty array skips trace
-   * initialization.
+   * initialization. Ownership transfers when provider startup begins, including failed startup.
+   * Do not share processor instances between handles.
    */
   spanProcessors?: SpanProcessor[];
   /**
    * Log record processors to register with the logger provider. When omitted, logs export through
    * default OTLP, or only to Azure Monitor when `azureMonitor` is set. An empty array skips log
-   * initialization.
+   * initialization. Ownership transfers when provider startup begins, including failed startup.
+   * Do not share processor instances between handles.
    */
   logRecordProcessors?: LogRecordProcessor[];
   /**
@@ -254,15 +258,23 @@ export interface MicrosoftOpenTelemetryBrowserUserContext {
 export interface MicrosoftOpenTelemetryBrowser {
   /** Mutable user identity and persistence controls. */
   readonly userContext: MicrosoftOpenTelemetryBrowserUserContext;
-  /** Flushes pending trace and log telemetry. */
+  /**
+   * Flushes this instance's pending telemetry. Concurrent calls share a promise.
+   * Each processor has 30 seconds to finish before rejection. Timeouts do not cancel exports.
+   * All processors are attempted, and multiple failures are reported as an AggregateError.
+   * Once shutdown begins, returns the shutdown promise instead.
+   */
   forceFlush(): Promise<void>;
   /**
    * Stops session timers immediately, then disables registered instrumentations and shuts down
    * this instance's trace and log providers. Other instances keep running, and tracers or
    * loggers acquired afterward from the global APIs use the earliest remaining instance that
    * collects that signal.
-   * Does not unregister global APIs. Cleanup continues if an instrumentation throws,
-   * and the returned promise rejects with the cleanup failure(s).
+   * Rejects new telemetry immediately and waits for active flushes before shutting down providers.
+   * The last instance releases shared unload listeners and the owned context delegate without
+   * unregistering global APIs. Each processor shutdown has a 30-second timeout.
+   * Cleanup continues after failures. Repeated calls return the same promise, which rejects with
+   * the failure or an AggregateError when multiple operations fail.
    */
   shutdown(): Promise<void>;
 }

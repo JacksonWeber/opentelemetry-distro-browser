@@ -506,7 +506,7 @@ it.each(["resource", "logger provider"] as const)(
     const logShutdown = vi.spyOn(pipeline.logProcessor, "shutdown");
     const failure = new Error(`${stage} failed`);
     if (stage === "logger provider") {
-      vi.spyOn(pipeline.options.logRecordProcessors, "slice").mockImplementationOnce(() => {
+      vi.spyOn(pipeline.options.logRecordProcessors, "map").mockImplementationOnce(() => {
         throw failure;
       });
     }

@@ -27,6 +27,7 @@ import {
 } from "@opentelemetry/semantic-conventions";
 import { OPENTELEMETRY_BROWSER_VERSION } from "./shared/constants.js";
 import { getSharedRegistry, reportError } from "./shared/globalOwnership.js";
+import { runLifecycleTasks, subscribeToUnload } from "./shared/lifecycle.js";
 import { getPageOperation, isPageContextRegistered } from "./routing/pageContext.js";
 import { startTelemetryInstance, type TelemetryInstance } from "./routing/telemetryInstance.js";
 import type {
@@ -99,7 +100,10 @@ export async function useMicrosoftOpenTelemetry(
   let logRecordProcessors: LogRecordProcessor[] | undefined = options.logRecordProcessors?.slice();
   const ownedProcessors: (SpanProcessor | LogRecordProcessor)[] = [];
   const session = options.session?.enabled === true ? createSession() : undefined;
-  const traceOptions = options.traces;
+  const traceOptions = options.traces && {
+    ...options.traces,
+    propagators: options.traces.propagators?.slice(),
+  };
   // While another instance supplies page correlation, page views adopt its operation.
   const owned = createOwnedInstrumentations(options, () => getPageOperation(correlation));
   const pageView = owned[0];
@@ -126,12 +130,13 @@ export async function useMicrosoftOpenTelemetry(
   let shutdownPromise: Promise<void> | undefined;
   let flushPromise: Promise<void> | undefined;
   let unloadFlushPromise: Promise<void> | undefined;
+  let removeUnloadSubscription: (() => void) | undefined;
   const flushForUnload = (): void => {
-    if (unloadFlushPromise) return;
+    if (stopping || unloadFlushPromise) return;
     beginUnloading();
     const operation = flushProcessors()
       .catch((error: unknown) => {
-        diag.error("Telemetry unload flush failed", error);
+        reportError("Telemetry unload flush failed", error);
       })
       .finally(() => {
         endUnloading();
@@ -139,21 +144,12 @@ export async function useMicrosoftOpenTelemetry(
       });
     unloadFlushPromise = operation;
   };
-  const visibilityChange = (): void => {
-    if (globalThis.document?.visibilityState === "hidden") flushForUnload();
-  };
-
-  async function flushProcessors(): Promise<void> {
+  function flushProcessors(): Promise<void> {
     const processors = [...(spanProcessors ?? []), ...(logRecordProcessors ?? [])];
-    const results = await Promise.allSettled(
-      processors.map((processor) => Promise.resolve().then(() => processor.forceFlush())),
+    return runLifecycleTasks(
+      processors.map((processor) => () => processor.forceFlush()),
+      "Telemetry flush failed",
     );
-    const errors: unknown[] = [];
-    for (const result of results) {
-      if (result.status === "rejected") errors.push(result.reason);
-    }
-    if (errors.length === 1) throw errors[0];
-    if (errors.length > 1) throw new AggregateError(errors, "Telemetry flush failed");
   }
 
   function forceFlush(): Promise<void> {
@@ -169,19 +165,29 @@ export async function useMicrosoftOpenTelemetry(
   }
 
   function shutdown(): Promise<void> {
-    return (shutdownPromise ??= (async () => {
+    if (shutdownPromise) return shutdownPromise;
+    let resolve!: () => void;
+    let reject!: (error: unknown) => void;
+    shutdownPromise = new Promise<void>((done, fail) => {
+      resolve = done;
+      reject = fail;
+    });
+    void (async () => {
       stopping = true;
-      // Hand off routing and the page operation first, so other instances serve new telemetry
-      // while this one flushes.
-      instance?.detach();
-      void correlation?.shutdown();
-      globalThis.removeEventListener?.("pagehide", flushForUnload);
-      globalThis.document?.removeEventListener("visibilitychange", visibilityChange);
       const errors: unknown[] = [];
-      try {
-        session?.shutdown();
-      } catch (error) {
-        errors.push(error);
+      for (const cleanup of [
+        () => instance?.detach(),
+        () => {
+          void correlation?.shutdown();
+        },
+        () => removeUnloadSubscription?.(),
+        () => session?.shutdown(),
+      ]) {
+        try {
+          cleanup();
+        } catch (error) {
+          errors.push(error);
+        }
       }
       for (let i = instance ? instrumentations.length - 1 : -1; i >= 0; i--) {
         try {
@@ -190,7 +196,13 @@ export async function useMicrosoftOpenTelemetry(
           errors.push(error);
         }
       }
-      if (!initialized) instance?.abort();
+      if (!initialized) {
+        try {
+          instance?.abort();
+        } catch (error) {
+          errors.push(error);
+        }
+      }
       const activeFlushes = [flushPromise, unloadFlushPromise].filter(
         (operation): operation is Promise<void> => operation !== undefined,
       );
@@ -206,17 +218,19 @@ export async function useMicrosoftOpenTelemetry(
         errors.push(error);
       }
       if (!processorsTransferred) {
-        for (const processor of ownedProcessors) {
-          try {
-            await processor.shutdown();
-          } catch (error) {
-            errors.push(error);
-          }
+        try {
+          await runLifecycleTasks(
+            ownedProcessors.map((processor) => () => processor.shutdown()),
+            "Telemetry processor shutdown failed",
+          );
+        } catch (error) {
+          errors.push(error);
         }
       }
       if (errors.length === 1) throw errors[0];
       if (errors.length > 1) throw new AggregateError(errors, "Telemetry shutdown failed");
-    })());
+    })().then(resolve, reject);
+    return shutdownPromise;
   }
 
   const handle = { forceFlush, shutdown, userContext: userContext.context };
@@ -271,8 +285,7 @@ export async function useMicrosoftOpenTelemetry(
     // Ownership transfers on call, including failed startup.
     processorsTransferred = true;
     instance = await startTelemetryInstance(instanceOptions);
-    globalThis.addEventListener?.("pagehide", flushForUnload);
-    globalThis.document?.addEventListener("visibilitychange", visibilityChange);
+    removeUnloadSubscription = subscribeToUnload(flushForUnload);
 
     // Bind to this instance's own providers, never the global router, so collection stays in
     // this instance's pipelines whichever instance is the default route.

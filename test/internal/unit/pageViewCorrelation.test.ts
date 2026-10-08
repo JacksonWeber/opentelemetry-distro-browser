@@ -370,7 +370,7 @@ it("keeps correlation disabled when page views are off, and stops it at shutdown
 });
 
 it.each([false, true])(
-  "removes bound synthetic page contexts at shutdown without changing application contexts (custom manager=%s)",
+  "removes stopped page correlation without changing a surviving instance's application contexts (custom manager=%s)",
   async (customManager) => {
     const pipeline = await start(
       customManager ? { traces: { contextManager: new StackContextManager() } } : {},
@@ -404,10 +404,20 @@ it.each([false, true])(
       expect(applicationHeaders.traceparent).toBe(`00-${operation.traceId}-${operation.spanId}-01`);
     };
 
-    const stopping = handle!.shutdown();
-    verifyStopped();
-    await stopping;
-    verifyStopped();
+    const survivor = await useMicrosoftOpenTelemetry({
+      ...createInMemoryPipeline().options,
+      pageView: { enabled: false },
+    });
+    try {
+      const stopping = handle!.shutdown();
+      verifyStopped();
+      await stopping;
+      verifyStopped();
+    } finally {
+      await survivor.shutdown();
+    }
+    expect(context.active()).toBe(ROOT_CONTEXT);
+    expect(trace.getSpanContext(applicationContext)).toBe(applicationSpan.spanContext());
   },
 );
 
