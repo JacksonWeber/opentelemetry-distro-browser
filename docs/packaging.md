@@ -73,6 +73,20 @@ Starting with beta, `npm run size` exits unsuccessfully when any absolute budget
 same gate therefore blocks CI for beta, release-candidate and stable versions. The separate PR-base
 comparison remains informational and does not replace the absolute gate.
 
+`npm run size` also measures the minified self-contained browser bundles exactly as `npm run build`
+emits them, so it must run after a production build. Their budgets block in every release channel,
+including alpha:
+
+| Artifact                                                   | Minified |  Gzip | Brotli |
+| ---------------------------------------------------------- | -------: | ----: | -----: |
+| `opentelemetry-browser.{iife,umd}.min.js`                  |   135 kB | 41 kB |  36 kB |
+| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |    63 kB | 19 kB |  17 kB |
+
+The browser bundles contain only ES2022 syntax. `npm run test:build` parses every emitted UMD and
+IIFE file as an ES2022 script and requires a budget for every minified browser bundle. This check
+sets a syntax ceiling; it does not validate specific browser versions, which remain provisional
+until exact supported versions are declared and tested.
+
 ## Performance measurements
 
 `npm run build && npm run size && npm run perf` measures the actual production

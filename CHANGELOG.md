@@ -20,6 +20,8 @@ All notable changes to this package are documented in this file.
   register with AMD loaders such as RequireJS.
 - Add Azure Monitor page-view performance telemetry
 - Add fixed-percentage sampling for browser telemetry
+- Enforce blocking minified, gzip, and Brotli budgets for the self-contained UMD and IIFE browser
+  bundles, and verify they contain only ES2022 syntax.
 
 ### Changed
 
