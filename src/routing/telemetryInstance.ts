@@ -18,6 +18,7 @@ import {
 } from "@opentelemetry/core";
 import { defaultResource, resourceFromAttributes } from "@opentelemetry/resources";
 import { LoggerProvider, type LogRecordProcessor } from "@opentelemetry/sdk-logs";
+import type { Sampler } from "@opentelemetry/sdk-trace-base";
 import { TracerProvider, type SpanProcessor } from "@opentelemetry/sdk-trace";
 import { StackContextManager } from "@opentelemetry/sdk-trace-web";
 import { addInstance, noopLoggerProvider, noopTracerProvider } from "./instanceRouter.js";
@@ -38,6 +39,7 @@ import {
 /** Resolved pipeline configuration for one distribution instance. */
 export interface TelemetryInstanceOptions {
   readonly resourceAttributes: Attributes;
+  readonly sampler?: Sampler;
   /** An empty list leaves traces off for this instance. */
   readonly spanProcessors: readonly SpanProcessor[];
   /** An empty list leaves logs off for this instance. */
@@ -105,6 +107,7 @@ export async function startTelemetryInstance(
     if (options.spanProcessors.length) {
       tracerProvider = new TracerProvider({
         resource,
+        sampler: options.sampler,
         spanProcessors: options.spanProcessors.map((processor): SpanProcessor => ({
           onStart: (span, ctx) => {
             if (!stopped) processor.onStart(span, ctx);

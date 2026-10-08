@@ -19,6 +19,7 @@ import {
 import {
   createEnvelope,
   createTags,
+  getSampleRate,
   hrTimeToDate,
   mapAttributes,
   millisecondsToTimeSpan,
@@ -50,6 +51,7 @@ import {
   ATTR_USER_ACCOUNT_ID,
   ATTR_USER_ID,
 } from "../user/constants.js";
+import { AZURE_MONITOR_SAMPLE_RATE } from "../sampling.js";
 
 const promotedLogAttributes = /* @__PURE__ */ new Set([
   EXCEPTION_MESSAGE,
@@ -60,6 +62,7 @@ const promotedLogAttributes = /* @__PURE__ */ new Set([
   ATTR_ENDUSER_PSEUDO_ID,
   ATTR_USER_ACCOUNT_ID,
   ATTR_USER_ID,
+  AZURE_MONITOR_SAMPLE_RATE,
 ]);
 const promotedPageViewAttributes = /* @__PURE__ */ new Set([
   EXCEPTION_MESSAGE,
@@ -76,6 +79,7 @@ const promotedPageViewAttributes = /* @__PURE__ */ new Set([
   ATTR_PAGE_VIEW_PERF_TOTAL,
   ATTR_PAGE_VIEW_REFERRER,
   URL_FULL,
+  AZURE_MONITOR_SAMPLE_RATE,
   ATTR_ENDUSER_ID,
   ATTR_ENDUSER_PSEUDO_ID,
   ATTR_USER_ACCOUNT_ID,
@@ -391,6 +395,7 @@ export function logToEnvelope(
     logRecord.attributes as Attributes,
     isPageView(logRecord.eventName) ? promotedPageViewAttributes : promotedLogAttributes,
   );
+  const sampleRate = getSampleRate(logRecord.attributes as Attributes);
   const tags = createTags(
     logRecord.spanContext?.traceId,
     logRecord.spanContext,
@@ -419,6 +424,7 @@ export function logToEnvelope(
       tags,
       baseType,
       baseDataWithoutException,
+      sampleRate,
     );
     const maxExceptionSize =
       MAX_EXCEPTION_ENVELOPE_SIZE_IN_BYTES -
@@ -482,7 +488,7 @@ export function logToEnvelope(
     };
   }
 
-  return createEnvelope(instrumentationKey, name, time, tags, baseType, baseData);
+  return createEnvelope(instrumentationKey, name, time, tags, baseType, baseData, sampleRate);
 }
 
 export function logToEnvelopes(
@@ -528,6 +534,7 @@ export function logToEnvelopes(
     pageViewEnvelope.tags,
     "PageviewPerformanceData",
     performanceData,
+    pageViewEnvelope.sampleRate,
   );
   return [pageViewEnvelope, performanceEnvelope];
 }

@@ -7,12 +7,34 @@ import { MAX_BEACON_BODY_SIZE } from "../../../src/exporter/constants.js";
 import type { ExceptionData } from "../../../src/exporter/telemetryModels.js";
 import { logToEnvelope, logToEnvelopes } from "../../../src/exporter/logUtils.js";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../../src/shared/constants.js";
+import { AZURE_MONITOR_SAMPLE_RATE } from "../../../src/sampling.js";
 import { TEST_INSTRUMENTATION_KEY as instrumentationKey } from "../../fixtures/azureMonitor.js";
 import { createReadableLogRecord as makeLog, createSpanContext } from "../../fixtures/telemetry.js";
 
 const spanContext = createSpanContext();
 
 describe("Azure Monitor log envelope mapping", () => {
+  it("maps the reserved sample rate without exporting it as a custom measurement", () => {
+    const envelope = logToEnvelope(
+      makeLog({ attributes: { [AZURE_MONITOR_SAMPLE_RATE]: 25 }, body: "sampled" }),
+      instrumentationKey,
+    );
+
+    expect(envelope.sampleRate).toBe(25);
+    expect(envelope.data.baseData.measurements).toBeUndefined();
+  });
+
+  it.each([undefined, 0])(
+    "defaults standalone log conversion with sample rate %s to full sampling",
+    (sampleRate) => {
+      const attributes =
+        sampleRate === undefined ? {} : { [AZURE_MONITOR_SAMPLE_RATE]: sampleRate };
+      expect(
+        logToEnvelope(makeLog({ attributes, body: "default" }), instrumentationKey).sampleRate,
+      ).toBe(100);
+    },
+  );
+
   it.each([
     ["browser.page_view", undefined],
     ["browser.page_view", ""],
@@ -334,6 +356,7 @@ describe("Azure Monitor log envelope mapping", () => {
         attributes: {
           "exception.message": "Large stack",
           "exception.stacktrace": stack,
+          [AZURE_MONITOR_SAMPLE_RATE]: 0.000001,
         },
       }),
       instrumentationKey,
@@ -345,6 +368,7 @@ describe("Azure Monitor log envelope mapping", () => {
     expect(new TextEncoder().encode(JSON.stringify([envelope])).byteLength).toBeLessThanOrEqual(
       MAX_BEACON_BODY_SIZE,
     );
+    expect(envelope.sampleRate).toBe(0.000001);
     expect(exception.hasFullStack).toBe(false);
     expect(exception.stack?.length).toBeLessThan(stack.length);
     expect(parsedStack[0]?.assembly).toContain("frame0");
@@ -581,17 +605,19 @@ describe("Azure Monitor log envelope mapping", () => {
           "browser.page_view.performance.dom_processing": 249.5,
           "url.full": "https://shop.example.test/cart",
           "browser.page_view.same_document": false,
+          [AZURE_MONITOR_SAMPLE_RATE]: 25,
         },
       }),
       instrumentationKey,
     );
 
     expect(envelopes).toHaveLength(2);
+    expect(envelopes[0]?.sampleRate).toBe(25);
     expect(envelopes[1]).toEqual({
       name: "Microsoft.ApplicationInsights.PageviewPerformance",
       time: envelopes[0]?.time,
       iKey: instrumentationKey,
-      sampleRate: 100,
+      sampleRate: 25,
       tags: envelopes[0]?.tags,
       ver: 1,
       data: {

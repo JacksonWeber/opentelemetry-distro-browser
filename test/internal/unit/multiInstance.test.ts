@@ -468,6 +468,22 @@ it("shares a logs-only instance's page operation with a later tracing instance",
   expect(second.spans).toEqual([["probe", operation]]);
 });
 
+it("does not let a logs-only owner's sampling disable a later tracing instance", async () => {
+  await start({
+    pageView: {},
+    samplingPercentage: 0,
+    spanProcessors: [],
+  });
+  const tracing = await start({ pageView: {} });
+
+  tracing.probe.record("probe");
+
+  const second = await tracing.traceIds();
+  const operation = second.logs[0];
+  expect(operation).toBeDefined();
+  expect(second.spans).toEqual([["probe", operation]]);
+});
+
 it("keeps the page operation for other instances while the owner flushes during shutdown", async () => {
   const alpha = await start({ pageView: {} });
   const beta = await start({ pageView: {} });

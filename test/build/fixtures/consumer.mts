@@ -27,6 +27,7 @@ export const instrumentation: BrowserInstrumentation = {
   disable() {},
 };
 export const options: MicrosoftOpenTelemetryBrowserOptions = {
+  samplingPercentage: 25,
   session: { enabled: true },
   instrumentations: Object.freeze([instrumentation]),
   resource: resourceFromAttributes({

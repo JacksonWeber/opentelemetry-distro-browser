@@ -89,7 +89,7 @@ export interface AzureMonitorEnvelope<T extends AzureMonitorBaseData = AzureMoni
   readonly name: string;
   readonly time: string;
   readonly iKey: string;
-  readonly sampleRate: 100;
+  readonly sampleRate: number;
   readonly tags: Readonly<Record<string, string>>;
   readonly ver: 1;
   readonly data: {

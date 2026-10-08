@@ -12,6 +12,7 @@ import {
   ATTR_USER_ACCOUNT_ID,
   ATTR_USER_ID,
 } from "../user/constants.js";
+import { AZURE_MONITOR_SAMPLE_RATE } from "../sampling.js";
 
 let unloadingCount = 0;
 
@@ -137,14 +138,25 @@ export function createEnvelope<T extends AzureMonitorBaseData>(
   tags: Readonly<Record<string, string>>,
   baseType: AzureMonitorEnvelope["data"]["baseType"],
   baseData: T,
+  sampleRate = 100,
 ): AzureMonitorEnvelope<T> {
   return {
     name,
     time,
     iKey: instrumentationKey,
-    sampleRate: 100,
+    sampleRate,
     tags,
     ver: 1,
     data: { baseType, baseData },
   };
+}
+
+export function getSampleRate(attributes: Attributes): number {
+  const sampleRate = attributes[AZURE_MONITOR_SAMPLE_RATE];
+  return typeof sampleRate === "number" &&
+    Number.isFinite(sampleRate) &&
+    sampleRate > 0 &&
+    sampleRate <= 100
+    ? sampleRate
+    : 100;
 }

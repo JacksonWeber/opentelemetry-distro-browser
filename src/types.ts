@@ -125,6 +125,12 @@ export interface MicrosoftOpenTelemetryBrowserTraceOptions {
  * @public
  */
 export interface MicrosoftOpenTelemetryBrowserOptions {
+  /**
+   * Fixed percentage of traces and Azure Monitor log records retained, from 0 through 100.
+   * Omit this option to use the OpenTelemetry SDK's parent-based always-on trace sampler and to
+   * disable percentage sampling for Azure Monitor logs.
+   */
+  samplingPercentage?: number;
   /** Azure Monitor destination. When provided, Azure Monitor export is enabled. */
   azureMonitor?: AzureMonitorOptions;
   /**

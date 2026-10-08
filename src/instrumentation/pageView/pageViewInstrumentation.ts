@@ -5,6 +5,7 @@ import {
   ROOT_CONTEXT,
   context,
   trace,
+  TraceFlags,
   isSpanContextValid,
   isValidTraceId,
   type Context,
@@ -180,6 +181,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
   public constructor(
     config: InternalPageViewInstrumentationConfig = {},
     private initialContext?: Context,
+    private readonly isTraceSampled: (traceId: string) => boolean = () => true,
   ) {
     // `InstrumentationBase` calls `enable()` from its own constructor, which runs before this
     // subclass's field initializers. That would observe an undefined page-view context, and the
@@ -225,10 +227,11 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       this.operation = shared;
       this.operationUrl = url;
     } else if (!this.operation || this.operationUrl !== url) {
+      const traceId = this.mintId(this.getConfig().generatePageViewId);
       this.operation = {
-        traceId: this.mintId(this.getConfig().generatePageViewId),
+        traceId,
         spanId: new RandomIdGenerator().generateSpanId(),
-        traceFlags: 1,
+        traceFlags: this.isTraceSampled(traceId) ? TraceFlags.SAMPLED : TraceFlags.NONE,
       };
       markPageContext(this.operation);
       this.operationUrl = url;

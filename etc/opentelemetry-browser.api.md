@@ -81,6 +81,7 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
     logRecordProcessors?: LogRecordProcessor[];
     pageView?: PageViewInstrumentationConfig;
     resource?: Resource;
+    samplingPercentage?: number;
     session?: {
         enabled?: boolean;
     };
