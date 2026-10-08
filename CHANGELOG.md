@@ -22,6 +22,9 @@ All notable changes to this package are documented in this file.
 
 ### Changed
 
+- Share unload listeners across instances and release them and the owned context delegate after
+  the last instance stops. Bound telemetry stops immediately at shutdown, cleanup attempts every
+  processor with a 30-second timeout, and page-view shutdown cancels pending frame and idle work.
 - Require HTTPS for Azure Monitor endpoints, except HTTP on localhost and loopback IP addresses.
   Invalid endpoints now emit a diagnostic warning and use the existing fallback endpoints.
 - Share routing and page-context state across compatible distribution copies while preserving

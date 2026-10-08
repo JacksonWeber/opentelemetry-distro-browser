@@ -93,6 +93,8 @@ interface PendingPageView {
   readonly startedAt: number;
   capTimerId?: number;
   taskTimerId?: number;
+  frameId?: number;
+  idleId?: number;
 }
 
 /**
@@ -659,25 +661,30 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       }
       this.whenIdle(() => {
         this.emit(pending, performance.now() - pending.startedAt, settledSource);
-      });
+      }, pending);
     };
 
     if (typeof requestAnimationFrame === "function") {
-      requestAnimationFrame(() => {
-        requestAnimationFrame(afterPaint);
+      pending.frameId = requestAnimationFrame(() => {
+        if (this.pending !== pending) return;
+        pending.frameId = requestAnimationFrame(() => {
+          pending.frameId = undefined;
+          afterPaint();
+        });
       });
     } else {
       this.scheduleMacrotask(afterPaint);
     }
   }
 
-  private whenIdle(callback: () => void): void {
+  private whenIdle(callback: () => void, pending: PendingPageView): void {
     const requestIdle = (globalThis as { requestIdleCallback?: RequestIdleCallbackLike })
       .requestIdleCallback;
-    if (typeof requestIdle === "function") {
-      requestIdle(
+    if (typeof requestIdle === "function" && typeof cancelIdleCallback === "function") {
+      pending.idleId = requestIdle(
         () => {
-          callback();
+          pending.idleId = undefined;
+          if (this.pending === pending) callback();
         },
         { timeout: IDLE_TIMEOUT_MS },
       );
@@ -961,6 +968,8 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       clearTimeout(pending.capTimerId);
     }
     if (pending.taskTimerId !== undefined) clearTimeout(pending.taskTimerId);
+    if (pending.frameId !== undefined) cancelAnimationFrame(pending.frameId);
+    if (pending.idleId !== undefined) cancelIdleCallback(pending.idleId);
     this.pending = undefined;
   }
 }

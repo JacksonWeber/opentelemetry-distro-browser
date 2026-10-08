@@ -21,7 +21,13 @@ import { LoggerProvider, type LogRecordProcessor } from "@opentelemetry/sdk-logs
 import { TracerProvider, type SpanProcessor } from "@opentelemetry/sdk-trace";
 import { StackContextManager } from "@opentelemetry/sdk-trace-web";
 import { addInstance, noopLoggerProvider, noopTracerProvider } from "./instanceRouter.js";
-import { addPageCorrelation, registerPageContext, type PageCorrelation } from "./pageContext.js";
+import {
+  addPageCorrelation,
+  registerPageContext,
+  releasePageContext,
+  type PageCorrelation,
+} from "./pageContext.js";
+import { runLifecycleTasks } from "../shared/lifecycle.js";
 import {
   commitGlobals,
   getSharedRegistry,
@@ -65,21 +71,30 @@ export async function startTelemetryInstance(
 ): Promise<TelemetryInstance> {
   let tracerProvider: TracerProvider | undefined;
   let loggerProvider: LoggerProvider | undefined;
-  const shutdownProviders = async (): Promise<void> => {
-    const owners = [
-      ...(tracerProvider ? [tracerProvider] : options.spanProcessors),
-      ...(loggerProvider ? [loggerProvider] : options.logRecordProcessors),
-    ];
-    const results = await Promise.allSettled(owners.map(async (owner) => owner.shutdown()));
-    const errors = results.flatMap((result) =>
-      result.status === "rejected" ? [result.reason as unknown] : [],
-    );
-    if (errors.length === 1) throw errors[0];
-    if (errors.length > 1) throw new AggregateError(errors, "Telemetry provider shutdown failed");
-  };
+  let stopped = false;
+  let shutdownPromise: Promise<void> | undefined;
+  const shutdownProviders = (): Promise<void> =>
+    (shutdownPromise ??= runLifecycleTasks(
+      [
+        ...options.spanProcessors,
+        ...options.logRecordProcessors,
+        ...(tracerProvider ? [tracerProvider] : []),
+        ...(loggerProvider ? [loggerProvider] : []),
+      ].map((owner) => () => owner.shutdown()),
+      "Telemetry provider shutdown failed",
+    ));
+  // Processor cleanup is owned here so a synchronous failure cannot skip sibling processors.
+  const shutdownProcessor = async (): Promise<void> => {};
 
   let removeCorrelation: (() => void) | undefined;
   let removeInstance: (() => void) | undefined;
+  const detach = (): void => {
+    if (stopped) return;
+    stopped = true;
+    removeInstance?.();
+    removeCorrelation?.();
+    releasePageContext();
+  };
   try {
     const registry = getSharedRegistry();
     // Matches the upstream browser SDK's once-per-page diagnostic initialization.
@@ -90,13 +105,32 @@ export async function startTelemetryInstance(
     if (options.spanProcessors.length) {
       tracerProvider = new TracerProvider({
         resource,
-        spanProcessors: options.spanProcessors.slice(),
+        spanProcessors: options.spanProcessors.map((processor): SpanProcessor => ({
+          onStart: (span, ctx) => {
+            if (!stopped) processor.onStart(span, ctx);
+          },
+          onEnding: (span) => {
+            if (!stopped) processor.onEnding?.(span);
+          },
+          onEnd: (span) => {
+            if (!stopped) processor.onEnd(span);
+          },
+          forceFlush: () => processor.forceFlush(),
+          shutdown: shutdownProcessor,
+        })),
       });
     }
     if (options.logRecordProcessors.length) {
       loggerProvider = new LoggerProvider({
         resource,
-        processors: options.logRecordProcessors.slice(),
+        processors: options.logRecordProcessors.map((processor): LogRecordProcessor => ({
+          enabled: (options) => !stopped && (processor.enabled?.(options) ?? true),
+          onEmit: (record, ctx) => {
+            if (!stopped) processor.onEmit(record, ctx);
+          },
+          forceFlush: (options) => processor.forceFlush(options),
+          shutdown: shutdownProcessor,
+        })),
       });
     }
     if (tracerProvider) {
@@ -115,6 +149,7 @@ export async function startTelemetryInstance(
     removeCorrelation = options.correlation && addPageCorrelation(options.correlation);
     removeInstance = addInstance({ tracerProvider, loggerProvider });
   } catch (error) {
+    stopped = true;
     removeCorrelation?.();
     removeInstance?.();
     rollbackGlobals();
@@ -133,18 +168,18 @@ export async function startTelemetryInstance(
       commitGlobals(!!tracerProvider, !!loggerProvider);
     },
     abort() {
+      stopped = true;
       removeInstance?.();
       removeCorrelation?.();
       rollbackGlobals();
     },
-    detach() {
-      removeInstance?.();
-      removeCorrelation?.();
-    },
+    detach,
     async shutdown() {
-      removeInstance?.();
-      removeCorrelation?.();
-      await shutdownProviders();
+      try {
+        detach();
+      } finally {
+        await shutdownProviders();
+      }
     },
   };
 }

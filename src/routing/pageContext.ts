@@ -90,6 +90,7 @@ export function registerPageContext(
   let manager: ContextManager | undefined;
   let propagator: TextMapPropagator | undefined;
   let enabled = false;
+  let stored = false;
   let registeredContext = false;
   let registeredPropagation = false;
 
@@ -107,7 +108,12 @@ export function registerPageContext(
         // Storage is cleared before delegate cleanup, so unregister without calling it twice.
         if (getRegisteredGlobal("context") === state.manager) context.disable();
       }
-    } else if (wasEnabled && manager && getRegisteredGlobal("context") !== manager) {
+    } else if (
+      wasEnabled &&
+      manager &&
+      (!stored || state.storage === manager) &&
+      getRegisteredGlobal("context") !== manager
+    ) {
       if (state.storage === manager) state.storage = undefined;
       manager.disable();
     }
@@ -126,16 +132,17 @@ export function registerPageContext(
   try {
     propagator = before.propagation ? undefined : createPropagator();
     verifyUnchanged();
-    if (!before.context) {
+    if (!before.context || (before.context === state.manager && !state.storage)) {
       manager = supplied ?? createDefault();
       enabled = true;
       manager.enable();
       verifyUnchanged();
       state.storage = manager;
-      if (!context.setGlobalContextManager(state.manager)) {
+      stored = true;
+      if (!before.context && !context.setGlobalContextManager(state.manager)) {
         conflict("context-manager-conflict", "OpenTelemetry context registration failed");
       }
-      registeredContext = true;
+      registeredContext = !before.context;
     } else if (before.context !== state.manager && before.context !== state.foreignContext) {
       state.foreignContext = before.context;
       diag.warn("[context-manager-conflict] Using the application's global context manager.");
@@ -168,7 +175,7 @@ export function registerPageContext(
     if (getRegisteredGlobal("logs") !== before.logs) {
       conflict("logger-provider-conflict", "OpenTelemetry logs changed during registration");
     }
-    if (registeredContext || registeredPropagation) deferGlobalRollback("trace", rollback);
+    if (enabled || registeredPropagation) deferGlobalRollback("trace", rollback);
   } catch (error) {
     try {
       rollback();
@@ -179,6 +186,12 @@ export function registerPageContext(
   } finally {
     state.registering = false;
   }
+}
+
+/** Releases the owned context delegate once no instance can still use it. */
+export function releasePageContext(): void {
+  const registry = getSharedRegistry();
+  if (!registry.router?.running.length) registry.page?.manager.disable();
 }
 
 /** Adds page correlation and returns a removal callback that hands off to the next owner. */
