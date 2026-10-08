@@ -93,6 +93,7 @@ function createOwnedInstrumentations(
 export async function useMicrosoftOpenTelemetry(
   options: MicrosoftOpenTelemetryBrowserOptions = {},
 ): Promise<MicrosoftOpenTelemetryBrowser> {
+  const session = options.session?.enabled === true ? createSession(options.session) : undefined;
   getSharedRegistry();
   const samplingPercentage = options.samplingPercentage ?? 100;
   const sampler =
@@ -108,7 +109,6 @@ export async function useMicrosoftOpenTelemetry(
   let spanProcessors: SpanProcessor[] | undefined = options.spanProcessors?.slice();
   let logRecordProcessors: LogRecordProcessor[] | undefined = options.logRecordProcessors?.slice();
   const ownedProcessors: (SpanProcessor | LogRecordProcessor)[] = [];
-  const session = options.session?.enabled === true ? createSession() : undefined;
   const traceOptions = options.traces && {
     ...options.traces,
     propagators: options.traces.propagators?.slice(),

@@ -120,6 +120,62 @@ it("keeps instrumentation telemetry in its own instance when scope names are ide
   expect(await beta.exported()).toEqual({ spans: ["beta"], logs: ["beta"] });
 });
 
+it("isolates configured session lifetimes and shutdown across instances", async () => {
+  const now = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+  async function startSession(maxDuration: number) {
+    const ids: unknown[] = [];
+    const instance = await start({
+      session: { enabled: true, persist: false, inactivityTimeout: 0, maxDuration },
+      spanProcessors: [
+        {
+          onStart: (span) => {
+            ids.push(span.attributes["session.id"]);
+          },
+          onEnd() {},
+          async forceFlush() {},
+          async shutdown() {},
+        },
+      ],
+      logRecordProcessors: [
+        {
+          onEmit: (record) => {
+            ids.push(record.attributes["session.id"]);
+          },
+          async forceFlush() {},
+          async shutdown() {},
+        },
+      ],
+    });
+    return { ...instance, ids };
+  }
+  const alpha = await startSession(1);
+  const beta = await startSession(2);
+  alpha.probe.record("first");
+  beta.probe.record("first");
+  const alphaId = alpha.ids[0];
+  const betaId = beta.ids[0];
+  expect(alphaId).toMatch(/^[0-9a-f]{32}$/);
+  expect(betaId).toMatch(/^[0-9a-f]{32}$/);
+  expect(alphaId).not.toBe(betaId);
+  expect(alpha.ids).toEqual([alphaId, alphaId]);
+  expect(beta.ids).toEqual([betaId, betaId]);
+
+  now.mockReturnValue(1_001_000);
+  alpha.probe.record("renewed");
+  beta.probe.record("active");
+  expect(alpha.ids[2]).not.toBe(alphaId);
+  expect(alpha.ids[3]).toBe(alpha.ids[2]);
+  expect(beta.ids).toEqual([betaId, betaId, betaId, betaId]);
+
+  await alpha.handle.shutdown();
+  now.mockReturnValue(1_002_000);
+  alpha.probe.record("stopped");
+  beta.probe.record("renewed");
+  expect(alpha.ids).toHaveLength(4);
+  expect(beta.ids[4]).not.toBe(betaId);
+  expect(beta.ids[5]).toBe(beta.ids[4]);
+});
+
 it("binds global tracers and loggers to the selected instance at acquisition", async () => {
   const alpha = await start();
   const beta = await start();

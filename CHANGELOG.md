@@ -2,6 +2,16 @@
 
 All notable changes to this package are documented in this file.
 
+## Unreleased
+
+### Added
+
+- Add session lifetime options, a persistence opt-out, and Azure Monitor session tags.
+
+### Changed
+
+- Expire sessions on telemetry activity instead of idle timers.
+
 ## 0.1.0-alpha.2 - 2026-10-08
 
 ### Added

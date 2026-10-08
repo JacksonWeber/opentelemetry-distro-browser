@@ -36,6 +36,39 @@ describe("Azure Monitor log envelope mapping", () => {
   );
 
   it.each([
+    [undefined, "MessageData"],
+    ["custom.event", "EventData"],
+    ["exception", "ExceptionData"],
+    ["browser.page_view", "PageViewData"],
+    ["browser.navigation", "PageViewData"],
+  ])("promotes standard session IDs for %s to %s tags", (eventName, baseType) => {
+    const record = makeLog({
+      eventName,
+      attributes: { "session.id": "session-1", custom: "value" },
+    });
+    const envelope = logToEnvelope(record, instrumentationKey);
+    expect(envelope.data.baseType).toBe(baseType);
+    expect(envelope.tags["ai.session.id"]).toBe("session-1");
+    expect(envelope.tags).not.toHaveProperty("ai.session.isFirst");
+    expect(envelope.data.baseData.properties).toEqual({ custom: "value" });
+    expect(record.attributes["session.id"]).toBe("session-1");
+  });
+
+  it.each([undefined, "", 0, false, ["session-1"]])(
+    "does not create session tags for absent or invalid IDs (%j)",
+    (id) => {
+      const envelope = logToEnvelope(
+        makeLog({ attributes: { "session.id": id } }),
+        instrumentationKey,
+      );
+      expect(envelope.tags).not.toHaveProperty("ai.session.id");
+      if (id === 0) expect(envelope.data.baseData.measurements?.["session.id"]).toBe(0);
+      else if (id !== undefined)
+        expect(envelope.data.baseData.properties?.["session.id"]).toBeDefined();
+    },
+  );
+
+  it.each([
     ["browser.page_view", undefined],
     ["browser.page_view", ""],
     ["browser.page_view", "explicit-page-id"],

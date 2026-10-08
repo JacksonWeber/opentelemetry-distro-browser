@@ -82,14 +82,20 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
     pageView?: PageViewInstrumentationConfig;
     resource?: Resource;
     samplingPercentage?: number;
-    session?: {
-        enabled?: boolean;
-    };
+    session?: MicrosoftOpenTelemetryBrowserSessionOptions;
     spanProcessors?: SpanProcessor[];
     traces?: MicrosoftOpenTelemetryBrowserTraceOptions;
     userContext?: {
         enabled?: boolean;
     };
+}
+
+// @public
+export interface MicrosoftOpenTelemetryBrowserSessionOptions {
+    enabled?: boolean;
+    inactivityTimeout?: number;
+    maxDuration?: number;
+    persist?: boolean;
 }
 
 // @public

@@ -33,6 +33,7 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
         `IngestionEndpoint=${ingestionEndpoint}`,
     },
     pageView: { applyCustomLogRecordData: () => pageReady() },
+    session: { enabled: true, persist: false, inactivityTimeout: 60, maxDuration: 3600 },
   });
   const button = document.createElement("button");
   let applicationSpanId: string | undefined;
@@ -86,6 +87,12 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
     const captured: AzureMonitorEnvelope[] = await fetch(
       `${new URL(ingestionEndpoint).origin}/captured?runId=${encodeURIComponent(runId)}`,
     ).then((response) => response.json());
+    const sessionId = captured[0].tags["ai.session.id"];
+    expect(sessionId).toMatch(/^[0-9a-f]{32}$/);
+    for (const envelope of captured) {
+      expect(envelope.tags["ai.session.id"]).toBe(sessionId);
+      expect(envelope.data.baseData.properties?.["session.id"]).toBeUndefined();
+    }
     expect(captured).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
