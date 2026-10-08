@@ -9,6 +9,7 @@ import { beginUnloading, endUnloading } from "../../../src/exporter/common.js";
 import { MAX_BATCH_SIZE_IN_BYTES } from "../../../src/exporter/constants.js";
 import { AzureMonitorSpanExporter } from "../../../src/exporter/trace.js";
 import { createMockIngestionEndpoint } from "../../fixtures/azureMonitor.js";
+import { installFakeClock } from "../../fixtures/clock.js";
 
 const connectionString =
   "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example.test";
@@ -292,6 +293,56 @@ describe("AzureMonitorSpanExporter", () => {
       code: ExportResultCode.FAILED,
     });
   });
+
+  it.each([
+    ["forceFlush", 429],
+    ["forceFlush", 503],
+    ["shutdown", 429],
+    ["shutdown", 503],
+  ] as const)(
+    "settles %s promptly when HTTP %i requests a day-long retry delay",
+    async (method, status) => {
+      const clock = installFakeClock();
+      vi.stubGlobal("CompressionStream", undefined);
+      vi.spyOn(Response.prototype, "text").mockResolvedValue("");
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(new Response(null, { status, headers: { "retry-after": "86400" } }));
+      vi.stubGlobal("fetch", fetch);
+      const exporter = new AzureMonitorSpanExporter({ connectionString });
+      const callback = vi.fn();
+      const finished = vi.fn();
+
+      exporter.export([makeSpan()], callback);
+      const lifecycle = exporter[method]().then(finished);
+      await clock.advance(1_500);
+
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(finished).toHaveBeenCalledOnce();
+      expect(callback).toHaveBeenCalledExactlyOnceWith({
+        code: ExportResultCode.FAILED,
+        error: expect.objectContaining({ message: expect.stringContaining("retry-wait budget") }),
+      });
+      await lifecycle;
+      expect(vi.getTimerCount()).toBe(0);
+      if (method === "forceFlush") {
+        await expect(exportSpan(exporter)).resolves.toMatchObject({
+          code: ExportResultCode.FAILED,
+          error: expect.objectContaining({ message: expect.stringContaining("retry-wait budget") }),
+        });
+        expect(fetch).toHaveBeenCalledOnce();
+        await clock.advance(86_400_000);
+        fetch.mockResolvedValue(new Response(null, { status: 200 }));
+        await expect(exportSpan(exporter)).resolves.toEqual({ code: ExportResultCode.SUCCESS });
+      }
+      await exporter.shutdown();
+      await expect(exportSpan(exporter)).resolves.toMatchObject({
+        code: ExportResultCode.FAILED,
+        error: expect.objectContaining({ message: "Exporter has been shut down." }),
+      });
+      expect(callback).toHaveBeenCalledOnce();
+    },
+  );
 
   it("uses beacon while unloading", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () => {

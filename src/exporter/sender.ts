@@ -9,6 +9,7 @@ import {
   MAX_PENDING_KEEPALIVE_REQUESTS,
   MAX_SEND_ATTEMPTS,
   MAX_RETRY_DELAY_MS,
+  MAX_RETRY_WAIT_MS,
   RETRY_DELAY_MS,
 } from "./constants.js";
 import {
@@ -103,9 +104,10 @@ export class Sender {
     }
 
     let currentRequest = request;
+    let remainingRetryWaitMs = MAX_RETRY_WAIT_MS;
     const permanentErrors: BreezeError[] = [];
     for (let attempt = 1; ; attempt++) {
-      await this.waitForThrottle();
+      remainingRetryWaitMs = await this.waitForThrottle(remainingRetryWaitMs);
 
       let result: SenderResultType;
       try {
@@ -124,7 +126,10 @@ export class Sender {
           throw error.cause;
         }
         if (error.retryAfterMs === undefined) {
-          await this.delay(getRetryDelay(attempt - 1, this.random()));
+          remainingRetryWaitMs = await this.waitForRetry(
+            getRetryDelay(attempt - 1, this.random()),
+            remainingRetryWaitMs,
+          );
         }
         continue;
       }
@@ -141,7 +146,10 @@ export class Sender {
       }
 
       if (result.retryAfterMs === undefined) {
-        await this.delay(getRetryDelay(attempt - 1, this.random()));
+        remainingRetryWaitMs = await this.waitForRetry(
+          getRetryDelay(attempt - 1, this.random()),
+          remainingRetryWaitMs,
+        );
       }
       currentRequest = retryRequest;
     }
@@ -161,15 +169,29 @@ export class Sender {
     this.throttleDeadline = Math.max(this.throttleDeadline, Date.now() + delayMs);
   }
 
-  private async waitForThrottle(): Promise<void> {
+  private async waitForThrottle(remainingRetryWaitMs: number): Promise<number> {
     let observedDeadline = this.throttleDeadline;
     while (observedDeadline > Date.now()) {
-      await this.delay(observedDeadline - Date.now());
+      remainingRetryWaitMs = await this.waitForRetry(
+        Math.max(0, observedDeadline - Date.now()),
+        remainingRetryWaitMs,
+      );
       if (this.throttleDeadline <= observedDeadline) {
-        return;
+        return remainingRetryWaitMs;
       }
       observedDeadline = this.throttleDeadline;
     }
+    return remainingRetryWaitMs;
+  }
+
+  private async waitForRetry(delayMs: number, remainingRetryWaitMs: number): Promise<number> {
+    if (delayMs > remainingRetryWaitMs) {
+      throw new Error(
+        `Azure Monitor export exceeds the ${MAX_RETRY_WAIT_MS} ms retry-wait budget.`,
+      );
+    }
+    await this.delay(delayMs);
+    return remainingRetryWaitMs - delayMs;
   }
 
   private async sendOnce(request: SendRequest): Promise<SenderResultType> {
