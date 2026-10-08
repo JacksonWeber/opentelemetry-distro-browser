@@ -22,6 +22,7 @@ All notable changes to this package are documented in this file.
 
 ### Changed
 
+- Update the development dependency `source-map-js` to 1.2.2.
 - Share unload listeners across instances and release them and the owned context delegate after
   the last instance stops. Bound telemetry stops immediately at shutdown, cleanup attempts every
   processor with a 30-second timeout, and page-view shutdown cancels pending frame and idle work.
