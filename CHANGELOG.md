@@ -22,6 +22,9 @@ All notable changes to this package are documented in this file.
 
 ### Changed
 
+- Limit Azure Monitor retry waits to a 30-second budget per send so long `Retry-After` values
+  fail exports promptly instead of stalling `forceFlush()` and `shutdown()`, while preserving
+  the server's throttle deadline.
 - Require HTTPS for Azure Monitor endpoints, except HTTP on localhost and loopback IP addresses.
   Invalid endpoints now emit a diagnostic warning and use the existing fallback endpoints.
 - Share routing and page-context state across compatible distribution copies while preserving
