@@ -2,7 +2,7 @@
 
 All notable changes to this package are documented in this file.
 
-## 0.1.0-alpha.2 - Unreleased
+## 0.1.0-alpha.2 - 2026-10-08
 
 ### Added
 
