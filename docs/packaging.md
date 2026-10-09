@@ -1,42 +1,45 @@
 # Browser package output
 
-The [M0 planning document](../planning/M0_PLANNING.md) requires ES2022 ESM-only output, and
-[M1](../planning/M1_PLANNING.md) owns declaring that target explicitly.
-`npm run build` cleans previous artifacts and emits:
+The [M0 planning document](../planning/M0_PLANNING.md) started with ES2022 ESM output.
+`npm run build` now also emits CommonJS for npm bundlers and self-contained UMD and IIFE artifacts
+for the browser:
 
-| Artifact                 | Purpose                                     |
-| ------------------------ | ------------------------------------------- |
-| `dist/esm/index.js`      | Package entry point, resolved by `exports`  |
-| `dist/esm/index.min.js`  | Minified ESM bundle for browser size checks |
-| `dist/esm/index.d.ts`    | Public TypeScript declarations              |
-| `dist/esm/index*.js.map` | Source maps with embedded source content    |
-| `dist/esm/snippet.js`    | Configurable SDK loader snippet generator   |
-| `dist/esm/snippet.d.ts`  | Loader snippet TypeScript declarations      |
+| Artifact                             | Purpose                                                                       |
+| ------------------------------------ | ----------------------------------------------------------------------------- |
+| `dist/esm/index.js`                  | ESM package entry point                                                       |
+| `dist/commonjs/index.cjs`            | CommonJS package entry point                                                  |
+| `dist/esm/instrumentations.js`       | Tree-shakeable ESM instrumentation loader                                     |
+| `dist/commonjs/instrumentations.cjs` | CommonJS instrumentation loader                                               |
+| `dist/esm/index.min.js`              | Minified ESM bundle for browser size checks                                   |
+| `dist/browser/*umd*.js`              | UMD SDK and instrumentation bundles for CommonJS, AMD, RequireJS, and globals |
+| `dist/browser/*iife*.js`             | IIFE SDK and instrumentation bundles for direct classic-script loading        |
+| `dist/esm/*.d.ts`                    | Public TypeScript declarations for ESM consumers                              |
+| `dist/commonjs/*.d.cts`              | Public TypeScript declarations for CommonJS consumers                         |
+| `dist/**/*.map`                      | Source maps with embedded source content                                      |
+| `dist/esm/snippet.js`                | Configurable SDK loader snippet generator                                     |
+| `dist/esm/snippet.d.ts`              | Loader snippet TypeScript declarations                                        |
 
-Import the package through its `exports` map. The manifest intentionally has no `main` or
-`module` field and no CommonJS `require` condition. CommonJS consumers must use asynchronous
-`import()`; synchronous `require()` of the package is not supported. The `package.json`
-metadata subpath remains available.
+Import the package through its `exports` map. The `main` and `module` fields support older bundlers
+and point to the same files selected by the explicit `require` and `import` conditions. The
+`package.json` metadata subpath remains available. The CommonJS entries `require()` ESM-only
+OpenTelemetry packages, so they target bundlers and Node.js versions with `require(esm)` support;
+CommonJS test runners such as Jest must transform those dependencies.
 
-There is no CommonJS build, `.d.cts` declaration, IIFE bundle, or `OpenTelemetryBrowser` global.
-The former `dist/commonjs/` and `dist/browser/` outputs are removed. Browser consumers use an
-ESM-aware bundler or native module imports, not a classic script tag expecting a global.
-CDN publication remains deferred. The `./snippet` helper requires the caller to supply the script
-URL, so it does not claim an unpublished CDN location.
+The `opentelemetry-browser.*` SDK bundles are self-contained and expose `Microsoft.OpenTelemetry`.
+They also expose the standard OpenTelemetry APIs used by the bundled SDK, so direct-script
+consumers can emit manual telemetry without loading a second API copy. The
+`opentelemetry-browser-instrumentations.*` bundles expose `Microsoft.OpenTelemetryInstrumentations`
+and include their own API copy, which shares state with the SDK bundle through the OpenTelemetry
+global registry. Use IIFE when RequireJS may already be present; UMD deliberately registers with
+AMD loaders.
 
-The supplied URL must serve a classic IIFE or UMD script that assigns the distribution's root
-exports to `window.Microsoft.OpenTelemetry`, including `useMicrosoftOpenTelemetry`. The package's
-ESM artifacts are not compatible with the loader and no compatible CDN artifact is published yet.
-Until M2 publishes that artifact, callers can self-host one by bundling an entry that imports the
-package root and assigns its exports to that namespace, with all runtime dependencies included.
-Production snippets should pass the hosted file's `sha384` or stronger digest through `integrity`;
-the loader applies it to the script together with `crossOrigin`.
-
-`npm run test:build` checks the output inventory, package resolution, declaration consumption
-with TypeScript NodeNext and Bundler resolution, source maps, minification, and tree shaking.
-`npm run test:integration` imports both emitted bundles natively in Chromium without a bundler
-transforming their contents. The `sideEffects: false` contract remains in place; importing the
-package does not initialize telemetry.
+`npm run test:build` checks the output inventory, ESM and CommonJS package resolution, declaration
+consumption with TypeScript Node16, NodeNext, and Bundler resolution, source maps, minification,
+and tree shaking. `npm run test:integration` imports the ESM bundles and loads every minified and
+unminified UMD and IIFE artifact in Chromium, Firefox, and WebKit. It exercises both global and AMD
+loading.
+The `sideEffects: false` contract remains in place; importing the package does not initialize
+telemetry.
 
 `npm run size` bundles real consumers of every published JavaScript entry point with Rollup,
 tree-shakes and minifies each scenario, and reports gzip and Brotli transfer sizes. It measures the
@@ -63,6 +66,66 @@ entry point. During alpha releases, violations are report-only so the baselines 
 Starting with beta, `npm run size` exits unsuccessfully when any absolute budget is exceeded; the
 same gate therefore blocks CI for beta, release-candidate and stable versions. The separate PR-base
 comparison remains informational and does not replace the absolute gate.
+
+`npm run size` also measures the minified self-contained browser bundles exactly as `npm run build`
+emits them, so it must run after a production build. Their budgets block in every release channel,
+including alpha:
+
+| Artifact                                                   | Minified |  Gzip | Brotli |
+| ---------------------------------------------------------- | -------: | ----: | -----: |
+| `opentelemetry-browser.{iife,umd}.min.js`                  |   135 kB | 41 kB |  36 kB |
+| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |    63 kB | 19 kB |  17 kB |
+
+The browser bundles contain only ES2022 syntax. `npm run test:build` parses every emitted UMD and
+IIFE file as an ES2022 script and requires a budget for every minified browser bundle. This check
+sets a syntax ceiling; it does not validate specific browser versions, which remain provisional
+until exact supported versions are declared and tested.
+
+## CDN and loader snippet
+
+Each release publishes the UMD and IIFE bundles to an immutable versioned CDN location, following
+the Application Insights JavaScript SDK release layout:
+
+```text
+https://js.monitor.azure.com/scripts/otel/<channel>/<module>.<version>.<format>
+```
+
+The channel is `b` for stable releases and the prerelease identifier (`alpha`, `beta` or `rc`)
+otherwise. Each module (`opentelemetry-browser` and `opentelemetry-browser-instrumentations`) is
+published as `min.js` and `js` (IIFE), and `umd.min.js` and `umd.js` (UMD), each with its source
+map, plus `<module>.<version>.integrity.json`. The integrity file lists every file's CDN URL and
+its SHA-256, SHA-384 and SHA-512 Subresource Integrity values.
+
+`npm run build` prepares these files in `cdn/` from the same `dist/browser` bundles, renaming only
+the source map references. `npm run cdn:publish -- --account <storage-account>` uploads them with
+the Azure CLI, using Entra ID login unless `AZURE_STORAGE_SAS_TOKEN` is set, with
+`public, max-age=31536000, immutable, no-transform` caching. It uploads the integrity files last,
+never overwrites a published file, skips files that are already published with identical content,
+and fails if a published file differs. Use `--dry-run` to list the URLs without uploading.
+
+The `./snippet` helper generates the copy/paste loader. Without `src`, it loads the `min.js` IIFE
+bundle for the package version, so the snippet and the bundle versions always match. The loader
+reads the `Microsoft.OpenTelemetry` global, which a UMD bundle does not set when an AMD loader is
+present. Add the generated script to the page `<head>` and replace `CHANNEL`, `VERSION`,
+`YOUR_CONNECTION_STRING` and `YOUR_INTEGRITY` in the configuration object at its end:
+
+<!-- prettier-ignore -->
+```html
+<script>
+!(function(w,d,c){var s=d.createElement("script");w.microsoftOpenTelemetry=new Promise(function(resolve,reject){s.src=c.src;s.crossOrigin=c.crossOrigin;if(c.integrity)s.integrity=c.integrity;s.onload=function(){var sdk=w.Microsoft&&w.Microsoft.OpenTelemetry;if(!sdk||typeof sdk.useMicrosoftOpenTelemetry!=="function"){reject(new Error("OpenTelemetry browser bundle did not expose Microsoft.OpenTelemetry"));return}Promise.resolve().then(function(){return sdk.useMicrosoftOpenTelemetry({azureMonitor:{connectionString:c.connectionString}})}).then(resolve,reject)};s.onerror=function(){reject(new Error("OpenTelemetry browser bundle failed to load: "+c.src))};d.head.appendChild(s)})})(window,document,{"src":"https://js.monitor.azure.com/scripts/otel/CHANNEL/opentelemetry-browser.VERSION.min.js","connectionString":"YOUR_CONNECTION_STRING","crossOrigin":"anonymous","integrity":"YOUR_INTEGRITY"});
+</script>
+```
+
+`YOUR_INTEGRITY` is the `@min.js` `integrity` value from the release's `integrity.json`.
+Initialization is asynchronous: `window.microsoftOpenTelemetry` resolves to the lifecycle handle,
+or rejects when the bundle fails to load, fails its integrity check or fails to initialize. Under a
+Content Security Policy, allow the snippet's hash or nonce and the CDN origin in `script-src`, and
+the Azure Monitor ingestion origin in `connect-src`.
+
+`npm run test:integration` loads the prepared CDN bundle cross-origin into a plain HTML page
+through the built snippet, under such a policy, in Chromium, Firefox, and WebKit. It verifies that
+page-view and span telemetry reaches an Azure Monitor ingestion endpoint, and that integrity
+mismatches and missing bundles reject initialization.
 
 ## Performance measurements
 

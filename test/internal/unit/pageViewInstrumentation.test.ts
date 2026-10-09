@@ -1,7 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { ROOT_CONTEXT, isSpanContextValid, isValidTraceId, trace } from "@opentelemetry/api";
+import {
+  ROOT_CONTEXT,
+  TraceFlags,
+  isSpanContextValid,
+  isValidTraceId,
+  trace,
+} from "@opentelemetry/api";
 import {
   SeverityNumber,
   type LogRecord,
@@ -10,6 +16,7 @@ import {
 } from "@opentelemetry/api-logs";
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import type { BrowserInstrumentation } from "../../../src/types.js";
+import { BROWSER_ASYNC_TIMEOUT_MS } from "../../fixtures/timeouts.js";
 import {
   createPageViewContext,
   generatePageViewId,
@@ -25,6 +32,11 @@ import {
   ATTR_PAGE_VIEW_INDEX,
   ATTR_PAGE_VIEW_NAME,
   ATTR_PAGE_VIEW_NAME_SOURCE,
+  ATTR_PAGE_VIEW_PERF_DOM_PROCESSING,
+  ATTR_PAGE_VIEW_PERF_NETWORK_CONNECT,
+  ATTR_PAGE_VIEW_PERF_RECEIVED_RESPONSE,
+  ATTR_PAGE_VIEW_PERF_SENT_REQUEST,
+  ATTR_PAGE_VIEW_PERF_TOTAL,
   ATTR_PAGE_VIEW_REFERRER,
   ATTR_PAGE_VIEW_SAME_DOCUMENT,
   ATTR_PAGE_VIEW_TYPE,
@@ -74,23 +86,82 @@ async function settle(): Promise<void> {
   });
 }
 
+function waitForPopState(): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const state: { timeout?: number } = {};
+    const onPopState = (): void => {
+      clearTimeout(state.timeout);
+      resolve();
+    };
+    state.timeout = window.setTimeout(() => {
+      window.removeEventListener("popstate", onPopState);
+      reject(new Error("Timed out waiting for popstate"));
+    }, BROWSER_ASYNC_TIMEOUT_MS);
+    window.addEventListener("popstate", onPopState, { once: true });
+  });
+}
+
 function attributesOf(record: LogRecord): Record<string, unknown> {
   return (record.attributes ?? {}) as Record<string, unknown>;
 }
 
 beforeEach(() => {
-  history.replaceState(null, "", originalUrl);
+  if (location.href !== originalUrl) {
+    history.replaceState(null, "", originalUrl);
+  }
   document.title = originalTitle;
 });
 
 afterEach(() => {
   active?.disable();
   active = undefined;
-  history.replaceState(null, "", originalUrl);
+  if (location.href !== originalUrl) {
+    history.replaceState(null, "", originalUrl);
+  }
   document.title = originalTitle;
 });
 
 describe("PageViewInstrumentation", () => {
+  it.each(["first frame", "second frame", "idle"] as const)(
+    "cancels pending %s work on disable",
+    async (stage) => {
+      const frames = new Map<number, FrameRequestCallback>();
+      const idle = new Map<number, IdleRequestCallback>();
+      let nextId = 0;
+      vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+        frames.set(++nextId, callback);
+        return nextId;
+      });
+      vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
+      vi.stubGlobal("requestIdleCallback", (callback: IdleRequestCallback) => {
+        idle.set(++nextId, callback);
+        return nextId;
+      });
+      vi.stubGlobal("cancelIdleCallback", (id: number) => idle.delete(id));
+      try {
+        const { instrumentation, provider } = createInstrumentation();
+        instrumentation.enable();
+        history.pushState(null, "", "/scheduled");
+        const advanceFrame = () => {
+          const [id, callback] = [...frames][0];
+          frames.delete(id);
+          callback(performance.now());
+        };
+        if (stage !== "first frame") advanceFrame();
+        if (stage === "idle") advanceFrame();
+        expect(frames.size + idle.size).toBe(1);
+        const emitted = provider.records.length;
+        instrumentation.disable();
+        expect(frames.size).toBe(0);
+        expect(idle.size).toBe(0);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(provider.records).toHaveLength(emitted);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
   describe("instrumentation contract", () => {
     it("satisfies the distribution's registration contract", () => {
       const { instrumentation } = createInstrumentation();
@@ -162,10 +233,46 @@ describe("PageViewInstrumentation", () => {
       expect(isSpanContextValid(instrumentation.getOperationContext()!)).toBe(true);
       expect(instrumentation.getOperationContext()?.traceId).not.toBe(operation.traceId);
     });
+
+    it.each([
+      [true, TraceFlags.SAMPLED],
+      [false, TraceFlags.NONE],
+    ])(
+      "sets a synthetic page operation's sampling flag from its trace ID",
+      (sampled, traceFlags) => {
+        const decisions: string[] = [];
+        const instrumentation = new PageViewInstrumentation(
+          { enabled: false },
+          ROOT_CONTEXT,
+          (traceId) => {
+            decisions.push(traceId);
+            return sampled;
+          },
+        );
+        active = instrumentation;
+
+        instrumentation.enable();
+        const operation = instrumentation.getOperationContext();
+
+        expect(decisions).toEqual([operation?.traceId]);
+        expect(operation?.traceFlags).toBe(traceFlags);
+      },
+    );
   });
 
   describe("document load", () => {
     it("emits one record with a browser-reported duration", async () => {
+      vi.spyOn(performance, "getEntriesByType").mockReturnValue([
+        {
+          startTime: 0,
+          connectEnd: 20,
+          requestStart: 30,
+          responseStart: 80,
+          responseEnd: 110,
+          loadEventEnd: 170,
+          type: "navigate",
+        } as PerformanceNavigationTiming,
+      ]);
       const { instrumentation, provider } = createInstrumentation();
 
       instrumentation.enable();
@@ -180,8 +287,36 @@ describe("PageViewInstrumentation", () => {
       expect(attributes[ATTR_PAGE_VIEW_SAME_DOCUMENT]).toBe(false);
       expect(attributes[ATTR_PAGE_VIEW_INDEX]).toBe(0);
       expect(attributes[ATTR_PAGE_VIEW_DURATION_SOURCE]).toBe("navigation_timing");
-      expect(attributes[ATTR_PAGE_VIEW_DURATION]).toBeGreaterThan(0);
+      expect(attributes[ATTR_PAGE_VIEW_DURATION]).toBe(170);
+      expect(attributes[ATTR_PAGE_VIEW_PERF_TOTAL]).toBe(170);
+      expect(attributes[ATTR_PAGE_VIEW_PERF_NETWORK_CONNECT]).toBe(20);
+      expect(attributes[ATTR_PAGE_VIEW_PERF_SENT_REQUEST]).toBe(50);
+      expect(attributes[ATTR_PAGE_VIEW_PERF_RECEIVED_RESPONSE]).toBe(30);
+      expect(attributes[ATTR_PAGE_VIEW_PERF_DOM_PROCESSING]).toBe(60);
       expect(attributes[ATTR_URL_FULL]).toBe(location.href);
+    });
+
+    it("omits performance phases when navigation boundaries are invalid", async () => {
+      vi.spyOn(performance, "getEntriesByType").mockReturnValue([
+        {
+          startTime: 0,
+          connectEnd: 20,
+          requestStart: 10,
+          responseStart: 30,
+          responseEnd: 110,
+          loadEventEnd: 170,
+          type: "navigate",
+        } as PerformanceNavigationTiming,
+      ]);
+      const { instrumentation, provider } = createInstrumentation();
+
+      instrumentation.enable();
+      await settle();
+
+      const attributes = attributesOf(provider.records[0] as LogRecord);
+      expect(attributes[ATTR_PAGE_VIEW_DURATION]).toBe(170);
+      expect(attributes[ATTR_PAGE_VIEW_PERF_TOTAL]).toBeUndefined();
+      expect(attributes[ATTR_PAGE_VIEW_PERF_SENT_REQUEST]).toBeUndefined();
     });
 
     it("always sets a navigation type, unlike upstream browser.navigation", async () => {
@@ -316,6 +451,7 @@ describe("PageViewInstrumentation", () => {
       expect(attributes[ATTR_PAGE_VIEW_SAME_DOCUMENT]).toBe(true);
       expect(attributes[ATTR_PAGE_VIEW_TYPE]).toBe("push");
       expect(attributes[ATTR_PAGE_VIEW_DURATION_SOURCE]).toBe("soft_navigation_settled");
+      expect(attributes[ATTR_PAGE_VIEW_PERF_TOTAL]).toBeUndefined();
       expect(String(attributes[ATTR_URL_FULL])).toContain("/orders/42");
     });
 
@@ -440,7 +576,9 @@ describe("PageViewInstrumentation", () => {
       history.pushState(null, "", "#hash-a");
       await settle();
       provider.records.length = 0;
+      const traversed = waitForPopState();
       history.back();
+      await traversed;
       await settle();
 
       expect(attributesOf(provider.records[0] as LogRecord)[ATTR_PAGE_VIEW_TYPE]).toBe("traverse");
@@ -655,27 +793,80 @@ describe("PageViewInstrumentation", () => {
   });
 
   describe("configuration hooks", () => {
-    it("sanitizes the URL and the referrer", async () => {
+    it("redacts sensitive URL and referrer fields by default", async () => {
+      const { instrumentation, provider } = createInstrumentation();
+
+      instrumentation.enable();
+      await settle();
+      provider.records.length = 0;
+
+      history.pushState(
+        null,
+        "",
+        "/callback?code=query-secret#access_token=access-secret&id_token=id-secret",
+      );
+      await settle();
+      history.pushState(null, "", "/after");
+      await settle();
+
+      const callback = attributesOf(provider.records[0] as LogRecord);
+      expect(callback[ATTR_URL_FULL]).toBe(
+        `${location.origin}/callback?code=REDACTED#access_token=REDACTED&id_token=REDACTED`,
+      );
+
+      const after = attributesOf(provider.records[1] as LogRecord);
+      expect(after[ATTR_PAGE_VIEW_REFERRER]).toBe(callback[ATTR_URL_FULL]);
+      expect(JSON.stringify(provider.records)).not.toMatch(/query-secret|access-secret|id-secret/);
+    });
+
+    it("uses configured query parameters for the URL and referrer", async () => {
       const { instrumentation, provider } = createInstrumentation({
-        sanitizeUrl: (url) => url.replace(/token=[^&]*/g, "token=REDACTED"),
+        redactedQueryParams: ["tenant_secret"],
       });
 
       instrumentation.enable();
       await settle();
       provider.records.length = 0;
 
-      history.pushState(null, "", "/secure?token=supersecret");
+      history.pushState(null, "", "/custom?code=visible&tenant_secret=hidden");
+      await settle();
+      history.pushState(null, "", "/after");
+      await settle();
+
+      const custom = attributesOf(provider.records[0] as LogRecord);
+      expect(custom[ATTR_URL_FULL]).toBe(
+        `${location.origin}/custom?code=visible&tenant_secret=REDACTED`,
+      );
+      const after = attributesOf(provider.records[1] as LogRecord);
+      expect(after[ATTR_PAGE_VIEW_REFERRER]).toBe(custom[ATTR_URL_FULL]);
+      expect(JSON.stringify(provider.records)).not.toContain("hidden");
+    });
+
+    it("sanitizes the URL and the referrer", async () => {
+      const seen: string[] = [];
+      const { instrumentation, provider } = createInstrumentation({
+        sanitizeUrl: (url) => {
+          seen.push(url);
+          return new URL(url).pathname;
+        },
+      });
+
+      instrumentation.enable();
+      await settle();
+      provider.records.length = 0;
+
+      history.pushState(null, "", "/secure?token=supersecret&visible=true");
       await settle();
       history.pushState(null, "", "/after");
       await settle();
 
       const secureRecord = attributesOf(provider.records[0] as LogRecord);
-      expect(String(secureRecord[ATTR_URL_FULL])).toContain("token=REDACTED");
-      expect(String(secureRecord[ATTR_URL_FULL])).not.toContain("supersecret");
+      expect(secureRecord[ATTR_URL_FULL]).toBe("/secure");
 
       const afterRecord = attributesOf(provider.records[1] as LogRecord);
-      expect(String(afterRecord[ATTR_PAGE_VIEW_REFERRER])).toContain("token=REDACTED");
-      expect(String(afterRecord[ATTR_PAGE_VIEW_REFERRER])).not.toContain("supersecret");
+      expect(afterRecord[ATTR_PAGE_VIEW_REFERRER]).toBe("/secure");
+      expect(seen).toContain(`${location.origin}/secure?token=REDACTED&visible=true`);
+      expect(JSON.stringify(seen)).not.toContain("supersecret");
     });
 
     it("applies the custom log record hook", async () => {

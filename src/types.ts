@@ -96,9 +96,14 @@ export interface BrowserInstrumentation {
  * context manager (or an upstream synchronous stack manager) and supplies the page operation only
  * when there is no active span. Pass explicit context across asynchronous boundaries.
  *
- * The OpenTelemetry global context and propagation APIs are page-lifetime registrations. Like the
- * tracer and logger providers, they are not unregistered by `shutdown`; initialize this
- * distribution once per page.
+ * The OpenTelemetry global context and propagation APIs are page-lifetime registrations that
+ * `shutdown` does not unregister. Each initialization owns its own telemetry pipelines, but the
+ * first active instance that collects traces supplies context. Its delegate is disabled when the
+ * last instance stops. Implicit context tracking then stops until a later initialization supplies
+ * a new delegate. Application-registered context managers are never disabled. Propagators remain
+ * page-lifetime registrations, so later propagator options are unused. Propagation is registered
+ * even when the application already registered a context manager. Instances with page views share
+ * one page operation per navigation, so their page-view IDs and correlated spans and logs match.
  *
  * @public
  */
@@ -116,10 +121,35 @@ export interface MicrosoftOpenTelemetryBrowserTraceOptions {
 }
 
 /**
+ * Session options, captured at initialization. Lifetimes must be finite and nonnegative.
+ * @public
+ */
+export interface MicrosoftOpenTelemetryBrowserSessionOptions {
+  /** Enables session tracking. Defaults to false. */
+  enabled?: boolean;
+  /**
+   * Persist in localStorage (default true). False uses memory without accessing or clearing storage.
+   */
+  persist?: boolean;
+  /**
+   * Seconds without managed-session telemetry. Defaults to 1800. Zero disables inactivity expiry.
+   */
+  inactivityTimeout?: number;
+  /** Maximum lifetime in seconds, including across reloads. Defaults to 0 (unlimited). */
+  maxDuration?: number;
+}
+
+/**
  * Microsoft browser distribution configuration for traces and logs.
  * @public
  */
 export interface MicrosoftOpenTelemetryBrowserOptions {
+  /**
+   * Fixed percentage of traces and Azure Monitor log records retained, from 0 through 100.
+   * Omit this option to use the OpenTelemetry SDK's parent-based always-on trace sampler and to
+   * disable percentage sampling for Azure Monitor logs.
+   */
+  samplingPercentage?: number;
   /** Azure Monitor destination. When provided, Azure Monitor export is enabled. */
   azureMonitor?: AzureMonitorOptions;
   /**
@@ -132,18 +162,39 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
    * page belong here. Only its attributes are used; the schema URL is not carried through.
    */
   resource?: Resource;
+  /** Opt-in session tracking. Disabled sessions do not access storage. */
+  session?: MicrosoftOpenTelemetryBrowserSessionOptions;
   /**
-   * Opt-in session tracking. Set enabled to true to persist sessions in localStorage and
-   * supply missing session.id attributes on spans and logs. Uses a 30-minute inactivity
-   * timeout with no maximum lifetime; application-provided IDs are preserved.
-   * Omitted or disabled session tracking does not access session storage or start session timers.
+   * Opt-in user identity persistence.
+   *
+   * @remarks
+   * Spans and logs receive an anonymous `enduser.pseudo.id` unless the record or resource already
+   * has one. It is generated in memory, or
+   * restored from storage when `enabled` is `true`. Set `enabled` to `true` only when anonymous and
+   * authenticated identity may be persisted. The default implementation stores identity in
+   * same-origin `localStorage` under one key shared by every handle in the origin, where it remains
+   * across browser sessions until `userContext.setEnabled(false)` is called or the application
+   * clears it. Initializing with `enabled: false` does not access storage. Any script running in
+   * the origin can read this storage, so do not use raw personally identifiable information,
+   * secrets, or tokens as identity values. Persistence can be changed later through the returned
+   * user context.
    */
-  session?: { enabled?: boolean };
+  userContext?: { enabled?: boolean };
   /** Advanced trace context and propagation configuration. */
   traces?: MicrosoftOpenTelemetryBrowserTraceOptions;
-  /** Span processors to register with the tracer provider. An empty array skips trace initialization. */
+  /**
+   * Span processors to register with the tracer provider. When omitted, spans export through
+   * default OTLP, or only to Azure Monitor when `azureMonitor` is set. An empty array skips trace
+   * initialization. Ownership transfers when provider startup begins, including failed startup.
+   * Do not share processor instances between handles.
+   */
   spanProcessors?: SpanProcessor[];
-  /** Log record processors to register with the logger provider. An empty array skips log initialization. */
+  /**
+   * Log record processors to register with the logger provider. When omitted, logs export through
+   * default OTLP, or only to Azure Monitor when `azureMonitor` is set. An empty array skips log
+   * initialization. Ownership transfers when provider startup begins, including failed startup.
+   * Do not share processor instances between handles.
+   */
   logRecordProcessors?: LogRecordProcessor[];
   /**
    * Individually imported OpenTelemetry instrumentation instances to register.
@@ -177,17 +228,73 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
 }
 
 /**
+ * Mutable user identity context applied to subsequently created spans and logs.
+ *
+ * @remarks
+ * Spans are enriched when they start and logs when they are emitted. Managed authenticated user
+ * and account attributes are added only when neither the record nor its resource supplies
+ * `user.id`, `enduser.id`, or `user.account.id`; identity attributes set on a span after it starts are not
+ * reconciled. Controls remain usable after the lifecycle handle shuts down so applications can
+ * still clear persisted identity.
+ * @public
+ */
+export interface MicrosoftOpenTelemetryBrowserUserContext {
+  /**
+   * Sets authenticated identity using OpenTelemetry `user.id` and Azure Monitor
+   * `ai.user.authUserId`. The optional account maps to `ai.user.accountId`; omitting it clears a
+   * previously set account.
+   *
+   * @throws TypeError when an ID is not a non-empty string.
+   * @throws Error when persistence is enabled and the identity cannot be saved. The previously
+   * persisted identity is removed when possible; otherwise the error reports that clearing
+   * failed. The in-memory identity is still applied.
+   */
+  setAuthenticatedUserContext(userId: string, accountId?: string): void;
+  /**
+   * Clears authenticated identity and any persisted authenticated context. If persistence is
+   * enabled but the anonymous identity cannot be saved again, persistence is disabled and a
+   * diagnostic warning is logged.
+   *
+   * @throws Error when persistence is enabled and stale authentication cannot be removed.
+   */
+  clearAuthenticatedUserContext(): void;
+  /**
+   * Enables or disables persistence without changing the current in-memory identity. Disabling
+   * also removes identity persisted by earlier page loads. The stored record is shared by every
+   * handle in the origin, so disabling or signing out through any handle changes that record for
+   * future page loads. Each active handle keeps its own in-memory identity, so update every active
+   * handle to change the identity it applies to telemetry.
+   *
+   * @throws Error when enabling cannot save identity, or when disabling cannot remove identity
+   * this instance persisted.
+   */
+  setEnabled(enabled: boolean): void;
+}
+
+/**
  * Browser telemetry lifecycle handle.
  * @public
  */
 export interface MicrosoftOpenTelemetryBrowser {
-  /** Flushes pending trace and log telemetry. */
+  /** Mutable user identity and persistence controls. */
+  readonly userContext: MicrosoftOpenTelemetryBrowserUserContext;
+  /**
+   * Flushes this instance's pending telemetry. Concurrent calls share a promise.
+   * Each processor has 30 seconds to finish before rejection. Timeouts do not cancel exports.
+   * All processors are attempted, and multiple failures are reported as an AggregateError.
+   * Once shutdown begins, returns the shutdown promise instead.
+   */
   forceFlush(): Promise<void>;
   /**
-   * Stops session timers immediately, then disables registered instrumentations and shuts down
-   * trace and log providers.
-   * Does not unregister global APIs. Cleanup continues if an instrumentation throws,
-   * and the returned promise rejects with the cleanup failure(s).
+   * Stops session activity immediately, then disables registered instrumentations and shuts down
+   * this instance's trace and log providers. Other instances keep running, and tracers or
+   * loggers acquired afterward from the global APIs use the earliest remaining instance that
+   * collects that signal.
+   * Rejects new telemetry immediately and waits for active flushes before shutting down providers.
+   * The last instance releases shared unload listeners and the owned context delegate without
+   * unregistering global APIs. Each processor shutdown has a 30-second timeout.
+   * Cleanup continues after failures. Repeated calls return the same promise, which rejects with
+   * the failure or an AggregateError when multiple operations fail.
    */
   shutdown(): Promise<void>;
 }

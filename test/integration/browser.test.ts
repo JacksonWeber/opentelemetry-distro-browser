@@ -33,6 +33,7 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
         `IngestionEndpoint=${ingestionEndpoint}`,
     },
     pageView: { applyCustomLogRecordData: () => pageReady() },
+    session: { enabled: true, persist: false, inactivityTimeout: 60, maxDuration: 3600 },
   });
   const button = document.createElement("button");
   let applicationSpanId: string | undefined;
@@ -61,6 +62,11 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
       attributes: {
         "browser.page_view.name": "Checkout",
         "browser.page_view.duration": 425.25,
+        "browser.page_view.performance.total": 425.25,
+        "browser.page_view.performance.network_connect": 25,
+        "browser.page_view.performance.sent_request": 100.5,
+        "browser.page_view.performance.received_response": 50.25,
+        "browser.page_view.performance.dom_processing": 249.5,
         "url.full": `${location.origin}/checkout`,
         "test.run_id": runId,
       },
@@ -81,6 +87,12 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
     const captured: AzureMonitorEnvelope[] = await fetch(
       `${new URL(ingestionEndpoint).origin}/captured?runId=${encodeURIComponent(runId)}`,
     ).then((response) => response.json());
+    const sessionId = captured[0].tags["ai.session.id"];
+    expect(sessionId).toMatch(/^[0-9a-f]{32}$/);
+    for (const envelope of captured) {
+      expect(envelope.tags["ai.session.id"]).toBe(sessionId);
+      expect(envelope.data.baseData.properties?.["session.id"]).toBeUndefined();
+    }
     expect(captured).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -124,6 +136,24 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
           },
         }),
         expect.objectContaining({
+          name: "Microsoft.ApplicationInsights.PageviewPerformance",
+          tags: expect.objectContaining({ "ai.operation.id": operationId }),
+          data: {
+            baseType: "PageviewPerformanceData",
+            baseData: expect.objectContaining({
+              name: "Checkout",
+              url: `${location.origin}/checkout`,
+              duration: "00:00:00.4252500",
+              perfTotal: "00:00:00.4252500",
+              networkConnect: "00:00:00.0250000",
+              sentRequest: "00:00:00.1005000",
+              receivedResponse: "00:00:00.0502500",
+              domProcessing: "00:00:00.2495000",
+              properties: expect.objectContaining({ "test.run_id": runId }),
+            }),
+          },
+        }),
+        expect.objectContaining({
           name: "Microsoft.ApplicationInsights.Event",
           tags: expect.objectContaining({ "ai.operation.id": operationId }),
           data: {
@@ -162,6 +192,53 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
   } finally {
     button.remove();
     await telemetry.shutdown();
+  }
+});
+
+it("redacts the default page URL in the Azure Monitor ingestion payload", async () => {
+  const runId = crypto.randomUUID();
+  const ingestionEndpoint = `${inject("ingestionEndpoint")}${encodeURIComponent(runId)}`;
+  const originalUrl = `${location.pathname}${location.search}${location.hash}`;
+  history.replaceState(
+    null,
+    "",
+    "/callback?code=query-secret#access_token=access-secret&id_token=id-secret&state=public",
+  );
+  let pageReady!: () => void;
+  const pageEmitted = new Promise<void>((resolve) => {
+    pageReady = resolve;
+  });
+  const telemetry = await (
+    await import(/* @vite-ignore */ new URL("../../dist/esm/index.js", import.meta.url).href)
+  ).useMicrosoftOpenTelemetry({
+    azureMonitor: {
+      connectionString:
+        `InstrumentationKey=00000000-0000-0000-0000-000000000000;` +
+        `IngestionEndpoint=${ingestionEndpoint}`,
+    },
+    pageView: { applyCustomLogRecordData: () => pageReady() },
+  });
+
+  try {
+    await pageEmitted;
+    await telemetry.forceFlush();
+
+    const captured: AzureMonitorEnvelope[] = await fetch(
+      `${new URL(ingestionEndpoint).origin}/captured?runId=${encodeURIComponent(runId)}`,
+    ).then((response) => response.json());
+    const pageView = captured.find((envelope) => envelope.data.baseType === "PageViewData");
+    expect(pageView).toMatchObject({
+      data: {
+        baseType: "PageViewData",
+        baseData: {
+          url: `${location.origin}/callback?code=REDACTED#access_token=REDACTED&id_token=REDACTED&state=public`,
+        },
+      },
+    });
+    expect(JSON.stringify(captured)).not.toMatch(/query-secret|access-secret|id-secret/);
+  } finally {
+    await telemetry.shutdown();
+    history.replaceState(null, "", originalUrl);
   }
 });
 

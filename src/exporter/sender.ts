@@ -1,12 +1,15 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+import { context } from "@opentelemetry/api";
+import { suppressTracing } from "@opentelemetry/core";
 import {
   MAX_BEACON_BODY_SIZE,
   MAX_PENDING_KEEPALIVE_BODY_SIZE,
   MAX_PENDING_KEEPALIVE_REQUESTS,
   MAX_SEND_ATTEMPTS,
   MAX_RETRY_DELAY_MS,
+  MAX_RETRY_WAIT_MS,
   RETRY_DELAY_MS,
 } from "./constants.js";
 import {
@@ -101,9 +104,10 @@ export class Sender {
     }
 
     let currentRequest = request;
+    let remainingRetryWaitMs = MAX_RETRY_WAIT_MS;
     const permanentErrors: BreezeError[] = [];
     for (let attempt = 1; ; attempt++) {
-      await this.waitForThrottle();
+      remainingRetryWaitMs = await this.waitForThrottle(remainingRetryWaitMs);
 
       let result: SenderResultType;
       try {
@@ -122,7 +126,10 @@ export class Sender {
           throw error.cause;
         }
         if (error.retryAfterMs === undefined) {
-          await this.delay(getRetryDelay(attempt - 1, this.random()));
+          remainingRetryWaitMs = await this.waitForRetry(
+            getRetryDelay(attempt - 1, this.random()),
+            remainingRetryWaitMs,
+          );
         }
         continue;
       }
@@ -139,7 +146,10 @@ export class Sender {
       }
 
       if (result.retryAfterMs === undefined) {
-        await this.delay(getRetryDelay(attempt - 1, this.random()));
+        remainingRetryWaitMs = await this.waitForRetry(
+          getRetryDelay(attempt - 1, this.random()),
+          remainingRetryWaitMs,
+        );
       }
       currentRequest = retryRequest;
     }
@@ -159,15 +169,29 @@ export class Sender {
     this.throttleDeadline = Math.max(this.throttleDeadline, Date.now() + delayMs);
   }
 
-  private async waitForThrottle(): Promise<void> {
+  private async waitForThrottle(remainingRetryWaitMs: number): Promise<number> {
     let observedDeadline = this.throttleDeadline;
     while (observedDeadline > Date.now()) {
-      await this.delay(observedDeadline - Date.now());
+      remainingRetryWaitMs = await this.waitForRetry(
+        Math.max(0, observedDeadline - Date.now()),
+        remainingRetryWaitMs,
+      );
       if (this.throttleDeadline <= observedDeadline) {
-        return;
+        return remainingRetryWaitMs;
       }
       observedDeadline = this.throttleDeadline;
     }
+    return remainingRetryWaitMs;
+  }
+
+  private async waitForRetry(delayMs: number, remainingRetryWaitMs: number): Promise<number> {
+    if (delayMs > remainingRetryWaitMs) {
+      throw new Error(
+        `Azure Monitor export exceeds the ${MAX_RETRY_WAIT_MS} ms retry-wait budget.`,
+      );
+    }
+    await this.delay(delayMs);
+    return remainingRetryWaitMs - delayMs;
   }
 
   private async sendOnce(request: SendRequest): Promise<SenderResultType> {
@@ -190,15 +214,18 @@ export class Sender {
       try {
         const payload = unloading ? undefined : await gzipPayload(request.body);
         try {
-          response = await this.fetch(this.endpoint, {
-            method: "POST",
-            headers: {
-              "content-type": request.contentType,
-              ...(payload === undefined ? {} : { "content-encoding": "gzip" }),
-            },
-            body: payload ?? request.body,
-            keepalive: useKeepalive,
-          });
+          // Browser context may not survive compression or retry awaits, so suppress at the call.
+          response = await context.with(suppressTracing(context.active()), () =>
+            this.fetch(this.endpoint, {
+              method: "POST",
+              headers: {
+                "content-type": request.contentType,
+                ...(payload === undefined ? {} : { "content-encoding": "gzip" }),
+              },
+              body: payload ?? request.body,
+              keepalive: useKeepalive,
+            }),
+          );
         } catch (error) {
           if (!isBrowserTransportFailure(error)) {
             throw error;

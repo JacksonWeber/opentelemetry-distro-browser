@@ -1,10 +1,16 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { MAX_RETRY_WAIT_MS } from "../../../src/exporter/constants.js";
 import { Sender } from "../../../src/exporter/sender.js";
 import type { AzureMonitorEnvelope } from "../../../src/exporter/telemetryModels.js";
 import { installFakeClock } from "../../fixtures/clock.js";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 describe("Sender", () => {
   it.each([
@@ -816,11 +822,138 @@ describe("Sender", () => {
     expect(fetch).toHaveBeenCalledTimes(3);
   });
 
+  it.each([
+    [429, "86400"],
+    [503, "86400"],
+    [503, "Thu, 02 Jan 2025 00:00:00 GMT"],
+    [503, "31"],
+  ])("fails promptly for HTTP %i with Retry-After %s beyond the budget", async (status, header) => {
+    installFakeClock();
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(new Response(null, { status, headers: { "retry-after": header } }))
+      .mockResolvedValue(new Response(null, { status: 200 }));
+    const delay = vi.fn<(delayMs: number) => Promise<void>>().mockResolvedValue(undefined);
+    const sender = new Sender({ endpoint: "https://example.test/v2/track", fetch, delay });
+
+    await expect(
+      sender.send({ body: new TextEncoder().encode("telemetry"), contentType: "application/json" }),
+    ).rejects.toThrow("30000 ms retry-wait budget");
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(delay).not.toHaveBeenCalled();
+  });
+
+  it("retains a long throttle across sends and resumes after it expires", async () => {
+    const clock = installFakeClock();
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(
+        new Response(null, { status: 429, headers: { "retry-after": "86400" } }),
+      )
+      .mockResolvedValue(new Response(null, { status: 200 }));
+    const delay = vi.fn<(delayMs: number) => Promise<void>>().mockResolvedValue(undefined);
+    const sender = new Sender({ endpoint: "https://example.test/v2/track", fetch, delay });
+    const request = {
+      body: new TextEncoder().encode("telemetry"),
+      contentType: "application/json",
+    };
+
+    await expect(sender.send(request)).rejects.toThrow("retry-wait budget");
+    const results = await Promise.allSettled([sender.send(request), sender.send(request)]);
+    expect(results.map((result) => result.status)).toEqual(["rejected", "rejected"]);
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(delay).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+
+    await clock.advance(86_400_000);
+    await expect(sender.send(request)).resolves.toMatchObject({ statusCode: 200 });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("allows a throttle wait exactly equal to the budget without retrying early", async () => {
+    const clock = installFakeClock();
+    vi.stubGlobal("CompressionStream", undefined);
+    vi.spyOn(Response.prototype, "text").mockResolvedValue("");
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(new Response(null, { status: 503, headers: { "retry-after": "30" } }))
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+    const sender = new Sender({ endpoint: "https://example.test/v2/track", fetch });
+    const send = sender.send({
+      body: new TextEncoder().encode("telemetry"),
+      contentType: "application/json",
+    });
+
+    await clock.advance(MAX_RETRY_WAIT_MS - 1);
+    expect(fetch).toHaveBeenCalledOnce();
+    await clock.advance(1);
+    await expect(send).resolves.toMatchObject({ statusCode: 200 });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("shares the retry-wait budget across successive Retry-After responses", async () => {
+    const clock = installFakeClock();
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => {
+      return new Response(null, { status: 503, headers: { "retry-after": "20" } });
+    });
+    const delay = vi.fn((delayMs: number) => clock.advance(delayMs));
+    const sender = new Sender({ endpoint: "https://example.test/v2/track", fetch, delay });
+
+    await expect(
+      sender.send({ body: new TextEncoder().encode("telemetry"), contentType: "application/json" }),
+    ).rejects.toThrow("retry-wait budget");
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(delay).toHaveBeenCalledExactlyOnceWith(20_000);
+  });
+
+  it.each(["response", "transport"] as const)(
+    "counts %s backoff against the remaining retry-wait budget",
+    async (failure) => {
+      const clock = installFakeClock();
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValueOnce(
+          new Response(null, { status: 503, headers: { "retry-after": "30" } }),
+        )
+        .mockImplementation(async () => {
+          if (failure === "transport") throw new TypeError("Failed to fetch");
+          return new Response(null, { status: 503 });
+        });
+      const delay = vi.fn((delayMs: number) => clock.advance(delayMs));
+      const sender = new Sender({ endpoint: "https://example.test/v2/track", fetch, delay });
+
+      await expect(
+        sender.send({
+          body: new TextEncoder().encode("telemetry"),
+          contentType: "application/json",
+        }),
+      ).rejects.toThrow("retry-wait budget");
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(delay).toHaveBeenCalledExactlyOnceWith(MAX_RETRY_WAIT_MS);
+    },
+  );
+
+  it("applies the retry-wait budget when reading a throttled response body fails", async () => {
+    installFakeClock();
+    const response = new Response(null, { status: 503, headers: { "retry-after": "86400" } });
+    vi.spyOn(response, "text").mockRejectedValue(new TypeError("network error"));
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response);
+    const delay = vi.fn<(delayMs: number) => Promise<void>>().mockResolvedValue(undefined);
+    const sender = new Sender({ endpoint: "https://example.test/v2/track", fetch, delay });
+
+    await expect(
+      sender.send({ body: new TextEncoder().encode("telemetry"), contentType: "application/json" }),
+    ).rejects.toThrow("retry-wait budget");
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(delay).not.toHaveBeenCalled();
+  });
+
   it("rechecks an extended throttle deadline before retrying", async () => {
     const fetch = vi
       .fn<typeof globalThis.fetch>()
       .mockResolvedValueOnce(new Response(null, { status: 503 }))
-      .mockResolvedValueOnce(new Response(null, { status: 429, headers: { "retry-after": "120" } }))
+      .mockResolvedValueOnce(new Response(null, { status: 429, headers: { "retry-after": "20" } }))
       .mockResolvedValue(new Response(null, { status: 200 }));
     const releaseDelays: Array<() => void> = [];
     const delay = vi.fn<(delayMs: number) => Promise<void>>(
@@ -845,8 +978,8 @@ describe("Sender", () => {
     releaseDelays[0]();
     await vi.waitFor(() => expect(delay).toHaveBeenCalledTimes(3));
     expect(fetch).toHaveBeenCalledTimes(2);
-    expect(delay.mock.calls[2][0]).toBeGreaterThan(119_000);
-    expect(delay.mock.calls[2][0]).toBeLessThanOrEqual(120_000);
+    expect(delay.mock.calls[2][0]).toBeGreaterThan(19_000);
+    expect(delay.mock.calls[2][0]).toBeLessThanOrEqual(20_000);
 
     releaseDelays[1]();
     releaseDelays[2]();
@@ -856,6 +989,54 @@ describe("Sender", () => {
     ]);
     expect(fetch).toHaveBeenCalledTimes(4);
   });
+
+  it.each(["31", "86400"])(
+    "fails waiting sends when a concurrent response extends the throttle by %s seconds",
+    async (retryAfter) => {
+      const clock = installFakeClock();
+      vi.stubGlobal("CompressionStream", undefined);
+      vi.spyOn(Response.prototype, "text").mockResolvedValue("");
+      let resolveSecondFetch!: (response: Response) => void;
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValueOnce(new Response(null, { status: 503, headers: { "retry-after": "2" } }))
+        .mockImplementationOnce(
+          () => new Promise<Response>((resolve) => (resolveSecondFetch = resolve)),
+        );
+      const sender = new Sender({ endpoint: "https://example.test/v2/track", fetch });
+      const request = {
+        body: new TextEncoder().encode("telemetry"),
+        contentType: "application/json",
+      };
+      const finished = vi.fn();
+      const sends = Promise.allSettled([sender.send(request), sender.send(request)]).then(finished);
+      await clock.advance(0);
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(vi.getTimerCount()).toBe(1);
+
+      resolveSecondFetch(
+        new Response(null, { status: 429, headers: { "retry-after": retryAfter } }),
+      );
+      await clock.advance(2_000);
+      expect(finished).toHaveBeenCalledExactlyOnceWith([
+        {
+          status: "rejected",
+          reason: expect.objectContaining({
+            message: expect.stringContaining("retry-wait budget"),
+          }),
+        },
+        {
+          status: "rejected",
+          reason: expect.objectContaining({
+            message: expect.stringContaining("retry-wait budget"),
+          }),
+        },
+      ]);
+      await sends;
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
 
   it("retries only retriable envelopes from a partial response", async () => {
     const envelopes = [createEnvelope("first"), createEnvelope("second"), createEnvelope("third")];

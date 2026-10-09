@@ -71,6 +71,7 @@ export interface BrowserInstrumentation {
 export interface MicrosoftOpenTelemetryBrowser {
     forceFlush(): Promise<void>;
     shutdown(): Promise<void>;
+    readonly userContext: MicrosoftOpenTelemetryBrowserUserContext;
 }
 
 // @public
@@ -80,11 +81,21 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
     logRecordProcessors?: LogRecordProcessor[];
     pageView?: PageViewInstrumentationConfig;
     resource?: Resource;
-    session?: {
-        enabled?: boolean;
-    };
+    samplingPercentage?: number;
+    session?: MicrosoftOpenTelemetryBrowserSessionOptions;
     spanProcessors?: SpanProcessor[];
     traces?: MicrosoftOpenTelemetryBrowserTraceOptions;
+    userContext?: {
+        enabled?: boolean;
+    };
+}
+
+// @public
+export interface MicrosoftOpenTelemetryBrowserSessionOptions {
+    enabled?: boolean;
+    inactivityTimeout?: number;
+    maxDuration?: number;
+    persist?: boolean;
 }
 
 // @public
@@ -94,12 +105,20 @@ export interface MicrosoftOpenTelemetryBrowserTraceOptions {
 }
 
 // @public
+export interface MicrosoftOpenTelemetryBrowserUserContext {
+    clearAuthenticatedUserContext(): void;
+    setAuthenticatedUserContext(userId: string, accountId?: string): void;
+    setEnabled(enabled: boolean): void;
+}
+
+// @public
 export const OPENTELEMETRY_BROWSER_VERSION: string;
 
 // @public
 export interface PageViewInstrumentationConfig {
     readonly applyCustomLogRecordData?: (logRecord: LogRecord) => void;
     readonly enabled?: boolean;
+    readonly redactedQueryParams?: readonly string[];
     readonly routeResolver?: () => string | undefined;
     readonly sanitizeUrl?: (url: string) => string;
     readonly softNavigationSettleTimeoutMs?: number;

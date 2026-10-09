@@ -1,21 +1,31 @@
 {
   "name": "@microsoft/opentelemetry-browser",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.3",
   "description": "OpenTelemetry distribution for the browser",
   "license": "MIT",
   "type": "module",
+  "main": "./dist/commonjs/index.cjs",
+  "module": "./dist/esm/index.js",
   "types": "./dist/esm/index.d.ts",
   "exports": {
     ".": {
       "import": {
         "types": "./dist/esm/index.d.ts",
         "default": "./dist/esm/index.js"
+      },
+      "require": {
+        "types": "./dist/commonjs/index.d.cts",
+        "default": "./dist/commonjs/index.cjs"
       }
     },
     "./instrumentations": {
       "import": {
         "types": "./dist/esm/instrumentations.d.ts",
         "default": "./dist/esm/instrumentations.js"
+      },
+      "require": {
+        "types": "./dist/commonjs/instrumentations.d.cts",
+        "default": "./dist/commonjs/instrumentations.cjs"
       }
     },
     "./snippet": {
@@ -47,7 +57,7 @@
   },
   "scripts": {
     "clean": "node scripts/clean.mjs",
-    "build": "npm run clean && rollup --config",
+    "build": "npm run clean && rollup --config && node scripts/cdn.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.src.json && tsc --noEmit -p tsconfig.test.json",
     "lint": "eslint . --max-warnings 0",
     "lint:fix": "npm run lint -- --fix",
@@ -57,20 +67,21 @@
     "test": "vitest run",
     "test:unit": "vitest run --config vitest.unit.config.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
-    "test:install-browsers": "playwright install chromium",
+    "test:install-browsers": "playwright install chromium firefox webkit",
     "test:watch": "vitest",
-    "test:coverage": "npm run test:unit -- --coverage",
-    "test:build": "node --test test/build/package.test.mjs test/build/size-harness.test.mjs",
+    "test:coverage": "vitest run --config vitest.config.ts --coverage",
+    "test:build": "node --test test/build/package.test.mjs test/build/size-harness.test.mjs test/build/cdn.test.mjs",
     "test:report": "node --test test/report/coverage.test.mjs && python -m unittest discover -s test/report -p *_test.py",
     "api:check": "api-extractor run && api-extractor run --config api-extractor.instrumentations.json && api-extractor run --config api-extractor.snippet.json",
     "api:update": "npm run build && api-extractor run --local && api-extractor run --local --config api-extractor.instrumentations.json && api-extractor run --local --config api-extractor.snippet.json",
+    "cdn:publish": "node scripts/publish-cdn.mjs",
     "size": "node scripts/measure-bundle-size.mjs",
     "size:compare": "node scripts/compare-bundle-size.mjs",
     "size:report": "npm run size",
     "perf": "node scripts/perf/run.mjs",
     "perf:export": "node scripts/perf/export.mjs",
     "test:perf": "node --test test/perf/*.test.mjs",
-    "check": "npm run format && npm run lint && npm run typecheck && npm run test:report && npm run test:perf && npm run test:coverage && npm run build && npm run test:build && npm run test:integration && npm run api:check && npm run size",
+    "check": "npm run format && npm run lint && npm run typecheck && npm run test:report && npm run test:perf && npm run test:unit && npm run test:coverage && npm run build && npm run test:build && npm run test:integration && npm run api:check && npm run size",
     "prepack": "npm run build"
   },
   "dependencies": {
@@ -83,6 +94,7 @@
     "@opentelemetry/instrumentation": "0.222.0",
     "@opentelemetry/resources": "2.11.0",
     "@opentelemetry/sdk-logs": "0.222.0",
+    "@opentelemetry/sdk-trace": "2.11.0",
     "@opentelemetry/sdk-trace-base": "2.11.0",
     "@opentelemetry/sdk-trace-web": "2.11.0",
     "@opentelemetry/semantic-conventions": "1.43.0"
@@ -101,6 +113,7 @@
     "@types/node": "^22.20.2",
     "@vitest/browser-playwright": "5.0.0",
     "@vitest/coverage-v8": "5.0.0",
+    "acorn": "^8.18.0",
     "eslint": "^10.10.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-security": "4.0.1",

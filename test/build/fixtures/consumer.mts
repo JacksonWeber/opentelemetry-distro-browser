@@ -4,6 +4,7 @@ import {
   type BrowserInstrumentation,
   type MicrosoftOpenTelemetryBrowser,
   type MicrosoftOpenTelemetryBrowserOptions,
+  type MicrosoftOpenTelemetryBrowserSessionOptions,
 } from "@microsoft/opentelemetry-browser";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
@@ -12,6 +13,12 @@ import { resourceFromAttributes } from "@opentelemetry/resources";
 import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
 
 export const version: string = OPENTELEMETRY_BROWSER_VERSION;
+export const session: MicrosoftOpenTelemetryBrowserSessionOptions = {
+  enabled: true,
+  persist: false,
+  inactivityTimeout: 1800,
+  maxDuration: 86400,
+};
 const headers = { "x-tenant": "consumer" };
 export const instrumentation: BrowserInstrumentation = {
   setTracerProvider(provider) {
@@ -27,7 +34,8 @@ export const instrumentation: BrowserInstrumentation = {
   disable() {},
 };
 export const options: MicrosoftOpenTelemetryBrowserOptions = {
-  session: { enabled: true },
+  samplingPercentage: 25,
+  session,
   instrumentations: Object.freeze([instrumentation]),
   resource: resourceFromAttributes({
     "service.name": "consumer",
@@ -61,8 +69,11 @@ useMicrosoftOpenTelemetry({ serviceName: "consumer" });
 // @ts-expect-error Upstream SDK controls are not exposed by the distro.
 useMicrosoftOpenTelemetry({ disabled: true });
 useMicrosoftOpenTelemetry({ session: { enabled: false } });
-// @ts-expect-error Session timeouts remain internal fixed defaults.
-useMicrosoftOpenTelemetry({ session: { inactivityTimeout: 60 } });
+useMicrosoftOpenTelemetry({ session: { enabled: true, inactivityTimeout: 60 } });
+// @ts-expect-error Session timeouts use seconds as numbers.
+useMicrosoftOpenTelemetry({ session: { maxDuration: "86400" } });
+// @ts-expect-error Persistence consent is a boolean.
+useMicrosoftOpenTelemetry({ session: { persist: "false" } });
 // @ts-expect-error Configure exporters through standard processors, not distro-specific options.
 useMicrosoftOpenTelemetry({ otlp: { endpoint: "https://example.test" } });
 // @ts-expect-error Configure exporters through standard processors, not upstream exportConfig.

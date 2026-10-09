@@ -2,9 +2,12 @@
 // Licensed under the MIT License.
 
 import { SpanKind, SpanStatusCode } from "@opentelemetry/api";
+import { resourceFromAttributes } from "@opentelemetry/resources";
+import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
 import { describe, expect, it } from "vitest";
 import { spanToEnvelope } from "../../../src/exporter/spanUtils.js";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../../src/shared/constants.js";
+import { AZURE_MONITOR_SAMPLE_RATE } from "../../../src/sampling.js";
 import { TEST_INSTRUMENTATION_KEY as instrumentationKey } from "../../fixtures/azureMonitor.js";
 import { createReadableSpan as makeSpan, createSpanContext } from "../../fixtures/telemetry.js";
 
@@ -12,6 +15,32 @@ const spanContext = createSpanContext();
 const parentSpanContext = { ...spanContext, spanId: "0000000000000002" };
 
 describe("Azure Monitor span envelope mapping", () => {
+  it.each([SpanKind.CLIENT, SpanKind.SERVER, SpanKind.CONSUMER, SpanKind.INTERNAL])(
+    "promotes standard session IDs to tags without changing the source span (kind=%i)",
+    (kind) => {
+      const span = makeSpan({ kind, attributes: { "session.id": "session-1", custom: "value" } });
+      const envelope = spanToEnvelope(span, instrumentationKey);
+      expect(envelope.tags["ai.session.id"]).toBe("session-1");
+      expect(envelope.tags).not.toHaveProperty("ai.session.isFirst");
+      expect(envelope.data.baseData.properties).toEqual({ custom: "value" });
+      expect(span.attributes["session.id"]).toBe("session-1");
+    },
+  );
+
+  it.each([undefined, "", 0, false, ["session-1"]])(
+    "does not create session tags for absent or invalid IDs (%j)",
+    (id) => {
+      const envelope = spanToEnvelope(
+        makeSpan({ attributes: { "session.id": id } }),
+        instrumentationKey,
+      );
+      expect(envelope.tags).not.toHaveProperty("ai.session.id");
+      if (id === 0) expect(envelope.data.baseData.measurements?.["session.id"]).toBe(0);
+      else if (id !== undefined)
+        expect(envelope.data.baseData.properties?.["session.id"]).toBeDefined();
+    },
+  );
+
   it("maps an HTTP client span to RemoteDependencyData", () => {
     const envelope = spanToEnvelope(
       makeSpan({
@@ -59,6 +88,99 @@ describe("Azure Monitor span envelope mapping", () => {
           measurements: { retries: 2 },
         },
       },
+    });
+  });
+
+  it.each(["user.id", "enduser.id"])(
+    "maps %s to authenticated user context and promotes user tags",
+    (attribute) => {
+      const envelope = spanToEnvelope(
+        makeSpan({
+          attributes: {
+            [attribute]: "signed-in-user",
+            "enduser.pseudo.id": "anonymous-user",
+            "user.account.id": "tenant-42",
+          },
+        }),
+        instrumentationKey,
+      );
+
+      expect(envelope.tags).toMatchObject({
+        "ai.user.id": "anonymous-user",
+        "ai.user.authUserId": "signed-in-user",
+        "ai.user.accountId": "tenant-42",
+      });
+      expect(envelope.data.baseData.properties).toBeUndefined();
+    },
+  );
+
+  it("prefers application enduser.id over managed user.id", () => {
+    const envelope = spanToEnvelope(
+      makeSpan({
+        attributes: {
+          "user.id": "managed-user",
+          "enduser.id": "application-user",
+        },
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.tags["ai.user.authUserId"]).toBe("application-user");
+    expect(envelope.data.baseData.properties).toBeUndefined();
+  });
+
+  it("uses the same authenticated user precedence for resource attributes", () => {
+    const envelope = spanToEnvelope(
+      makeSpan({
+        resource: resourceFromAttributes({
+          "user.id": "managed-user",
+          "enduser.id": "application-user",
+        }),
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.tags["ai.user.authUserId"]).toBe("application-user");
+  });
+
+  it("omits invalid user tag values", () => {
+    const envelope = spanToEnvelope(
+      makeSpan({
+        attributes: {
+          "enduser.pseudo.id": "",
+          "user.id": null,
+          "user.account.id": 42,
+        } as unknown as ReadableSpan["attributes"],
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.tags).not.toHaveProperty("ai.user.id");
+    expect(envelope.tags).not.toHaveProperty("ai.user.authUserId");
+    expect(envelope.tags).not.toHaveProperty("ai.user.accountId");
+  });
+
+  it("falls back to valid resource user context when signal values are invalid", () => {
+    const envelope = spanToEnvelope(
+      makeSpan({
+        attributes: {
+          "enduser.pseudo.id": "",
+          "enduser.id": null,
+          "user.account.id": 42,
+        } as unknown as ReadableSpan["attributes"],
+        resource: resourceFromAttributes({
+          "enduser.pseudo.id": "resource-anonymous",
+          "enduser.id": "resource-user",
+          "user.account.id": "resource-account",
+        }),
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.tags).toMatchObject({
+      "ai.user.id": "resource-anonymous",
+      "ai.user.authUserId": "resource-user",
+      "ai.user.accountId": "resource-account",
     });
   });
 
@@ -110,4 +232,23 @@ describe("Azure Monitor span envelope mapping", () => {
 
     expect(envelope.data.baseData.duration).toBe("1.01:01:01.0010000");
   });
+
+  it("maps the reserved sample rate without exporting it as a custom measurement", () => {
+    const envelope = spanToEnvelope(
+      makeSpan({ attributes: { [AZURE_MONITOR_SAMPLE_RATE]: 25 } }),
+      instrumentationKey,
+    );
+
+    expect(envelope.sampleRate).toBe(25);
+    expect(envelope.data.baseData.measurements).toBeUndefined();
+  });
+
+  it.each([undefined, 0])(
+    "defaults standalone span conversion with sample rate %s to full sampling",
+    (sampleRate) => {
+      const attributes =
+        sampleRate === undefined ? {} : { [AZURE_MONITOR_SAMPLE_RATE]: sampleRate };
+      expect(spanToEnvelope(makeSpan({ attributes }), instrumentationKey).sampleRate).toBe(100);
+    },
+  );
 });

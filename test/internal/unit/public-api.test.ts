@@ -6,6 +6,7 @@ import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import type { Resource } from "@opentelemetry/resources";
 import type { SpanProcessor } from "@opentelemetry/sdk-trace-base";
 import type { Instrumentation } from "@opentelemetry/instrumentation";
+import type { SessionManagerConfig } from "@opentelemetry/browser-sdk/session";
 import { expectTypeOf, it } from "vitest";
 import {
   AzureMonitorLogRecordExporter,
@@ -15,7 +16,9 @@ import {
   type BrowserInstrumentation,
   type MicrosoftOpenTelemetryBrowser,
   type MicrosoftOpenTelemetryBrowserOptions,
+  type MicrosoftOpenTelemetryBrowserSessionOptions,
   type MicrosoftOpenTelemetryBrowserTraceOptions,
+  type MicrosoftOpenTelemetryBrowserUserContext,
   type PageViewInstrumentationConfig,
 } from "../../../src/index.js";
 
@@ -28,12 +31,14 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
   >();
   expectTypeOf<keyof MicrosoftOpenTelemetryBrowserOptions>().toEqualTypeOf<
     | "resource"
+    | "samplingPercentage"
     | "azureMonitor"
     | "spanProcessors"
     | "logRecordProcessors"
     | "instrumentations"
     | "pageView"
     | "session"
+    | "userContext"
     | "traces"
   >();
   expectTypeOf<MicrosoftOpenTelemetryBrowserOptions["resource"]>().toEqualTypeOf<
@@ -49,8 +54,17 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
     readonly TextMapPropagator[] | undefined
   >();
   expectTypeOf<MicrosoftOpenTelemetryBrowserOptions["session"]>().toEqualTypeOf<
+    MicrosoftOpenTelemetryBrowserSessionOptions | undefined
+  >();
+  expectTypeOf<MicrosoftOpenTelemetryBrowserOptions["userContext"]>().toEqualTypeOf<
     { enabled?: boolean } | undefined
   >();
+  expectTypeOf<keyof MicrosoftOpenTelemetryBrowserSessionOptions>().toEqualTypeOf<
+    "enabled" | "persist" | "inactivityTimeout" | "maxDuration"
+  >();
+  expectTypeOf<
+    Pick<MicrosoftOpenTelemetryBrowserSessionOptions, "inactivityTimeout" | "maxDuration">
+  >().toEqualTypeOf<Pick<SessionManagerConfig, "inactivityTimeout" | "maxDuration">>();
   expectTypeOf<MicrosoftOpenTelemetryBrowserOptions["azureMonitor"]>().toEqualTypeOf<
     AzureMonitorOptions | undefined
   >();
@@ -75,4 +89,7 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
   >();
   expectTypeOf<Instrumentation>().toExtend<BrowserInstrumentation>();
   expectTypeOf<MicrosoftOpenTelemetryBrowser["forceFlush"]>().toEqualTypeOf<() => Promise<void>>();
+  expectTypeOf<
+    MicrosoftOpenTelemetryBrowser["userContext"]
+  >().toEqualTypeOf<MicrosoftOpenTelemetryBrowserUserContext>();
 });

@@ -3,8 +3,16 @@
 
 import type { Attributes, HrTime, SpanContext } from "@opentelemetry/api";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../shared/constants.js";
-import { syntheticPageContexts } from "../shared/pageOperationContext.js";
+import { isNonEmptyString, selectNonEmptyString } from "../shared/isNonEmptyString.js";
+import { isPageContext } from "../shared/pageOperationContext.js";
 import type { AzureMonitorBaseData, AzureMonitorEnvelope } from "./telemetryModels.js";
+import {
+  ATTR_ENDUSER_ID,
+  ATTR_ENDUSER_PSEUDO_ID,
+  ATTR_USER_ACCOUNT_ID,
+  ATTR_USER_ID,
+} from "../user/constants.js";
+import { AZURE_MONITOR_SAMPLE_RATE } from "../sampling.js";
 
 let unloadingCount = 0;
 
@@ -68,7 +76,11 @@ export function mapAttributes(
   const measurements: Record<string, number> = {};
 
   for (const [key, value] of Object.entries(attributes)) {
-    if (value === undefined || promotedAttributes.has(key)) {
+    if (
+      value === undefined ||
+      promotedAttributes.has(key) ||
+      (key === "session.id" && isNonEmptyString(value))
+    ) {
       continue;
     }
     if (typeof value === "number" && Number.isFinite(value)) {
@@ -88,15 +100,41 @@ export function createTags(
   traceId: string | undefined,
   parentContext: SpanContext | undefined,
   serviceName: unknown,
+  attributes: Attributes,
+  resourceAttributes: Attributes,
 ): Record<string, string> {
   const tags: Record<string, string> = {
     "ai.internal.sdkVersion": `mot${OPENTELEMETRY_BROWSER_VERSION}`,
   };
   if (traceId) tags["ai.operation.id"] = traceId;
-  if (parentContext?.spanId && !syntheticPageContexts.has(parentContext)) {
+  if (parentContext?.spanId && !isPageContext(parentContext)) {
     tags["ai.operation.parentId"] = parentContext.spanId;
   }
   if (serviceName) tags["ai.cloud.role"] = serializeAttribute(serviceName);
+  const anonymousUserId = selectNonEmptyString(
+    attributes[ATTR_ENDUSER_PSEUDO_ID],
+    resourceAttributes[ATTR_ENDUSER_PSEUDO_ID],
+  );
+  const authenticatedUserId = selectNonEmptyString(
+    selectNonEmptyString(attributes[ATTR_ENDUSER_ID], attributes[ATTR_USER_ID]),
+    selectNonEmptyString(resourceAttributes[ATTR_ENDUSER_ID], resourceAttributes[ATTR_USER_ID]),
+  );
+  const accountId = selectNonEmptyString(
+    attributes[ATTR_USER_ACCOUNT_ID],
+    resourceAttributes[ATTR_USER_ACCOUNT_ID],
+  );
+  if (isNonEmptyString(anonymousUserId)) {
+    tags["ai.user.id"] = anonymousUserId;
+  }
+  if (isNonEmptyString(authenticatedUserId)) {
+    tags["ai.user.authUserId"] = authenticatedUserId;
+  }
+  if (isNonEmptyString(accountId)) {
+    tags["ai.user.accountId"] = accountId;
+  }
+  if (isNonEmptyString(attributes["session.id"])) {
+    tags["ai.session.id"] = attributes["session.id"];
+  }
   return tags;
 }
 
@@ -107,14 +145,25 @@ export function createEnvelope<T extends AzureMonitorBaseData>(
   tags: Readonly<Record<string, string>>,
   baseType: AzureMonitorEnvelope["data"]["baseType"],
   baseData: T,
+  sampleRate = 100,
 ): AzureMonitorEnvelope<T> {
   return {
     name,
     time,
     iKey: instrumentationKey,
-    sampleRate: 100,
+    sampleRate,
     tags,
     ver: 1,
     data: { baseType, baseData },
   };
+}
+
+export function getSampleRate(attributes: Attributes): number {
+  const sampleRate = attributes[AZURE_MONITOR_SAMPLE_RATE];
+  return typeof sampleRate === "number" &&
+    Number.isFinite(sampleRate) &&
+    sampleRate > 0 &&
+    sampleRate <= 100
+    ? sampleRate
+    : 100;
 }

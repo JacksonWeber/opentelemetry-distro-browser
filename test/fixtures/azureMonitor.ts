@@ -108,6 +108,21 @@ export function assertAzureMonitorEnvelope(value: unknown): asserts value is Azu
       assertOptionalStrings(baseData, ["url", "referredUri"]);
       if (baseData.duration !== undefined) assertDuration(baseData.duration);
       break;
+    case "PageviewPerformanceData":
+      suffix = "PageviewPerformance";
+      expect(baseData.name).toEqual(expect.any(String));
+      assertOptionalStrings(baseData, ["url"]);
+      for (const duration of [
+        "duration",
+        "perfTotal",
+        "networkConnect",
+        "sentRequest",
+        "receivedResponse",
+        "domProcessing",
+      ]) {
+        assertDuration(baseData[duration]);
+      }
+      break;
     case "EventData":
       suffix = "Event";
       expect(baseData.name).toEqual(expect.any(String));
@@ -166,9 +181,14 @@ export function createMockIngestionEndpoint(options: MockIngestionOptions = {}) 
       encoding === null || (encoding === "gzip" && transport === "fetch"),
       "Unsupported ingestion content-encoding",
     );
+    // Buffer before decompressing: Firefox yields an empty result when piping `Request.body`.
     const text =
       encoding === "gzip"
-        ? await new Response(request.body?.pipeThrough(new DecompressionStream("gzip"))).text()
+        ? await new Response(
+            new Blob([await request.arrayBuffer()])
+              .stream()
+              .pipeThrough(new DecompressionStream("gzip")),
+          ).text()
         : await request.text();
     const parsed: unknown = JSON.parse(text);
     const envelopes: unknown[] = Array.isArray(parsed) ? parsed : [parsed];

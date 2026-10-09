@@ -5,6 +5,7 @@ import {
   ROOT_CONTEXT,
   context,
   trace,
+  TraceFlags,
   isSpanContextValid,
   isValidTraceId,
   type Context,
@@ -14,8 +15,9 @@ import { type LogRecord } from "@opentelemetry/api-logs";
 import { RandomIdGenerator } from "@opentelemetry/sdk-trace-base";
 import { InstrumentationBase, safeExecuteInTheMiddle } from "@opentelemetry/instrumentation";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../shared/constants.js";
-import { syntheticPageContexts } from "../../shared/pageOperationContext.js";
+import { markPageContext } from "../../shared/pageOperationContext.js";
 import { createPageViewContext, generatePageViewId } from "./pageViewContext.js";
+import { redactUrl } from "./urlRedaction.js";
 import {
   ATTR_PAGE_VIEW_DURATION,
   ATTR_PAGE_VIEW_DURATION_SOURCE,
@@ -23,6 +25,11 @@ import {
   ATTR_PAGE_VIEW_INDEX,
   ATTR_PAGE_VIEW_NAME,
   ATTR_PAGE_VIEW_NAME_SOURCE,
+  ATTR_PAGE_VIEW_PERF_DOM_PROCESSING,
+  ATTR_PAGE_VIEW_PERF_NETWORK_CONNECT,
+  ATTR_PAGE_VIEW_PERF_RECEIVED_RESPONSE,
+  ATTR_PAGE_VIEW_PERF_SENT_REQUEST,
+  ATTR_PAGE_VIEW_PERF_TOTAL,
   ATTR_PAGE_VIEW_REFERRER,
   ATTR_PAGE_VIEW_SAME_DOCUMENT,
   ATTR_PAGE_VIEW_TYPE,
@@ -88,6 +95,8 @@ interface PendingPageView {
   readonly startedAt: number;
   capTimerId?: number;
   taskTimerId?: number;
+  frameId?: number;
+  idleId?: number;
 }
 
 /**
@@ -173,6 +182,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
   public constructor(
     config: InternalPageViewInstrumentationConfig = {},
     private initialContext?: Context,
+    private readonly isTraceSampled: (traceId: string) => boolean = () => true,
   ) {
     // `InstrumentationBase` calls `enable()` from its own constructor, which runs before this
     // subclass's field initializers. That would observe an undefined page-view context, and the
@@ -221,13 +231,19 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
 
   private currentOperation(): SpanContext {
     const url = this.getNavigationApi()?.currentEntry?.url ?? location.href;
-    if (!this.operation || this.operationUrl !== url) {
+    const shared = this.getConfig().sharedOperation?.();
+    if (shared) {
+      // Kept for this URL, so the page view in flight keeps its ID after the source shuts down.
+      this.operation = shared;
+      this.operationUrl = url;
+    } else if (!this.operation || this.operationUrl !== url) {
+      const traceId = this.mintId(this.getConfig().generatePageViewId);
       this.operation = {
-        traceId: this.mintId(this.getConfig().generatePageViewId),
+        traceId,
         spanId: new RandomIdGenerator().generateSpanId(),
-        traceFlags: 1,
+        traceFlags: this.isTraceSampled(traceId) ? TraceFlags.SAMPLED : TraceFlags.NONE,
       };
-      syntheticPageContexts.add(this.operation);
+      markPageContext(this.operation);
       this.operationUrl = url;
     }
     return this.operation;
@@ -434,10 +450,47 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     }
     const timing = this.getNavigationTiming();
     if (timing && timing.loadEventEnd > 0) {
-      this.emit(target, timing.loadEventEnd - timing.startTime, DURATION_SOURCE_NAVIGATION_TIMING);
+      this.emit(
+        target,
+        timing.loadEventEnd - timing.startTime,
+        DURATION_SOURCE_NAVIGATION_TIMING,
+        this.getNavigationPerformanceAttributes(timing) ?? {},
+      );
       return;
     }
     this.emit(target, performance.now() - target.startedAt, DURATION_SOURCE_DOCUMENT_LOAD);
+  }
+
+  private getNavigationPerformanceAttributes(
+    timing: PerformanceNavigationTiming,
+  ): Record<string, number> | undefined {
+    const boundaries = [
+      timing.startTime,
+      timing.connectEnd,
+      timing.requestStart,
+      timing.responseStart,
+      timing.responseEnd,
+      timing.loadEventEnd,
+    ];
+    if (
+      !boundaries.every(Number.isFinite) ||
+      boundaries.some((boundary, index) => {
+        const previousBoundary = boundaries[index - 1];
+        return previousBoundary !== undefined && boundary < previousBoundary;
+      })
+    ) {
+      return undefined;
+    }
+    return {
+      [ATTR_PAGE_VIEW_PERF_TOTAL]: Math.max(0, timing.loadEventEnd - timing.startTime),
+      [ATTR_PAGE_VIEW_PERF_NETWORK_CONNECT]: Math.max(0, timing.connectEnd - timing.startTime),
+      [ATTR_PAGE_VIEW_PERF_SENT_REQUEST]: Math.max(0, timing.responseStart - timing.requestStart),
+      [ATTR_PAGE_VIEW_PERF_RECEIVED_RESPONSE]: Math.max(
+        0,
+        timing.responseEnd - timing.responseStart,
+      ),
+      [ATTR_PAGE_VIEW_PERF_DOM_PROCESSING]: Math.max(0, timing.loadEventEnd - timing.responseEnd),
+    };
   }
 
   private getNavigationTiming(): PerformanceNavigationTiming | undefined {
@@ -621,25 +674,30 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       }
       this.whenIdle(() => {
         this.emit(pending, performance.now() - pending.startedAt, settledSource);
-      });
+      }, pending);
     };
 
     if (typeof requestAnimationFrame === "function") {
-      requestAnimationFrame(() => {
-        requestAnimationFrame(afterPaint);
+      pending.frameId = requestAnimationFrame(() => {
+        if (this.pending !== pending) return;
+        pending.frameId = requestAnimationFrame(() => {
+          pending.frameId = undefined;
+          afterPaint();
+        });
       });
     } else {
       this.scheduleMacrotask(afterPaint);
     }
   }
 
-  private whenIdle(callback: () => void): void {
+  private whenIdle(callback: () => void, pending: PendingPageView): void {
     const requestIdle = (globalThis as { requestIdleCallback?: RequestIdleCallbackLike })
       .requestIdleCallback;
-    if (typeof requestIdle === "function") {
-      requestIdle(
+    if (typeof requestIdle === "function" && typeof cancelIdleCallback === "function") {
+      pending.idleId = requestIdle(
         () => {
-          callback();
+          pending.idleId = undefined;
+          if (this.pending === pending) callback();
         },
         { timeout: IDLE_TIMEOUT_MS },
       );
@@ -690,7 +748,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
   }
 
   /**
-   * Applies the `sanitizeUrl` hook.
+   * Applies built-in security redaction followed by the `sanitizeUrl` hook.
    *
    * @remarks
    * Returns an empty string when the hook fails or returns a non-string, and the caller then omits
@@ -702,14 +760,14 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
    */
   private sanitize(url: string): string {
     const sanitize = this.getConfig().sanitizeUrl;
-    if (!sanitize) {
-      return url;
-    }
     const result = safeExecuteInTheMiddle(
-      () => sanitize(url),
+      () => {
+        const redacted = redactUrl(url, this.getConfig().redactedQueryParams);
+        return sanitize ? sanitize(redacted) : redacted;
+      },
       (error) => {
         if (error) {
-          this._diag.error("sanitizeUrl hook failed; dropping the URL", error);
+          this._diag.error("URL sanitization failed; dropping the URL", error);
         }
       },
       true,
@@ -848,6 +906,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     pending: PendingPageView,
     durationMs: number,
     durationSource: PageViewDurationSource,
+    additionalAttributes: Readonly<Record<string, number>> = {},
   ): void {
     if (this.pending !== pending) {
       return;
@@ -880,6 +939,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
         [ATTR_PAGE_VIEW_TYPE]: pageView.navigationType,
         [ATTR_PAGE_VIEW_SAME_DOCUMENT]: pageView.sameDocument,
         ...(pageView.referrer ? { [ATTR_PAGE_VIEW_REFERRER]: pageView.referrer } : {}),
+        ...additionalAttributes,
       },
     };
 
@@ -921,6 +981,8 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       clearTimeout(pending.capTimerId);
     }
     if (pending.taskTimerId !== undefined) clearTimeout(pending.taskTimerId);
+    if (pending.frameId !== undefined) cancelAnimationFrame(pending.frameId);
+    if (pending.idleId !== undefined) cancelIdleCallback(pending.idleId);
     this.pending = undefined;
   }
 }

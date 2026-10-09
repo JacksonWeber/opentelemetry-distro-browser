@@ -12,7 +12,7 @@ export interface SdkLoaderConfig {
     readonly connectionString: string;
     readonly crossOrigin?: string;
     readonly integrity?: string;
-    readonly src: string;
+    readonly src?: string;
 }
 
 // (No @packageDocumentation comment for this package)

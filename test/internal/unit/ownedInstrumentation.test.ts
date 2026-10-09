@@ -18,6 +18,7 @@ import {
 } from "../../../src/instrumentation/pageView/semconv.js";
 import { isUnloading } from "../../../src/exporter/common.js";
 import type { MicrosoftOpenTelemetryBrowser } from "../../../src/types.js";
+import { BROWSER_ASYNC_TIMEOUT_MS } from "../../fixtures/timeouts.js";
 
 /** Captures every log record the distribution emits through the real pipeline. */
 class RecordingProcessor implements LogRecordProcessor {
@@ -122,9 +123,9 @@ describe("distribution-owned instrumentation", () => {
 
     await settle();
     history.pushState(null, "", "/settings-driven");
-    await settle();
-
-    expect(pageViewCount(processor)).toBe(2);
+    await vi.waitFor(() => expect(pageViewCount(processor)).toBe(2), {
+      timeout: BROWSER_ASYNC_TIMEOUT_MS,
+    });
   });
 
   it("honours page-view configuration supplied as settings", async () => {

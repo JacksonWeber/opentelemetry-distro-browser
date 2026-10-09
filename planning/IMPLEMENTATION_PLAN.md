@@ -2,7 +2,7 @@
 
 **Status:** Active
 **Approach:** Greenfield browser distribution built on upstream OpenTelemetry APIs
-**Shipped:** Milestone M0, published as `@microsoft/opentelemetry-browser@0.1.0-alpha.1`
+**Shipped:** Milestone M0, published as `@microsoft/opentelemetry-browser@0.1.0-alpha.2`
 **Prior evidence:** Multi-instance browser PoC in [`../poc/`](../poc/)
 **Upstream alignment verified:** 2026-09-10 against
 [`open-telemetry/opentelemetry-browser`](https://github.com/open-telemetry/opentelemetry-browser)
@@ -17,7 +17,7 @@ This document holds the *why*. Everything else has its own document.
 | [`M0_PLANNING.md`](M0_PLANNING.md) | The shipped alpha: what landed, what remains, and the M0 decisions |
 | [`M1_PLANNING.md`](M1_PLANNING.md) | Customer-visible browser telemetry, reliability, privacy, multi-instance isolation and browser support |
 | [`M2_PLANNING.md`](M2_PLANNING.md) | Supported browser bundle, CDN publishing and initialization snippet |
-| [`M3_PLANNING.md`](M3_PLANNING.md) | Advanced configuration, optional integrations, and loader and delivery parity |
+| [`M3_PLANNING.md`](M3_PLANNING.md) | Advanced configuration, optional integrations, loader and delivery parity, and remaining Application Insights JavaScript feature gaps |
 | [`../poc/SIZE_REPORT.md`](../poc/SIZE_REPORT.md) | Generated bundle size measurements |
 
 ## 1. Goal
@@ -121,7 +121,7 @@ release, and it has shipped.
 **Initial release.** A global multi-instance routing layer over
 `@opentelemetry/api`, with isolated per-instance tracing **and logging**
 pipelines behind the existing `useMicrosoftOpenTelemetry(options)` initializer
-and lifecycle-only `forceFlush()`/`shutdown()` handle. Manual tracing through the
+and `forceFlush()`/`shutdown()` lifecycle handle (plus M1 `userContext` controls). Manual tracing through the
 OTel API and manual events through the Logs API with a top-level `eventName`.
 Routed event-based instrumentation covering the upstream occurrence set, plus
 span-based fetch/XHR with W3C Trace Context and Baggage propagation. Supported

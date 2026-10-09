@@ -21,7 +21,7 @@ This package is the browser sibling of the Microsoft OpenTelemetry distributions
 
 ### Prerequisites
 
-- A modern browser with ES modules. See [Supported environments](#supported-environments).
+- A current supported browser. See [Browser support](#browser-support).
 - An [Application Insights resource](https://learn.microsoft.com/azure/azure-monitor/app/app-insights-overview)
   (optional, for Azure Monitor), or any OTLP-compatible endpoint.
 
@@ -65,7 +65,8 @@ await import("./app.js");
 collection is enabled by default. `getInstrumentations()` loads fetch and XHR instrumentation by
 default; its other instrumentations are opt-in.
 
-See the runnable [Azure Monitor, console, and OTLP samples](samples/) for complete applications.
+See the runnable [Azure Monitor, console, OTLP, and telemetry viewer samples](samples/) for
+complete applications.
 
 ### Manual telemetry
 
@@ -198,28 +199,63 @@ await useMicrosoftOpenTelemetry({
 
 ## Bundle size
 
-The production bundle is built and measured in CI. For `0.1.0-alpha.1`:
+The production bundle is built and measured in CI. For `0.1.0-alpha.3`:
 
-| Artifact                   | Size     |
-| -------------------------- | -------: |
-| Minified ESM               | 99.57 kB |
-| Minified ESM + gzip        | 28.94 kB |
-| Minified ESM + Brotli      | 25.55 kB |
+| Artifact                   | Size      |
+| -------------------------- | --------: |
+| Minified ESM               | 129.27 kB |
+| Minified ESM + gzip        |  39.40 kB |
+| Minified ESM + Brotli      |  33.96 kB |
 
 Run `npm run build && npm run size` to reproduce these measurements. Optional browser
 instrumentations are loaded through dynamic imports and remain outside the root bundle unless used.
 
-## Supported environments
+## Package formats
 
-| Environment                                      | Support                                      |
-| ------------------------------------------------ | -------------------------------------------- |
-| Current Chrome, Edge, Firefox, and Safari         | Supported                                    |
-| ES modules and modern browser APIs                | Required                                     |
-| CommonJS-only applications                        | Not supported                                |
-| Legacy browsers requiring ES5                     | Not supported                                |
+Choose the format that matches how the application loads JavaScript:
 
-The package is ESM-only and publishes an `exports` map. Server-rendered builds can import the
-package, but browser telemetry should be initialized in client-side code.
+| Application setup | Use |
+| --- | --- |
+| ESM bundler | `import` from `@microsoft/opentelemetry-browser` |
+| CommonJS bundler | `require("@microsoft/opentelemetry-browser")` |
+| AMD or RequireJS | `dist/browser/opentelemetry-browser.umd.min.js` |
+| Direct `<script>` loading | `dist/browser/opentelemetry-browser.iife.min.js` |
+
+The IIFE bundle exposes `Microsoft.OpenTelemetry`. Use it instead of UMD when RequireJS might already
+be present but the SDK should load as a global. Optional instrumentations have matching
+`opentelemetry-browser-instrumentations.{umd,iife}.js` bundles, each with a `.min.js` variant, that
+expose `Microsoft.OpenTelemetryInstrumentations`.
+
+```html
+<script src="/vendor/opentelemetry-browser.iife.min.js"></script>
+<script>
+  Microsoft.OpenTelemetry.useMicrosoftOpenTelemetry({
+    azureMonitor: { connectionString: "InstrumentationKey=...;IngestionEndpoint=..." },
+  });
+</script>
+```
+
+All browser bundles include source maps. The global SDK bundle also exposes the standard
+OpenTelemetry APIs used by the distribution, including `trace` and `logs`.
+
+## Browser support
+
+Like the Application Insights JavaScript SDK, support tracks the latest stable releases of the
+major browser families:
+
+| Chrome   | Firefox  | Edge     | Opera    | Safari   |
+| -------- | -------- | -------- | -------- | -------- |
+| Latest ✔ | Latest ✔ | Latest ✔ | Latest ✔ | Latest ✔ |
+
+Internet Explorer and other browsers requiring ES5 are not supported. The ESM and CommonJS npm
+entries require a browser bundler; UMD and IIFE artifacts support classic script loading.
+
+CI runs the complete unit and emitted-bundle integration suites in current Playwright Chromium,
+Firefox, and WebKit. Chromium provides engine coverage for Chrome, Edge, and Opera; WebKit provides
+engine coverage for Safari.
+
+The package publishes ESM and CommonJS entries through its `exports` map. Server-rendered builds can
+import the package, but browser telemetry should be initialized in client-side code.
 
 ## Contributing
 

@@ -19,6 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     if: >-
       github.event_name == 'pull_request' &&
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
       !contains(github.event.pull_request.labels.*.name, 'skip-changelog')
 
     steps:
@@ -75,7 +76,7 @@ jobs:
   tests:
     name: Browser tests, API, and bundles (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -93,10 +94,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Install Chromium and system dependencies
+      - name: Install Chromium, Firefox, WebKit, and system dependencies
         run: npm run test:install-browsers -- --with-deps
 
-      - name: Run Vitest unit tests in Chromium with coverage
+      - name: Run Vitest unit tests across browser engines
+        run: npm run test:unit
+
+      - name: Collect unit test coverage in Chromium
         run: npm run test:coverage
 
       - name: Upload coverage reports
@@ -121,7 +125,7 @@ jobs:
       - name: Verify package outputs
         run: npm run test:build
 
-      - name: Run browser bundle integration tests in Chromium
+      - name: Run browser bundle integration tests across browser engines
         run: npm run test:integration
 
       - name: Check public API report
@@ -194,7 +198,7 @@ jobs:
         run: npm ci
 
       - name: Install Chromium and system dependencies
-        run: npm run test:install-browsers -- --with-deps
+        run: npx playwright install chromium --with-deps
 
       - name: Run baseline coverage
         # The base revision may not yet configure the JSON summary reporter.

@@ -7,39 +7,63 @@ import {
   createSessionManager,
 } from "@opentelemetry/browser-sdk/session";
 import type { Session, SessionStore } from "@opentelemetry/browser-sdk/session";
+import {
+  createLocalStorageKeyValueStorage,
+  type KeyValueStorage,
+} from "../storage/keyValueStorage.js";
+import type { MicrosoftOpenTelemetryBrowserSessionOptions } from "../types.js";
 
 const storageKey = "opentelemetry-session";
-const inactivityTimeoutSeconds = 30 * 60;
 
-function createDefaultStore() {
-  let unavailable = false;
+function lifetimeSeconds(value: number | undefined, fallback: number, name: string): number {
+  if (value === undefined) return fallback;
+  if (!Number.isFinite(value) || value < 0) {
+    throw new RangeError(`session.${name} must be a finite, nonnegative number of seconds.`);
+  }
+  return value;
+}
+
+export function createSession(
+  options: MicrosoftOpenTelemetryBrowserSessionOptions,
+  storage: KeyValueStorage = createLocalStorageKeyValueStorage(
+    "Session storage unavailable; using an in-memory session.",
+  ),
+) {
+  const inactivityTimeout = lifetimeSeconds(
+    options.inactivityTimeout,
+    30 * 60,
+    "inactivityTimeout",
+  );
+  const maxDuration = lifetimeSeconds(options.maxDuration, 0, "maxDuration");
+  const persist = options.persist === undefined ? true : options.persist;
+  if (typeof persist !== "boolean") throw new TypeError("session.persist must be a boolean.");
   let lastActivityTimestamp = Date.now();
 
-  function useStorage<T>(operation: () => T, fallback: T): T {
-    if (unavailable) return fallback;
-    try {
-      if (typeof localStorage !== "undefined") return operation();
-    } catch (error) {
-      if (
-        !(error instanceof Error) ||
-        (error.name !== "SecurityError" && error.name !== "QuotaExceededError")
-      ) {
-        throw error;
-      }
+  function expired(session: Session, now: number): boolean {
+    return (
+      now < session.startTimestamp ||
+      now < lastActivityTimestamp ||
+      (inactivityTimeout > 0 && (now - lastActivityTimestamp) / 1000 >= inactivityTimeout) ||
+      (maxDuration > 0 && (now - session.startTimestamp) / 1000 >= maxDuration)
+    );
+  }
+
+  function save(session: Session): void {
+    // Keep errors synchronous because upstream does not await saves.
+    if (persist) {
+      storage.setItem(storageKey, JSON.stringify({ ...session, lastActivityTimestamp }));
     }
-    unavailable = true;
-    diag.warn("Session storage unavailable; using an in-memory session.");
-    return fallback;
   }
 
   const store: SessionStore = {
     get() {
+      if (!persist) return Promise.resolve(null);
       // The upstream store collapses malformed JSON and stored null into an absent key.
-      const stored = useStorage(() => localStorage.getItem(storageKey), null);
-      if (stored === null) return Promise.resolve(null);
+      const result = storage.getItem(storageKey);
+      if (!result.success || result.value === null) return Promise.resolve(null);
       let session: unknown;
       try {
-        session = JSON.parse(stored);
+        session = JSON.parse(result.value);
       } catch (error) {
         if (!(error instanceof SyntaxError)) throw error;
       }
@@ -52,9 +76,9 @@ function createDefaultStore() {
         "startTimestamp" in session &&
         typeof session.startTimestamp === "number" &&
         Number.isFinite(session.startTimestamp) &&
-        session.startTimestamp >= 0
+        session.startTimestamp >= 0 &&
+        session.startTimestamp <= Date.now()
       ) {
-        // Older records only contain creation time; do not give them a fresh inactivity window.
         const lastActivity =
           "lastActivityTimestamp" in session
             ? session.lastActivityTimestamp
@@ -62,55 +86,45 @@ function createDefaultStore() {
         if (
           typeof lastActivity === "number" &&
           Number.isFinite(lastActivity) &&
-          lastActivity >= 0 &&
+          lastActivity >= session.startTimestamp &&
           lastActivity <= Date.now()
         ) {
-          if (Date.now() - lastActivity >= inactivityTimeoutSeconds * 1000) {
-            return Promise.resolve(null);
-          }
           lastActivityTimestamp = lastActivity;
-          return Promise.resolve({ id: session.id, startTimestamp: session.startTimestamp });
+          const restored = { id: session.id, startTimestamp: session.startTimestamp };
+          return Promise.resolve(expired(restored, Date.now()) ? null : restored);
         }
       }
       diag.warn("Invalid stored session; creating a new session.");
       return Promise.resolve(null);
     },
     save(session) {
-      // The manager does not await saves; unexpected storage failures must throw synchronously.
-      useStorage(
-        () =>
-          localStorage.setItem(storageKey, JSON.stringify({ ...session, lastActivityTimestamp })),
-        undefined,
-      );
+      lastActivityTimestamp = session.startTimestamp;
+      save(session);
       return Promise.resolve();
     },
   };
-  return {
-    store,
-    recordActivity: (session: Session) => {
-      const now = Date.now();
-      if (now === lastActivityTimestamp) return;
-      lastActivityTimestamp = now;
-      // Timer-driven session rotation is not activity; only telemetry updates this timestamp.
-      void store.save(session);
-    },
-  };
-}
-
-/** Adds persisted last-activity expiry to the upstream manager's in-page session lifecycle. */
-export function createSession() {
-  const { store, recordActivity } = createDefaultStore();
-  const manager = createSessionManager({
-    inactivityTimeout: inactivityTimeoutSeconds,
-    sessionIdGenerator: createDefaultSessionIdGenerator(),
-    sessionStore: store,
-  });
+  // Avoid upstream's five-second activity debounce.
+  const createManager = () =>
+    createSessionManager({
+      sessionIdGenerator: createDefaultSessionIdGenerator(),
+      sessionStore: store,
+    });
+  let manager = createManager();
   return {
     start: () => manager.start(),
     shutdown: () => manager.shutdown(),
     getSessionId() {
       const session = manager.getSession();
-      recordActivity(session);
+      const now = Date.now();
+      if (expired(session, now)) {
+        manager.shutdown();
+        manager = createManager();
+        return manager.getSession().id;
+      }
+      if (now !== lastActivityTimestamp) {
+        lastActivityTimestamp = now;
+        save(session);
+      }
       return session.id;
     },
   };
