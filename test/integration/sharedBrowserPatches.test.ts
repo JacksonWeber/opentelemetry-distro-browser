@@ -154,6 +154,26 @@ it.each(["fetch", "xhr"] as const)("preserves %s application header behavior", a
   else expect(response.traceparent).not.toBe(header);
 });
 
+it("preserves XHR headers written while collection is disabled", async () => {
+  const instrumentation = network("xhr");
+  const pipeline = await start("xhr", [instrumentation]);
+  const xhr = new XMLHttpRequest();
+  xhr.open("GET", endpoint);
+  instrumentation.disable();
+  const traceparent = "00-1234567890abcdef1234567890abcdef-1234567890abcdef-01";
+  xhr.setRequestHeader("traceparent", traceparent);
+  instrumentation.enable();
+  const response = await new Promise<{ traceparent?: string }>((resolve, reject) => {
+    xhr.onload = () => resolve(JSON.parse(xhr.responseText) as { traceparent?: string });
+    xhr.onerror = () => reject(new Error("XHR failed"));
+    xhr.send();
+  });
+  expect(response.traceparent).toBe(traceparent);
+  await spans(pipeline, 0);
+  await request("xhr");
+  await spans(pipeline, 1);
+});
+
 it("calls native fetch once and isolates request hooks without nesting their contexts", async () => {
   const native = vi.spyOn(globalThis, "fetch");
   const first = await start("first", [

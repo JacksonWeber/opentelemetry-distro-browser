@@ -5,6 +5,7 @@ import { context, diag, propagation, ROOT_CONTEXT, trace } from "@opentelemetry/
 import { logs } from "@opentelemetry/api-logs";
 import { ConsoleInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/console";
 import { FetchInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/fetch";
+import { NavigationInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/navigation";
 import { XhrInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/xhr";
 import { InstrumentationBase } from "@opentelemetry/instrumentation";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -13,6 +14,7 @@ import {
   isNetworkInstrumentation,
 } from "../../../src/instrumentation/sharedBrowserPatches.js";
 import { useMicrosoftOpenTelemetry } from "../../../src/useMicrosoftOpenTelemetry.js";
+import { PageViewInstrumentation } from "../../../src/instrumentation/pageView/index.js";
 import type { BrowserInstrumentation, MicrosoftOpenTelemetryBrowser } from "../../../src/types.js";
 import { createInMemoryPipeline, createSpanContext } from "../../fixtures/telemetry.js";
 
@@ -86,6 +88,19 @@ async function start(instrumentations: BrowserInstrumentation[], traces = true) 
   handles.push(handle);
   if (!traces) await pipeline.spanProcessor.shutdown();
   return { ...pipeline, handle };
+}
+
+function stubXhr() {
+  const open = vi.spyOn(XMLHttpRequest.prototype, "open").mockImplementation(() => {});
+  const send = vi.spyOn(XMLHttpRequest.prototype, "send").mockImplementation(function (
+    this: XMLHttpRequest,
+  ) {
+    this.dispatchEvent(new Event("load"));
+  });
+  const header = vi
+    .spyOn(XMLHttpRequest.prototype, "setRequestHeader")
+    .mockImplementation(() => {});
+  return { open, send, header };
 }
 
 it("shares a method, preserves its receiver and return value, and releases each owner separately", () => {
@@ -246,6 +261,98 @@ it("can enable a claimed object again without stacking another subscriber", () =
   target.method("second");
   expect(instrumentation.observe).toHaveBeenCalledTimes(2);
 });
+
+it("rejects re-claiming an adapted object with live subscriptions", () => {
+  const target = { method: vi.fn() };
+  const instrumentation = new PatchProbe(target);
+  const stop = claim(instrumentation);
+  instrumentation.enable();
+  stop();
+  instrumentation.enable();
+  try {
+    expect(() => claim(instrumentation)).toThrow("browser-instrumentation-active");
+  } finally {
+    instrumentation.disable();
+  }
+  expect(() => claim(instrumentation)).not.toThrow();
+});
+
+it("rejects re-registering active fetch before rebinding providers", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null));
+  const instrumentation = new FetchInstrumentation({ enabled: false });
+  const first = await start([instrumentation]);
+  await first.handle.shutdown();
+  instrumentation.enable();
+  const bindTrace = vi.spyOn(instrumentation, "setTracerProvider");
+  const bindLogs = vi.spyOn(instrumentation, "setLoggerProvider");
+  try {
+    await expect(start([instrumentation])).rejects.toThrow("browser-instrumentation-active");
+    expect(bindTrace).not.toHaveBeenCalled();
+    expect(bindLogs).not.toHaveBeenCalled();
+  } finally {
+    instrumentation.disable();
+  }
+  await start([instrumentation]);
+});
+
+it.each([
+  ["navigation", false],
+  ["navigation", true],
+  ["page view", false],
+  ["page view", true],
+] as const)("rejects active %s Navigation API listeners (adapted=%s)", async (kind, adapted) => {
+  const navigation = new EventTarget();
+  vi.stubGlobal("navigation", navigation);
+  const remove = vi.spyOn(navigation, "removeEventListener");
+  const options = { enabled: false, useNavigationApiIfAvailable: true };
+  const instrumentation =
+    kind === "navigation"
+      ? new NavigationInstrumentation(options)
+      : new PageViewInstrumentation(options);
+  if (adapted) {
+    const first = await start([instrumentation]);
+    await first.handle.shutdown();
+  }
+  instrumentation.enable();
+  const bindTrace = vi.spyOn(instrumentation, "setTracerProvider");
+  const bindLogs = vi.spyOn(instrumentation, "setLoggerProvider");
+  try {
+    await expect(start([instrumentation])).rejects.toThrow("browser-instrumentation-active");
+    expect(bindTrace).not.toHaveBeenCalled();
+    expect(bindLogs).not.toHaveBeenCalled();
+  } finally {
+    instrumentation.disable();
+  }
+  expect(remove).toHaveBeenCalledWith("currententrychange", expect.any(Function));
+});
+
+const consoleMethods = ["log", "warn", "error", "info", "debug"] as const;
+
+it.each(consoleMethods)(
+  "recovers every method after a partial console patch failure at %s",
+  async (locked) => {
+    const originals = consoleMethods.map((method) =>
+      vi.spyOn(console, method).mockImplementation(() => {}),
+    );
+    const descriptor = Object.getOwnPropertyDescriptor(console, locked)!;
+    const instrumentation = new ConsoleInstrumentation({ enabled: false });
+    Object.defineProperty(console, locked, { ...descriptor, writable: false });
+    try {
+      await expect(start([instrumentation])).rejects.toThrow("browser-patch-unavailable");
+      consoleMethods.forEach((method, index) => expect(console[method]).toBe(originals[index]));
+    } finally {
+      Object.defineProperty(console, locked, descriptor);
+    }
+    const retry = await start([instrumentation]);
+    for (const method of consoleMethods) console[method](`retried ${method}`);
+    await retry.handle.forceFlush();
+    expect(retry.logExporter.getFinishedLogRecords().map((record) => record.body)).toEqual(
+      consoleMethods.map((method) => `retried ${method}`),
+    );
+    await retry.handle.shutdown();
+    consoleMethods.forEach((method, index) => expect(console[method]).toBe(originals[index]));
+  },
+);
 
 it.each(["missing method", "locked method", "ignored assignment"] as const)(
   "rejects a %s without leaving a subscription behind",
@@ -431,15 +538,7 @@ it("keeps deferred network instrumentation inert when traces are disabled", asyn
 });
 
 it("deduplicates XHR propagation but preserves repeated application headers and resets on open", async () => {
-  const open = vi.spyOn(XMLHttpRequest.prototype, "open").mockImplementation(() => {});
-  const send = vi.spyOn(XMLHttpRequest.prototype, "send").mockImplementation(function (
-    this: XMLHttpRequest,
-  ) {
-    this.dispatchEvent(new Event("load"));
-  });
-  const header = vi
-    .spyOn(XMLHttpRequest.prototype, "setRequestHeader")
-    .mockImplementation(() => {});
+  const { open, send, header } = stubXhr();
   const first = await start([new XhrInstrumentation({ enabled: false })]);
   const second = await start([new XhrInstrumentation({ enabled: false })]);
   const xhr = new XMLHttpRequest();
@@ -464,4 +563,71 @@ it("deduplicates XHR propagation but preserves repeated application headers and 
   expect(a.spanContext().spanId).not.toBe(b.spanContext().spanId);
   expect(header.mock.calls[3][1].split("-")[2]).toBe(next.spanContext().spanId);
   expect(second.spanExporter.getFinishedSpans()).toHaveLength(2);
+});
+
+it.each(["disable", "shutdown"] as const)(
+  "skips XHRs crossing a header tracking gap during %s",
+  async (operation) => {
+    const { send, header } = stubXhr();
+    const instrumentation = new XhrInstrumentation({ enabled: false });
+    let pipeline = await start([instrumentation]);
+    const xhr = new XMLHttpRequest();
+    xhr.open("GET", url);
+    if (operation === "disable") instrumentation.disable();
+    else await pipeline.handle.shutdown();
+    xhr.setRequestHeader("traceparent", "application");
+    if (operation === "disable") instrumentation.enable();
+    else pipeline = await start([instrumentation]);
+    xhr.setRequestHeader("X-Custom", "after restart");
+    xhr.send();
+    await pipeline.handle.forceFlush();
+    expect(header.mock.calls).toEqual([
+      ["traceparent", "application"],
+      ["X-Custom", "after restart"],
+    ]);
+    expect(pipeline.spanExporter.getFinishedSpans()).toHaveLength(0);
+    xhr.open("GET", url);
+    xhr.send();
+    await pipeline.handle.forceFlush();
+    const spans = pipeline.spanExporter.getFinishedSpans();
+    expect(spans).toHaveLength(1);
+    expect(header.mock.calls[2][1].split("-")[2]).toBe(spans[0].spanContext().spanId);
+    expect(send).toHaveBeenCalledTimes(2);
+  },
+);
+
+it("preserves in-flight XHR completion and listener cleanup across disable", async () => {
+  const { send } = stubXhr();
+  send.mockImplementation(() => {});
+  const instrumentation = new XhrInstrumentation({ enabled: false });
+  const pipeline = await start([instrumentation]);
+  const xhr = new XMLHttpRequest();
+  const remove = vi.spyOn(xhr, "removeEventListener");
+  xhr.open("GET", url);
+  xhr.send();
+  instrumentation.disable();
+  instrumentation.enable();
+  xhr.dispatchEvent(new Event("load"));
+  await pipeline.handle.forceFlush();
+  expect(pipeline.spanExporter.getFinishedSpans()).toHaveLength(1);
+  for (const event of ["abort", "error", "timeout", "load"]) {
+    expect(remove).toHaveBeenCalledWith(event, expect.any(Function));
+  }
+});
+
+it("keeps XHR header tracking while another subscriber remains enabled", async () => {
+  const { header } = stubXhr();
+  const instrumentation = new XhrInstrumentation({ enabled: false });
+  const first = await start([instrumentation]);
+  const second = await start([new XhrInstrumentation({ enabled: false })]);
+  const xhr = new XMLHttpRequest();
+  xhr.open("GET", url);
+  instrumentation.disable();
+  xhr.setRequestHeader("traceparent", "application");
+  instrumentation.enable();
+  xhr.send();
+  await Promise.all([first.handle.forceFlush(), second.handle.forceFlush()]);
+  expect(header.mock.calls).toEqual([["traceparent", "application"]]);
+  expect(first.spanExporter.getFinishedSpans()).toHaveLength(1);
+  expect(second.spanExporter.getFinishedSpans()).toHaveLength(1);
 });

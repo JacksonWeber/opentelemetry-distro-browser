@@ -15,6 +15,14 @@ type Wrap = <T extends object, K extends keyof T>(
 interface Patchable extends BrowserInstrumentation {
   instrumentationName: string;
   instrumentationVersion: string;
+  _isEnabled?: boolean;
+  _active?: boolean;
+  enabledState?: boolean;
+  _isFetchPatched?: boolean;
+  _isXhrPatched?: boolean;
+  _isHistoryPatched?: boolean;
+  historyPatched?: boolean;
+  _isPatched?: boolean;
   _wrap: Wrap;
   _unwrap: <T extends object>(target: T, name: keyof T) => void;
 }
@@ -33,7 +41,7 @@ interface Patch {
 
 export interface BrowserPatchState {
   targets: WeakMap<object, Map<PropertyKey, Patch>>;
-  adapted: WeakSet<BrowserInstrumentation>;
+  adapted: WeakMap<BrowserInstrumentation, () => boolean>;
   owners: WeakSet<BrowserInstrumentation>;
   xhrHeaders: WeakMap<object, Set<string>>;
   injecting?: object;
@@ -43,7 +51,7 @@ export interface BrowserPatchState {
 function state(): BrowserPatchState {
   return (getSharedRegistry().browserPatches ??= {
     targets: new WeakMap(),
-    adapted: new WeakSet(),
+    adapted: new WeakMap(),
     owners: new WeakSet(),
     xhrHeaders: new WeakMap(),
   });
@@ -131,17 +139,16 @@ function dispatch(
     }
   }
   const shared = state();
-  const isXhr = typeof XMLHttpRequest !== "undefined" && target === XMLHttpRequest.prototype;
-  const isHistory = typeof history !== "undefined" && target === history;
+  const isXhr = target === globalThis.XMLHttpRequest?.prototype;
+  const isHistory = target === globalThis.history;
   if (isXhr && name === "setRequestHeader") {
     const xhr = receiver as XMLHttpRequest;
     const header = String(args[0]).toLowerCase();
-    const headers = shared.xhrHeaders.get(xhr) ?? new Set<string>();
+    const headers = shared.xhrHeaders.get(xhr);
     // XHR appends duplicate headers. Keep the first instrumentation value, as Application Insights does.
-    if (shared.injecting === xhr && headers.has(header)) return;
+    if (shared.injecting === xhr && headers?.has(header)) return;
     const result = patch.original.apply(receiver, args);
-    headers.add(header);
-    shared.xhrHeaders.set(xhr, headers);
+    headers?.add(header);
     return result;
   }
   if (isHistory) {
@@ -149,9 +156,11 @@ function dispatch(
     notify(patch, receiver, args, () => result);
     return result;
   }
-  if (isXhr && name === "open") shared.xhrHeaders.delete(receiver as XMLHttpRequest);
+  if (isXhr && name === "open") shared.xhrHeaders.set(receiver as XMLHttpRequest, new Set());
   const previous = shared.injecting;
   if (isXhr && name === "send") {
+    if (!shared.xhrHeaders.has(receiver as XMLHttpRequest))
+      return patch.original.apply(receiver, args);
     shared.injecting = receiver as XMLHttpRequest;
   }
   try {
@@ -192,6 +201,10 @@ function subscribe(target: object, name: PropertyKey, subscriber: Subscription):
   return () => {
     patch.subscribers.delete(subscriber);
     if (patch.subscribers.size) return;
+    if (target === globalThis.XMLHttpRequest?.prototype && name === "setRequestHeader") {
+      // Requests opened before this tracking gap cannot safely inject headers after restart.
+      state().xhrHeaders = new WeakMap();
+    }
     if (Reflect.get(target, name) !== patch.wrapper) {
       methods.delete(name);
       return;
@@ -221,26 +234,35 @@ function isPatchable(value: BrowserInstrumentation): value is Patchable {
  * is needed, so optional instrumentations remain outside the root bundle.
  */
 function adapt(instrumentation: Patchable): void {
-  if (state().adapted.has(instrumentation)) return;
+  const adapted = state().adapted.get(instrumentation);
   if (
-    (instrumentation.instrumentationName.startsWith("@opentelemetry/") &&
+    !adapted &&
+    ((instrumentation.instrumentationName.startsWith("@opentelemetry/") &&
       instrumentation.instrumentationVersion !== "0.8.1") ||
-    typeof instrumentation._wrap !== "function" ||
-    typeof instrumentation._unwrap !== "function"
+      typeof instrumentation._wrap !== "function" ||
+      typeof instrumentation._unwrap !== "function")
   ) {
-    conflict("browser-instrumentation-version", "Unsupported shared browser instrumentation");
+    conflict("browser-instrumentation-version", "Unsupported browser instrumentation");
   }
   if (
-    instrumentation.getConfig().enabled ||
-    ["_isFetchPatched", "_isXhrPatched", "_isHistoryPatched", "_isPatched", "historyPatched"].some(
-      (key) => Reflect.get(instrumentation, key) === true,
-    )
+    instrumentation._isEnabled ||
+    instrumentation._active ||
+    instrumentation.enabledState ||
+    (adapted
+      ? adapted()
+      : instrumentation.getConfig().enabled ||
+        instrumentation._isFetchPatched ||
+        instrumentation._isXhrPatched ||
+        instrumentation._isHistoryPatched ||
+        instrumentation._isPatched ||
+        instrumentation.historyPatched)
   ) {
     conflict(
       "browser-instrumentation-active",
       "Construct shared instrumentations with enabled: false",
     );
   }
+  if (adapted) return;
   const entries: {
     target: object;
     name: PropertyKey;
@@ -264,10 +286,7 @@ function adapt(instrumentation: Patchable): void {
       // This is the same method-to-method boundary as upstream's generic wrapping API.
       const wrapped = factory(next as (typeof target)[typeof name], name);
       if (typeof wrapped !== "function") {
-        conflict(
-          "browser-instrumentation-wrapper",
-          "Instrumentation did not supply a method wrapper",
-        );
+        conflict("browser-instrumentation-wrapper", "Instrumentation wrapper must be a function");
       }
       subscriber.invoke = wrapped as Method;
       const entry = { target, name, subscriber, remove: subscribe(target, name, subscriber) };
@@ -307,6 +326,7 @@ function adapt(instrumentation: Patchable): void {
         entry.remove ??= subscribe(entry.target, entry.name, entry.subscriber);
     } catch (error) {
       failure.error = undefined;
+      if (instrumentation._isPatched) instrumentation._isPatched = false;
       try {
         instrumentation.disable();
       } catch (cleanupError) {
@@ -322,7 +342,7 @@ function adapt(instrumentation: Patchable): void {
       detach();
     }
   };
-  state().adapted.add(instrumentation);
+  state().adapted.set(instrumentation, () => entries.some((entry) => entry.remove));
 }
 
 /** A disabled trace pipeline must not claim outgoing headers through a no-op tracer. */
