@@ -20,7 +20,10 @@ All notable changes to this package are documented in this file.
 
 - Add shared deterministic test fixtures and informational PR coverage comparisons.
 - Promote the size harness into a repository tool
-- Add a configurable SDK loader snippet generator that requires an explicit browser bundle URL.
+- Add a configurable SDK loader snippet generator that loads the package version's bundle from
+  `js.monitor.azure.com` unless `src` is provided.
+- Prepare versioned CDN bundles, source maps and `integrity.json` files during `npm run build`,
+  and add `npm run cdn:publish` to upload them with immutable caching.
 - Map page view ID and referrer to Azure Monitor envelopes
 - Add parsed JavaScript stack frames to Azure Monitor browser exception telemetry while
   preserving the original stack trace.

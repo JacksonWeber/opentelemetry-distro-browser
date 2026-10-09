@@ -2,7 +2,8 @@
 // Licensed under the MIT License.
 
 import { afterEach, expect, it } from "vitest";
-import { getSdkLoaderScript } from "../../../src/snippet.js";
+import { getSdkLoaderScript, type SdkLoaderConfig } from "../../../src/snippet.js";
+import { OPENTELEMETRY_BROWSER_VERSION } from "../../../src/shared/constants.js";
 
 type LoaderWindow = typeof window & {
   Microsoft?: {
@@ -61,9 +62,19 @@ afterEach(() => {
   delete loaderWindow.snippetOptions;
 });
 
-it("requires an explicit bundle URL and connection string", () => {
+it("defaults to the versioned CDN bundle and validates explicit values", () => {
+  const channel = /-([a-z]+)/.exec(OPENTELEMETRY_BROWSER_VERSION)?.[1] ?? "b";
+  expect(getSdkLoaderScript({ connectionString: "connection" })).toContain(
+    `"src":"https://js.monitor.azure.com/scripts/otel/${channel}/opentelemetry-browser.${OPENTELEMETRY_BROWSER_VERSION}.min.js"`,
+  );
   expect(() => getSdkLoaderScript({ src: "", connectionString: "connection" })).toThrow(
-    "SdkLoaderConfig.src must be a non-empty string.",
+    "SdkLoaderConfig.src must be a non-empty string when provided.",
+  );
+  expect(() =>
+    getSdkLoaderScript({ src: null as unknown as string, connectionString: "connection" }),
+  ).toThrow("SdkLoaderConfig.src must be a non-empty string when provided.");
+  expect(() => getSdkLoaderScript(null as unknown as SdkLoaderConfig)).toThrow(
+    "SdkLoaderConfig.connectionString must be a non-empty string.",
   );
   expect(() =>
     getSdkLoaderScript({ src: "https://example.test/sdk.js", connectionString: "" }),

@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+import { OPENTELEMETRY_BROWSER_VERSION } from "./shared/constants.js";
+
 /**
  * Configuration for {@link getSdkLoaderScript}.
  *
@@ -13,10 +15,13 @@ export interface SdkLoaderConfig {
    * `opentelemetry-browser.iife.min.js` bundle.
    *
    * @remarks
-   * The package's ESM output is not compatible with this loader. A UMD bundle only sets the global
-   * when no AMD loader is present. No CDN location is assumed.
+   * Defaults to this package version's immutable CDN bundle,
+   * `https://js.monitor.azure.com/scripts/otel/<channel>/opentelemetry-browser.<version>.min.js`,
+   * where the channel is `b` for stable releases and the prerelease identifier, such as `alpha`,
+   * otherwise. The package's ESM output is not compatible with this loader. A UMD bundle only
+   * sets the global when no AMD loader is present.
    */
-  readonly src: string;
+  readonly src?: string;
   /** Azure Monitor connection string passed to the distribution initializer. */
   readonly connectionString: string;
   /** `crossorigin` value applied to the injected script. Defaults to `anonymous`. */
@@ -24,6 +29,11 @@ export interface SdkLoaderConfig {
   /** Subresource Integrity metadata applied to the injected script. */
   readonly integrity?: string;
 }
+
+const defaultSrc = (): string =>
+  `https://js.monitor.azure.com/scripts/otel/${
+    /^[^-+]+-([a-z]+)/.exec(OPENTELEMETRY_BROWSER_VERSION)?.[1] ?? "b"
+  }/opentelemetry-browser.${OPENTELEMETRY_BROWSER_VERSION}.min.js`;
 
 const inlineJson = (value: unknown): string =>
   JSON.stringify(value).replace(/[<>\u2028\u2029]/g, (character) => {
@@ -40,21 +50,22 @@ const inlineJson = (value: unknown): string =>
   });
 
 /**
- * Creates an inline loader that downloads a supplied browser bundle and starts Azure Monitor
- * telemetry.
+ * Creates an inline loader that downloads the browser bundle and starts Azure Monitor telemetry.
  *
  * @remarks
  * The generated script exposes initialization as `window.microsoftOpenTelemetry`, a promise that
- * resolves to the distribution lifecycle handle. The caller must supply the bundle URL because
- * this package does not assume that any version has been published to a CDN.
+ * resolves to the distribution lifecycle handle and rejects when the bundle fails to load or
+ * initialize. Without `src`, it loads this package version's bundle from the CDN; supply the
+ * matching `integrity` value from the release's `integrity.json` to verify it.
  *
  * @public
  */
 export function getSdkLoaderScript(config: SdkLoaderConfig): string {
-  if (typeof config?.src !== "string" || config.src.trim() === "") {
-    throw new TypeError("SdkLoaderConfig.src must be a non-empty string.");
+  const src = config?.src === undefined ? defaultSrc() : config.src;
+  if (typeof src !== "string" || src.trim() === "") {
+    throw new TypeError("SdkLoaderConfig.src must be a non-empty string when provided.");
   }
-  if (typeof config.connectionString !== "string" || config.connectionString.trim() === "") {
+  if (typeof config?.connectionString !== "string" || config.connectionString.trim() === "") {
     throw new TypeError("SdkLoaderConfig.connectionString must be a non-empty string.");
   }
   if (
@@ -65,7 +76,7 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
   }
 
   const serialized = inlineJson({
-    src: config.src,
+    src,
     connectionString: config.connectionString,
     crossOrigin: config.crossOrigin ?? "anonymous",
     ...(config.integrity === undefined ? {} : { integrity: config.integrity }),
