@@ -30,7 +30,7 @@ jobs:
 
       - name: Resolve current PR and its coverage artifacts
         id: report
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const { resolveCoverageReport } = await import(`${process.env.GITHUB_WORKSPACE}/scripts/coverage-report.mjs`);
@@ -64,7 +64,7 @@ jobs:
 
       - name: Render and post coverage comparison
         if: steps.report.outputs.pr-number != ''
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           COVERAGE_PR_NUMBER: ${{ steps.report.outputs.pr-number }}
           COVERAGE_BASE_SHA: ${{ steps.report.outputs.base-sha }}
