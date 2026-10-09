@@ -143,6 +143,10 @@ export interface PageViewContext extends PageViewSource {
  * rather than as named aliases, and the context-injection seam lives on the internal configuration,
  * so configuring page views pulls no other type into the public surface.
  *
+ * The distribution finalizes pending page views with a `page_hide` duration source before flushing
+ * on pagehide or hidden visibility, including tab switches. Becoming visible again does not start
+ * another page view.
+ *
  * Structurally compatible with `InstrumentationConfig` from `@opentelemetry/instrumentation`, but
  * declared standalone rather than extending it. That package's type entry point resolves to its
  * Node platform build, which references Node built-ins, so inheriting from it would force every

@@ -25,3 +25,30 @@ it("delivers queued telemetry after the source document navigates away", async (
     }),
   ]);
 });
+
+it("delivers an unsettled page view after the source document navigates away", async () => {
+  const runId = crypto.randomUUID();
+  const ingestionEndpoint = `${inject("ingestionEndpoint")}${encodeURIComponent(runId)}`;
+  const fixtureUrl = new URL("./unloadFixture.html", import.meta.url);
+  fixtureUrl.searchParams.set("ingestionEndpoint", ingestionEndpoint);
+  fixtureUrl.searchParams.set("runId", runId);
+  fixtureUrl.searchParams.set("pageView", "true");
+  const captureUrl = `${new URL(ingestionEndpoint).origin}/captured?runId=${encodeURIComponent(runId)}`;
+
+  await expect(commands.verifyUnloadDelivery(fixtureUrl.href, captureUrl, 3)).resolves.toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        name: "Microsoft.ApplicationInsights.PageView",
+        data: expect.objectContaining({
+          baseType: "PageViewData",
+          baseData: expect.objectContaining({
+            url: `${fixtureUrl.href}#unsettled`,
+            properties: expect.objectContaining({
+              "browser.page_view.duration_source": "page_hide",
+            }),
+          }),
+        }),
+      }),
+    ]),
+  );
+});

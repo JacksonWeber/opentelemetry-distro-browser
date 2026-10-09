@@ -3,10 +3,20 @@
 
 import { logs } from "@opentelemetry/api-logs";
 import { context, diag, propagation, trace } from "@opentelemetry/api";
-import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
+import {
+  BatchLogRecordProcessor,
+  type BatchLogRecordProcessorBrowserOptions,
+  type LogRecordProcessor,
+  type ReadableLogRecord,
+} from "@opentelemetry/sdk-logs";
+import { ExportResultCode, type ExportResult } from "@opentelemetry/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useMicrosoftOpenTelemetry } from "../../../src/useMicrosoftOpenTelemetry.js";
-import { EVENT_BROWSER_PAGE_VIEW } from "../../../src/instrumentation/pageView/semconv.js";
+import {
+  ATTR_PAGE_VIEW_DURATION_SOURCE,
+  EVENT_BROWSER_PAGE_VIEW,
+} from "../../../src/instrumentation/pageView/semconv.js";
+import { isUnloading } from "../../../src/exporter/common.js";
 import type { MicrosoftOpenTelemetryBrowser } from "../../../src/types.js";
 
 /** Captures every log record the distribution emits through the real pipeline. */
@@ -142,6 +152,109 @@ describe("distribution-owned instrumentation", () => {
     await settle();
 
     expect(pageViewCount(processor)).toBe(0);
+  });
+
+  it.each([
+    ["document load", "pagehide"],
+    ["document load", "visibilitychange"],
+    ["soft navigation", "pagehide"],
+    ["soft navigation", "visibilitychange"],
+  ])("exports a pending %s when %s arrives first", async (navigation, firstEvent) => {
+    vi.spyOn(document, "readyState", "get").mockReturnValue("loading");
+    vi.spyOn(globalThis, "requestAnimationFrame").mockReturnValue(0);
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    const exported: ReadableLogRecord[] = [];
+    const finishExports: Array<() => void> = [];
+    const exporter = {
+      export: vi.fn((records: ReadableLogRecord[], callback: (result: ExportResult) => void) => {
+        exported.push(...records);
+        finishExports.push(() => callback({ code: ExportResultCode.SUCCESS }));
+      }),
+      forceFlush: vi.fn(async () => {}),
+      shutdown: vi.fn(async () => {}),
+    };
+    const processorOptions = {
+      exporter,
+      disableAutoFlushOnDocumentHide: true,
+      scheduledDelayMillis: 60_000,
+    } satisfies BatchLogRecordProcessorBrowserOptions;
+    const processor = new BatchLogRecordProcessor(processorOptions);
+    const flush = vi.spyOn(processor, "forceFlush");
+    const emit = vi.spyOn(processor, "onEmit");
+    sdk = await useMicrosoftOpenTelemetry({
+      spanProcessors: [],
+      logRecordProcessors: [processor],
+      pageView: { softNavigationSettleTimeoutMs: 60_000 },
+    });
+    if (navigation === "soft navigation") history.pushState(null, "", "/unsettled");
+    logs.getLogger("unload-test").emit({ body: "queued before unload" });
+
+    const dispatch = (event: string): void => {
+      if (event === "pagehide") window.dispatchEvent(new Event(event));
+      else document.dispatchEvent(new Event(event));
+    };
+    try {
+      dispatch(firstEvent);
+      await vi.waitFor(() => expect(exporter.export).toHaveBeenCalledOnce());
+      dispatch(firstEvent === "pagehide" ? "visibilitychange" : "pagehide");
+      await Promise.resolve();
+
+      const pageViews = exported.filter(
+        (record) => record.attributes[ATTR_PAGE_VIEW_DURATION_SOURCE] === "page_hide",
+      );
+      expect(pageViews).toHaveLength(1);
+      expect(pageViews[0].eventName).toBe(EVENT_BROWSER_PAGE_VIEW);
+      expect(
+        emit.mock.calls.filter(
+          ([record]) => record.attributes[ATTR_PAGE_VIEW_DURATION_SOURCE] === "page_hide",
+        ),
+      ).toHaveLength(1);
+      expect(isUnloading()).toBe(true);
+      expect(flush).toHaveBeenCalledOnce();
+    } finally {
+      exporter.export.mockImplementation((_, callback) =>
+        callback({ code: ExportResultCode.SUCCESS }),
+      );
+      finishExports.forEach((finish) => finish());
+    }
+  });
+
+  it("settles on hidden visibility without creating a page view when the tab returns", async () => {
+    vi.spyOn(document, "readyState", "get").mockReturnValue("loading");
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    const processor = new RecordingProcessor();
+    const flush = vi.spyOn(processor, "forceFlush");
+    sdk = await useMicrosoftOpenTelemetry({
+      spanProcessors: [],
+      logRecordProcessors: [processor],
+    });
+
+    document.dispatchEvent(new Event("visibilitychange"));
+    await Promise.resolve();
+    expect(pageViewCount(processor)).toBe(0);
+    expect(flush).not.toHaveBeenCalled();
+
+    visibility.mockReturnValue("hidden");
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.waitFor(() => expect(isUnloading()).toBe(false));
+    expect(pageViewCount(processor)).toBe(1);
+    expect(flush).toHaveBeenCalledOnce();
+
+    visibility.mockReturnValue("visible");
+    document.dispatchEvent(new Event("visibilitychange"));
+    window.dispatchEvent(new Event("load"));
+    await settle();
+    expect(pageViewCount(processor)).toBe(1);
+    expect(flush).toHaveBeenCalledOnce();
+
+    await sdk.shutdown();
+    sdk = undefined;
+    visibility.mockReturnValue("hidden");
+    document.dispatchEvent(new Event("visibilitychange"));
+    window.dispatchEvent(new Event("pagehide"));
+    await Promise.resolve();
+    expect(pageViewCount(processor)).toBe(1);
+    expect(flush).toHaveBeenCalledOnce();
   });
 
   it("stops collecting after shutdown", async () => {
