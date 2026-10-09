@@ -2,6 +2,13 @@
 
 All notable changes to this package are documented in this file.
 
+## Unreleased
+
+### Fixed
+
+- Invoke Azure Monitor export callbacks only once when they throw, without reporting callback
+  errors back to the same callback as export failures.
+
 ## 0.1.0-alpha.2 - 2026-10-08
 
 ### Added
