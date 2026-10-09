@@ -15,6 +15,32 @@ const spanContext = createSpanContext();
 const parentSpanContext = { ...spanContext, spanId: "0000000000000002" };
 
 describe("Azure Monitor span envelope mapping", () => {
+  it.each([SpanKind.CLIENT, SpanKind.SERVER, SpanKind.CONSUMER, SpanKind.INTERNAL])(
+    "promotes standard session IDs to tags without changing the source span (kind=%i)",
+    (kind) => {
+      const span = makeSpan({ kind, attributes: { "session.id": "session-1", custom: "value" } });
+      const envelope = spanToEnvelope(span, instrumentationKey);
+      expect(envelope.tags["ai.session.id"]).toBe("session-1");
+      expect(envelope.tags).not.toHaveProperty("ai.session.isFirst");
+      expect(envelope.data.baseData.properties).toEqual({ custom: "value" });
+      expect(span.attributes["session.id"]).toBe("session-1");
+    },
+  );
+
+  it.each([undefined, "", 0, false, ["session-1"]])(
+    "does not create session tags for absent or invalid IDs (%j)",
+    (id) => {
+      const envelope = spanToEnvelope(
+        makeSpan({ attributes: { "session.id": id } }),
+        instrumentationKey,
+      );
+      expect(envelope.tags).not.toHaveProperty("ai.session.id");
+      if (id === 0) expect(envelope.data.baseData.measurements?.["session.id"]).toBe(0);
+      else if (id !== undefined)
+        expect(envelope.data.baseData.properties?.["session.id"]).toBeDefined();
+    },
+  );
+
   it("maps an HTTP client span to RemoteDependencyData", () => {
     const envelope = spanToEnvelope(
       makeSpan({

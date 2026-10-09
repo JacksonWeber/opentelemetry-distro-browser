@@ -121,6 +121,25 @@ export interface MicrosoftOpenTelemetryBrowserTraceOptions {
 }
 
 /**
+ * Session options, captured at initialization. Lifetimes must be finite and nonnegative.
+ * @public
+ */
+export interface MicrosoftOpenTelemetryBrowserSessionOptions {
+  /** Enables session tracking. Defaults to false. */
+  enabled?: boolean;
+  /**
+   * Persist in localStorage (default true). False uses memory without accessing or clearing storage.
+   */
+  persist?: boolean;
+  /**
+   * Seconds without managed-session telemetry. Defaults to 1800. Zero disables inactivity expiry.
+   */
+  inactivityTimeout?: number;
+  /** Maximum lifetime in seconds, including across reloads. Defaults to 0 (unlimited). */
+  maxDuration?: number;
+}
+
+/**
  * Microsoft browser distribution configuration for traces and logs.
  * @public
  */
@@ -143,13 +162,8 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
    * page belong here. Only its attributes are used; the schema URL is not carried through.
    */
   resource?: Resource;
-  /**
-   * Opt-in session tracking. Set enabled to true to persist sessions in localStorage and
-   * supply missing session.id attributes on spans and logs. Uses a 30-minute inactivity
-   * timeout with no maximum lifetime; application-provided IDs are preserved.
-   * Omitted or disabled session tracking does not access session storage or start session timers.
-   */
-  session?: { enabled?: boolean };
+  /** Opt-in session tracking. Disabled sessions do not access storage. */
+  session?: MicrosoftOpenTelemetryBrowserSessionOptions;
   /**
    * Opt-in user identity persistence.
    *
@@ -272,7 +286,7 @@ export interface MicrosoftOpenTelemetryBrowser {
    */
   forceFlush(): Promise<void>;
   /**
-   * Stops session timers immediately, then disables registered instrumentations and shuts down
+   * Stops session activity immediately, then disables registered instrumentations and shuts down
    * this instance's trace and log providers. Other instances keep running, and tracers or
    * loggers acquired afterward from the global APIs use the earliest remaining instance that
    * collects that signal.

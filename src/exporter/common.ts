@@ -76,7 +76,11 @@ export function mapAttributes(
   const measurements: Record<string, number> = {};
 
   for (const [key, value] of Object.entries(attributes)) {
-    if (value === undefined || promotedAttributes.has(key)) {
+    if (
+      value === undefined ||
+      promotedAttributes.has(key) ||
+      (key === "session.id" && isNonEmptyString(value))
+    ) {
       continue;
     }
     if (typeof value === "number" && Number.isFinite(value)) {
@@ -127,6 +131,9 @@ export function createTags(
   }
   if (isNonEmptyString(accountId)) {
     tags["ai.user.accountId"] = accountId;
+  }
+  if (isNonEmptyString(attributes["session.id"])) {
+    tags["ai.session.id"] = attributes["session.id"];
   }
   return tags;
 }

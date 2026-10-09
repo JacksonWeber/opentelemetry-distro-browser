@@ -6,8 +6,13 @@ All notable changes to this package are documented in this file.
 
 ### Added
 
+- Add session lifetime options, a persistence opt-out, and Azure Monitor session tags.
 - Redact credentials and sensitive query-string and fragment parameters from page-view URLs and
   referrers by default, with a configurable parameter-name replacement list.
+
+### Changed
+
+- Expire sessions on telemetry activity instead of idle timers.
 
 ### Fixed
 
