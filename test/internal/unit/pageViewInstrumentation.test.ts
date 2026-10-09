@@ -793,27 +793,80 @@ describe("PageViewInstrumentation", () => {
   });
 
   describe("configuration hooks", () => {
-    it("sanitizes the URL and the referrer", async () => {
+    it("redacts sensitive URL and referrer fields by default", async () => {
+      const { instrumentation, provider } = createInstrumentation();
+
+      instrumentation.enable();
+      await settle();
+      provider.records.length = 0;
+
+      history.pushState(
+        null,
+        "",
+        "/callback?code=query-secret#access_token=access-secret&id_token=id-secret",
+      );
+      await settle();
+      history.pushState(null, "", "/after");
+      await settle();
+
+      const callback = attributesOf(provider.records[0] as LogRecord);
+      expect(callback[ATTR_URL_FULL]).toBe(
+        `${location.origin}/callback?code=REDACTED#access_token=REDACTED&id_token=REDACTED`,
+      );
+
+      const after = attributesOf(provider.records[1] as LogRecord);
+      expect(after[ATTR_PAGE_VIEW_REFERRER]).toBe(callback[ATTR_URL_FULL]);
+      expect(JSON.stringify(provider.records)).not.toMatch(/query-secret|access-secret|id-secret/);
+    });
+
+    it("uses configured query parameters for the URL and referrer", async () => {
       const { instrumentation, provider } = createInstrumentation({
-        sanitizeUrl: (url) => url.replace(/token=[^&]*/g, "token=REDACTED"),
+        redactedQueryParams: ["tenant_secret"],
       });
 
       instrumentation.enable();
       await settle();
       provider.records.length = 0;
 
-      history.pushState(null, "", "/secure?token=supersecret");
+      history.pushState(null, "", "/custom?code=visible&tenant_secret=hidden");
+      await settle();
+      history.pushState(null, "", "/after");
+      await settle();
+
+      const custom = attributesOf(provider.records[0] as LogRecord);
+      expect(custom[ATTR_URL_FULL]).toBe(
+        `${location.origin}/custom?code=visible&tenant_secret=REDACTED`,
+      );
+      const after = attributesOf(provider.records[1] as LogRecord);
+      expect(after[ATTR_PAGE_VIEW_REFERRER]).toBe(custom[ATTR_URL_FULL]);
+      expect(JSON.stringify(provider.records)).not.toContain("hidden");
+    });
+
+    it("sanitizes the URL and the referrer", async () => {
+      const seen: string[] = [];
+      const { instrumentation, provider } = createInstrumentation({
+        sanitizeUrl: (url) => {
+          seen.push(url);
+          return new URL(url).pathname;
+        },
+      });
+
+      instrumentation.enable();
+      await settle();
+      provider.records.length = 0;
+
+      history.pushState(null, "", "/secure?token=supersecret&visible=true");
       await settle();
       history.pushState(null, "", "/after");
       await settle();
 
       const secureRecord = attributesOf(provider.records[0] as LogRecord);
-      expect(String(secureRecord[ATTR_URL_FULL])).toContain("token=REDACTED");
-      expect(String(secureRecord[ATTR_URL_FULL])).not.toContain("supersecret");
+      expect(secureRecord[ATTR_URL_FULL]).toBe("/secure");
 
       const afterRecord = attributesOf(provider.records[1] as LogRecord);
-      expect(String(afterRecord[ATTR_PAGE_VIEW_REFERRER])).toContain("token=REDACTED");
-      expect(String(afterRecord[ATTR_PAGE_VIEW_REFERRER])).not.toContain("supersecret");
+      expect(afterRecord[ATTR_PAGE_VIEW_REFERRER]).toBe("/secure");
+      expect(seen).toContain(`${location.origin}/secure?token=REDACTED&visible=true`);
+      expect(JSON.stringify(seen)).not.toContain("supersecret");
     });
 
     it("applies the custom log record hook", async () => {

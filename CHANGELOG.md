@@ -4,6 +4,11 @@ All notable changes to this package are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- Redact credentials and sensitive query-string and fragment parameters from page-view URLs and
+  referrers by default, with a configurable parameter-name replacement list.
+
 ### Fixed
 
 - Invoke Azure Monitor export callbacks only once when they throw, without reporting callback

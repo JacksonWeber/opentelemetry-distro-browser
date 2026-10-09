@@ -170,7 +170,19 @@ export interface PageViewInstrumentationConfig {
    */
   readonly routeResolver?: () => string | undefined;
 
-  /** Sanitizes the page URL and the referrer before they are recorded. */
+  /**
+   * Query-string and fragment parameter names whose values are replaced with `REDACTED`.
+   *
+   * @remarks
+   * When provided, this replaces the built-in default list. Parameter names are case-sensitive, matching
+   * `URLSearchParams`. URL credentials are always redacted independently of this option.
+   */
+  readonly redactedQueryParams?: readonly string[];
+
+  /**
+   * Applies application-specific sanitization to the page URL and referrer after built-in
+   * credential and sensitive-parameter redaction.
+   */
   readonly sanitizeUrl?: (url: string) => string;
 
   /** Modifies the log record immediately before it is emitted. */

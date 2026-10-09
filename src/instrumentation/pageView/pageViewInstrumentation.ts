@@ -17,6 +17,7 @@ import { InstrumentationBase, safeExecuteInTheMiddle } from "@opentelemetry/inst
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../shared/constants.js";
 import { markPageContext } from "../../shared/pageOperationContext.js";
 import { createPageViewContext, generatePageViewId } from "./pageViewContext.js";
+import { redactUrl } from "./urlRedaction.js";
 import {
   ATTR_PAGE_VIEW_DURATION,
   ATTR_PAGE_VIEW_DURATION_SOURCE,
@@ -738,7 +739,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
   }
 
   /**
-   * Applies the `sanitizeUrl` hook.
+   * Applies built-in security redaction followed by the `sanitizeUrl` hook.
    *
    * @remarks
    * Returns an empty string when the hook fails or returns a non-string, and the caller then omits
@@ -750,14 +751,14 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
    */
   private sanitize(url: string): string {
     const sanitize = this.getConfig().sanitizeUrl;
-    if (!sanitize) {
-      return url;
-    }
     const result = safeExecuteInTheMiddle(
-      () => sanitize(url),
+      () => {
+        const redacted = redactUrl(url, this.getConfig().redactedQueryParams);
+        return sanitize ? sanitize(redacted) : redacted;
+      },
       (error) => {
         if (error) {
-          this._diag.error("sanitizeUrl hook failed; dropping the URL", error);
+          this._diag.error("URL sanitization failed; dropping the URL", error);
         }
       },
       true,
