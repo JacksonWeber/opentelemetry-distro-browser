@@ -43,6 +43,12 @@
     "LICENSE"
   ],
   "sideEffects": false,
+  "browserslist": [
+    "Chrome >= 94",
+    "Edge >= 94",
+    "Firefox >= 93",
+    "Safari >= 15.4"
+  ],
   "engines": {
     "node": "^22.22.2 || ^24.15.0 || >=26.0.0",
     "npm": ">=10"
@@ -67,6 +73,7 @@
     "test": "vitest run",
     "test:unit": "vitest run --config vitest.unit.config.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:browser-support": "node --test test/acceptance/browserSupport.test.mjs",
     "test:install-browsers": "playwright install chromium firefox webkit",
     "test:watch": "vitest",
     "test:coverage": "vitest run --config vitest.config.ts --coverage",
@@ -123,6 +130,7 @@
     "rollup": "^4.63.1",
     "rollup-plugin-dts": "^6.5.1",
     "rollup-plugin-visualizer": "^7.1.1",
+    "selenium-webdriver": "4.50.0",
     "tslib": "^2.8.1",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.70.0",
