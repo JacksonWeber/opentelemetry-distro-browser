@@ -433,6 +433,7 @@ FodyWeavers.xsd
 
 # JavaScript build, test, and package outputs
 dist/
+cdn/
 coverage/
 reports/
 samples/telemetry-viewer/public/build-info.json

@@ -22,8 +22,10 @@ import {
 } from "@opentelemetry/sdk-trace-base";
 import commonjs from "@rollup/plugin-commonjs";
 import { nodeResolve } from "@rollup/plugin-node-resolve";
+import { parse as parseScript } from "acorn";
 import { rollup } from "rollup";
 import ts from "typescript";
+import { browserBundleBudgets } from "../../scripts/measure-bundle-size.mjs";
 
 const root = new URL("../../", import.meta.url);
 const pkg = JSON.parse(await readFile(new URL("package.json", root), "utf8"));
@@ -200,6 +202,23 @@ test("the build produces ESM, CommonJS, UMD, and IIFE artifacts", async () => {
     "opentelemetry-browser.umd.min.js",
     "opentelemetry-browser.umd.min.js.map",
   ]);
+});
+
+test("browser bundles contain only ES2022 syntax and have size budgets", async () => {
+  const files = (await readdir(new URL("dist/browser/", root)))
+    .filter((file) => file.endsWith(".js"))
+    .sort();
+  for (const file of files) {
+    const code = await readFile(new URL(`dist/browser/${file}`, root), "utf8");
+    assert.doesNotThrow(
+      () => parseScript(code, { ecmaVersion: 2022, sourceType: "script" }),
+      `${file} must contain only ES2022 syntax`,
+    );
+  }
+  assert.deepEqual(
+    Object.keys(browserBundleBudgets).sort(),
+    files.filter((file) => file.endsWith(".min.js")).map((file) => `dist/browser/${file}`),
+  );
 });
 
 async function exerciseNpmPackage(distro) {

@@ -195,6 +195,53 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
   }
 });
 
+it("redacts the default page URL in the Azure Monitor ingestion payload", async () => {
+  const runId = crypto.randomUUID();
+  const ingestionEndpoint = `${inject("ingestionEndpoint")}${encodeURIComponent(runId)}`;
+  const originalUrl = `${location.pathname}${location.search}${location.hash}`;
+  history.replaceState(
+    null,
+    "",
+    "/callback?code=query-secret#access_token=access-secret&id_token=id-secret&state=public",
+  );
+  let pageReady!: () => void;
+  const pageEmitted = new Promise<void>((resolve) => {
+    pageReady = resolve;
+  });
+  const telemetry = await (
+    await import(/* @vite-ignore */ new URL("../../dist/esm/index.js", import.meta.url).href)
+  ).useMicrosoftOpenTelemetry({
+    azureMonitor: {
+      connectionString:
+        `InstrumentationKey=00000000-0000-0000-0000-000000000000;` +
+        `IngestionEndpoint=${ingestionEndpoint}`,
+    },
+    pageView: { applyCustomLogRecordData: () => pageReady() },
+  });
+
+  try {
+    await pageEmitted;
+    await telemetry.forceFlush();
+
+    const captured: AzureMonitorEnvelope[] = await fetch(
+      `${new URL(ingestionEndpoint).origin}/captured?runId=${encodeURIComponent(runId)}`,
+    ).then((response) => response.json());
+    const pageView = captured.find((envelope) => envelope.data.baseType === "PageViewData");
+    expect(pageView).toMatchObject({
+      data: {
+        baseType: "PageViewData",
+        baseData: {
+          url: `${location.origin}/callback?code=REDACTED#access_token=REDACTED&id_token=REDACTED&state=public`,
+        },
+      },
+    });
+    expect(JSON.stringify(captured)).not.toMatch(/query-secret|access-secret|id-secret/);
+  } finally {
+    await telemetry.shutdown();
+    history.replaceState(null, "", originalUrl);
+  }
+});
+
 it.each(["index.js", "index.min.js"])(
   "exports manual telemetry from application APIs through %s",
   async (file) => {

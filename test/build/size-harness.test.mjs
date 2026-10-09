@@ -12,6 +12,7 @@ import {
 import {
   addDeltas,
   addBudgetResults,
+  browserBundleBudgets,
   createMarkdownReport,
   createReport,
   entryPointBudgets,
@@ -116,6 +117,47 @@ test("reports budgets for alpha and makes them blocking starting with beta", () 
       }),
     /Bundle size budgets exceeded: \./,
   );
+});
+
+test("always enforces budgets for the emitted browser bundles", () => {
+  assert.deepEqual(Object.keys(browserBundleBudgets).sort(), [
+    "dist/browser/opentelemetry-browser-instrumentations.iife.min.js",
+    "dist/browser/opentelemetry-browser-instrumentations.umd.min.js",
+    "dist/browser/opentelemetry-browser.iife.min.js",
+    "dist/browser/opentelemetry-browser.umd.min.js",
+  ]);
+  const artifact = "dist/browser/opentelemetry-browser.iife.min.js";
+  const scenarios = addBudgetResults([
+    {
+      id: "browser-opentelemetry-browser-iife",
+      label: "Browser bundle",
+      group: "browser-bundle",
+      entryPoint: artifact,
+      rawBytes: browserBundleBudgets[artifact].rawBytes + 1,
+      gzipBytes: 1,
+      brotliBytes: 1,
+      chunks: [],
+    },
+  ]);
+  assert.equal(scenarios[0].budgetStatus, "exceeded");
+  assert.deepEqual(scenarios[0].exceededMetrics, ["rawBytes"]);
+  assert.throws(
+    () =>
+      enforceBundleSizeBudgets({
+        budgetPolicy: { mode: "report-only", blockingFrom: "beta" },
+        scenarios,
+      }),
+    new RegExp(`Bundle size budgets exceeded: ${artifact.replace(/\./g, "\\.")}`),
+  );
+
+  const markdown = createMarkdownReport({
+    package: { name: "test-package", version: "1.0.0-alpha.1" },
+    budgetPolicy: { mode: "report-only", blockingFrom: "beta" },
+    scenarios,
+  });
+  assert.match(markdown, /## Browser bundles\s+Budget policy: \*\*blocking\*\*/);
+  assert.match(markdown, /\| Artifact \| Minified \|/);
+  assert.match(markdown, /Exceeded \(rawBytes\)/);
 });
 
 test("uses measured baselines and a directly measured combined scenario", () => {

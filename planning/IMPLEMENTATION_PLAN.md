@@ -17,7 +17,7 @@ This document holds the *why*. Everything else has its own document.
 | [`M0_PLANNING.md`](M0_PLANNING.md) | The shipped alpha: what landed, what remains, and the M0 decisions |
 | [`M1_PLANNING.md`](M1_PLANNING.md) | Customer-visible browser telemetry, reliability, privacy, multi-instance isolation and browser support |
 | [`M2_PLANNING.md`](M2_PLANNING.md) | Supported browser bundle, CDN publishing and initialization snippet |
-| [`M3_PLANNING.md`](M3_PLANNING.md) | Advanced configuration, optional integrations, and loader and delivery parity |
+| [`M3_PLANNING.md`](M3_PLANNING.md) | Advanced configuration, optional integrations, loader and delivery parity, and remaining Application Insights JavaScript feature gaps |
 | [`../poc/SIZE_REPORT.md`](../poc/SIZE_REPORT.md) | Generated bundle size measurements |
 
 ## 1. Goal

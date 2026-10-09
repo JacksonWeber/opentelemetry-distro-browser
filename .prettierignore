@@ -4,6 +4,7 @@
 **/playwright-report/
 **/test-results/
 reports/
+cdn/
 temp/api/
 etc/*.api.md
 **/package-lock.json

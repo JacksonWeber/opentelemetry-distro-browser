@@ -73,6 +73,17 @@ function fixture() {
         gzipBytes: 3000,
         brotliBytes: 2600,
       },
+      {
+        id: "browser-opentelemetry-browser-umd",
+        label: "Browser bundle",
+        group: "browser-bundle",
+        entryPoint: "dist/browser/opentelemetry-browser.umd.min.js",
+        format: "browser-umd-bundle",
+        target: "browser classic script (UMD)",
+        rawBytes: 9000,
+        gzipBytes: 3200,
+        brotliBytes: 2800,
+      },
     ],
   };
   results.push(...createBundleScenarioResults(bundleSizeReport, timeUnixNano));
@@ -198,9 +209,13 @@ test("emits named native OTLP events with exact identity, timestamp, units and t
       assert.deepEqual(fields["benchmark.artifact.sha256"], {
         stringValue: scenario ? run.provenance.bundleSizeReportSha256 : run.artifact.sha256,
       });
-      assert.deepEqual(fields["benchmark.artifact.format"], {
-        stringValue: scenario ? "rollup-esm-scenario" : "esm",
-      });
+      const scenarioId = fields["benchmark.bundle.scenario.id"]?.stringValue;
+      const expectedFormat =
+        scenarioId === undefined
+          ? "esm"
+          : (run.bundleSizeReport.scenarios.find(({ id }) => id === scenarioId).format ??
+            "rollup-esm-scenario");
+      assert.deepEqual(fields["benchmark.artifact.format"], { stringValue: expectedFormat });
       assert.deepEqual(fields["benchmark.build.config.sha256"], {
         stringValue: scenario
           ? run.provenance.bundleSizeConfigSha256

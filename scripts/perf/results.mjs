@@ -50,6 +50,13 @@ export function measureBundle(bytes) {
   };
 }
 
+// Reports written before scenarios recorded their format contain only Rollup ESM scenarios.
+const scenarioFormats = new Set([
+  "rollup-esm-scenario",
+  "browser-umd-bundle",
+  "browser-iife-bundle",
+]);
+
 function bundleScenarios(report) {
   if (report?.schemaVersion !== 1 || !Array.isArray(report.scenarios)) {
     throw new Error("Invalid bundle-size report");
@@ -64,6 +71,7 @@ function bundleScenarios(report) {
       !scenario.group.trim() ||
       typeof scenario.entryPoint !== "string" ||
       !scenario.entryPoint.trim() ||
+      (scenario.format !== undefined && !scenarioFormats.has(scenario.format)) ||
       Object.values(scenarioSizes).some(
         (field) => !Number.isSafeInteger(scenario[field]) || scenario[field] <= 0,
       )
@@ -273,7 +281,7 @@ export function createPayload(run) {
             ? "reports/bundle-size.json"
             : run.artifact.path,
           "benchmark.artifact.format": scenarioProfile
-            ? "rollup-esm-scenario"
+            ? (scenarioProfile.scenario.format ?? "rollup-esm-scenario")
             : run.artifact.format,
           "benchmark.artifact.sha256": scenarioProfile
             ? text(run.provenance?.bundleSizeReportSha256, "bundle-size report hash")
