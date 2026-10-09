@@ -30,7 +30,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.useRealTimers();
-  history.replaceState(null, "", originalUrl);
+  if (location.href !== originalUrl) history.replaceState(null, "", originalUrl);
   for (const result of results) {
     if (result.status === "rejected") throw result.reason;
   }

@@ -35,7 +35,7 @@ afterEach(async () => {
   handle = undefined;
   history.pushState = originalPush;
   history.replaceState = originalReplace;
-  history.replaceState(null, "", originalUrl);
+  if (location.href !== originalUrl) history.replaceState(null, "", originalUrl);
   trace.disable();
   logs.disable();
   context.disable();
