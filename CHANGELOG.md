@@ -4,6 +4,11 @@ All notable changes to this package are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- Classify named browser log events as Azure Monitor custom events regardless of severity, while
+  preserving browser console records as trace messages with their severity.
+
 ### Fixed
 
 - Prevent pending page views from being lost during unload by settling them before pagehide or

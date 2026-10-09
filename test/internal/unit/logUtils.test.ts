@@ -739,35 +739,80 @@ describe("Azure Monitor log envelope mapping", () => {
     });
   });
 
-  it.each(["browser.console", "application.audit"])(
-    "maps named log %s to MessageData without losing its message or severity",
-    (eventName) => {
+  it.each([
+    ["browser.console", "MessageData", "Microsoft.ApplicationInsights.Message"],
+    ["browser.navigation", "PageViewData", "Microsoft.ApplicationInsights.PageView"],
+    ["browser.navigation_timing", "EventData", "Microsoft.ApplicationInsights.Event"],
+    ["browser.resource_timing", "EventData", "Microsoft.ApplicationInsights.Event"],
+    ["browser.user_action.click", "EventData", "Microsoft.ApplicationInsights.Event"],
+    ["browser.web_vital", "EventData", "Microsoft.ApplicationInsights.Event"],
+    ["exception", "ExceptionData", "Microsoft.ApplicationInsights.Exception"],
+  ] as const)(
+    "maps browser instrumentation event %s to %s",
+    (eventName, baseType, envelopeName) => {
       const envelope = logToEnvelope(
         makeLog({
           eventName,
-          body: "checkout completed",
+          body: "instrumentation payload",
           severityNumber: 13,
-          severityText: "warn",
-          attributes: { currency: "USD", total: 42.5, items: ["sku-1", "sku-2"] },
+          attributes: {},
         }),
         instrumentationKey,
       );
 
-      expect(envelope.data).toEqual({
-        baseType: "MessageData",
-        baseData: {
-          ver: 2,
-          message: "checkout completed",
-          severityLevel: 2,
-          properties: {
-            currency: "USD",
-            items: '["sku-1","sku-2"]',
-          },
-          measurements: { total: 42.5 },
-        },
-      });
+      expect(envelope.name).toBe(envelopeName);
+      expect(envelope.data.baseType).toBe(baseType);
     },
   );
+
+  it("maps browser.console to MessageData without losing its message or severity", () => {
+    const envelope = logToEnvelope(
+      makeLog({
+        eventName: "browser.console",
+        body: "checkout completed",
+        severityNumber: 13,
+        severityText: "warn",
+        attributes: { currency: "USD", total: 42.5, items: ["sku-1", "sku-2"] },
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.data).toEqual({
+      baseType: "MessageData",
+      baseData: {
+        ver: 2,
+        message: "checkout completed",
+        severityLevel: 2,
+        properties: {
+          currency: "USD",
+          items: '["sku-1","sku-2"]',
+        },
+        measurements: { total: 42.5 },
+      },
+    });
+  });
+
+  it("maps other named logs to EventData regardless of body or severity", () => {
+    const envelope = logToEnvelope(
+      makeLog({
+        eventName: "application.audit",
+        body: "checkout completed",
+        severityNumber: 13,
+        attributes: { currency: "USD", total: 42.5 },
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.data).toEqual({
+      baseType: "EventData",
+      baseData: {
+        ver: 2,
+        name: "application.audit",
+        properties: { currency: "USD" },
+        measurements: { total: 42.5 },
+      },
+    });
+  });
 
   it("maps a name-only record to EventData", () => {
     const envelope = logToEnvelope(

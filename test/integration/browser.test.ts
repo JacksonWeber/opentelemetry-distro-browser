@@ -111,12 +111,12 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
           }),
         }),
         expect.objectContaining({
-          name: "Microsoft.ApplicationInsights.Message",
+          name: "Microsoft.ApplicationInsights.Event",
           tags: expect.objectContaining({ "ai.operation.id": operationId }),
           data: expect.objectContaining({
-            baseType: "MessageData",
+            baseType: "EventData",
             baseData: expect.objectContaining({
-              message: runId,
+              name: "checkout.clicked",
               properties: expect.objectContaining({ "test.run_id": runId }),
             }),
           }),

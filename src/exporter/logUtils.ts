@@ -461,11 +461,7 @@ export function logToEnvelope(
       ...(referrer === undefined ? {} : { referredUri: serializeAttribute(referrer) }),
       ...customFields,
     };
-  } else if (
-    logRecord.eventName &&
-    logRecord.body === undefined &&
-    logRecord.severityNumber === undefined
-  ) {
+  } else if (logRecord.eventName && logRecord.eventName !== "browser.console") {
     name = "Microsoft.ApplicationInsights.Event";
     baseType = "EventData";
     baseData = {
