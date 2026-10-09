@@ -296,6 +296,35 @@ it("rejects re-registering active fetch before rebinding providers", async () =>
 });
 
 it.each([
+  ["fetch", () => new FetchInstrumentation({ enabled: false })],
+  ["XHR", () => new XhrInstrumentation({ enabled: false })],
+  ["console", () => new ConsoleInstrumentation({ enabled: false })],
+  ["navigation", () => new NavigationInstrumentation({ enabled: false })],
+  ["page view", () => new PageViewInstrumentation({ enabled: false })],
+] as const)(
+  "rejects re-registering %s with enabled config after shutdown",
+  async (_name, create) => {
+    const instrumentation = create();
+    const first = await start([instrumentation]);
+    await first.handle.shutdown();
+    instrumentation.setConfig({ enabled: true });
+    const bindTrace = vi.spyOn(instrumentation, "setTracerProvider");
+    const bindLogs = vi.spyOn(instrumentation, "setLoggerProvider");
+    const enable = vi.spyOn(instrumentation, "enable");
+    await expect(start([instrumentation])).rejects.toThrow("browser-instrumentation-active");
+    expect(bindTrace).not.toHaveBeenCalled();
+    expect(bindLogs).not.toHaveBeenCalled();
+    expect(enable).not.toHaveBeenCalled();
+
+    instrumentation.setConfig({ enabled: false });
+    await start([instrumentation]);
+    expect(bindTrace).toHaveBeenCalledOnce();
+    expect(bindLogs).toHaveBeenCalledOnce();
+    expect(enable).toHaveBeenCalledOnce();
+  },
+);
+
+it.each([
   ["navigation", false],
   ["navigation", true],
   ["page view", false],

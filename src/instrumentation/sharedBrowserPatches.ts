@@ -245,13 +245,13 @@ function adapt(instrumentation: Patchable): void {
     conflict("browser-instrumentation-version", "Unsupported browser instrumentation");
   }
   if (
+    instrumentation.getConfig().enabled ||
     instrumentation._isEnabled ||
     instrumentation._active ||
     instrumentation.enabledState ||
     (adapted
       ? adapted()
-      : instrumentation.getConfig().enabled ||
-        instrumentation._isFetchPatched ||
+      : instrumentation._isFetchPatched ||
         instrumentation._isXhrPatched ||
         instrumentation._isHistoryPatched ||
         instrumentation._isPatched ||
