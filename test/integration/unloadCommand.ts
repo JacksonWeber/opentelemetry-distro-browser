@@ -6,12 +6,21 @@ import type {} from "vitest/browser";
 
 declare module "vitest/browser" {
   interface BrowserCommands {
-    verifyUnloadDelivery(fixtureUrl: string, captureUrl: string): Promise<unknown[]>;
+    verifyUnloadDelivery(
+      fixtureUrl: string,
+      captureUrl: string,
+      expectedCount?: number,
+    ): Promise<unknown[]>;
   }
 }
 
 export const verifyUnloadDelivery = defineBrowserCommand(
-  async ({ page }, fixtureUrl: string, captureUrl: string): Promise<unknown[]> => {
+  async (
+    { page },
+    fixtureUrl: string,
+    captureUrl: string,
+    expectedCount: number = 1,
+  ): Promise<unknown[]> => {
     const fixturePage = await page.context().newPage();
     const diagnostics: string[] = [];
     fixturePage.on("console", (message) => diagnostics.push(`console: ${message.text()}`));
@@ -38,14 +47,15 @@ export const verifyUnloadDelivery = defineBrowserCommand(
       await fixturePage.goto("about:blank");
 
       const deadline = Date.now() + 5_000;
+      let envelopes: unknown[] = [];
       do {
         const response = await fetch(captureUrl);
-        const envelopes = (await response.json()) as unknown[];
-        if (envelopes.length > 0) return envelopes;
+        envelopes = (await response.json()) as unknown[];
+        if (envelopes.length >= expectedCount) return envelopes;
         await new Promise((resolve) => setTimeout(resolve, 50));
       } while (Date.now() < deadline);
 
-      return [];
+      return envelopes;
     } finally {
       await fixturePage.close();
     }

@@ -220,6 +220,15 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     return this.enabledState ? this.currentOperation() : undefined;
   }
 
+  /**
+   * Emits the pending page view before the distribution snapshots processor buffers for unload.
+   * Hidden visibility can precede pagehide, so this cannot rely on pagehide listener ordering.
+   * @internal
+   */
+  public settleForUnload(): void {
+    this.settle(DURATION_SOURCE_PAGE_HIDE);
+  }
+
   private currentOperation(): SpanContext {
     const url = this.getNavigationApi()?.currentEntry?.url ?? location.href;
     const shared = this.getConfig().sharedOperation?.();
@@ -314,7 +323,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
 
     // A soft navigation that never settles would otherwise be lost when the user leaves.
     this.onPageHide = (): void => {
-      this.settle(DURATION_SOURCE_PAGE_HIDE);
+      this.settleForUnload();
     };
     window.addEventListener("pagehide", this.onPageHide);
 

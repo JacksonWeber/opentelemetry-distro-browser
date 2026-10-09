@@ -149,6 +149,7 @@ export async function useMicrosoftOpenTelemetry(
   const flushForUnload = (): void => {
     if (stopping || unloadFlushPromise) return;
     beginUnloading();
+    pageView?.settleForUnload();
     const operation = flushProcessors()
       .catch((error: unknown) => {
         reportError("Telemetry unload flush failed", error);
