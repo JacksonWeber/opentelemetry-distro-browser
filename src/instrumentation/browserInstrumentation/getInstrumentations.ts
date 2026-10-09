@@ -47,8 +47,8 @@ function isEnabled(options: { enabled?: boolean } | undefined, defaultEnabled: b
  *
  * The only settings applied beyond what a caller passes are bounds on subresource timing volume,
  * which are defaults a caller can override. Every instrumentation here comes from
- * `@opentelemetry/browser-instrumentation`; this distribution selects and configures them rather
- * than implementing or wrapping them.
+ * `@opentelemetry/browser-instrumentation`. Registration shares their browser method patches
+ * without replacing their collection logic or per-instance configuration.
  *
  * @param options - Selects which instrumentations to construct and configures each one.
  * @returns The constructed instrumentations, in the order they were selected.

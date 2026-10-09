@@ -30,9 +30,7 @@ import type { PageViewInstrumentationConfig } from "./instrumentation/pageView/t
  * constructed only when `enabled` is `true`. Nothing is constructed until `getInstrumentations`
  * is called, so a caller that never calls it registers no instrumentations at all.
  *
- * The instrumentations below come from `@opentelemetry/browser-instrumentation`. This distribution
- * selects which of them are constructed and supplies defaults; it does not implement or wrap them.
- * Their source module defaults `enabled` to `true` for all of them.
+ * Uses `@opentelemetry/browser-instrumentation` with distro defaults and shared-patch registration.
  *
  * @public
  */
@@ -197,17 +195,10 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
    */
   logRecordProcessors?: LogRecordProcessor[];
   /**
-   * Individually imported OpenTelemetry instrumentation instances to register.
-   *
-   * @remarks
-   * No instrumentations are included by default. Construct selected instances with
-   * `enabled: false` to defer collection until their trace and log providers are bound.
-   * Like OpenTelemetry's registration API, registration enables those instances; omit an
-   * instance from this array to opt out. Already-enabled instances are rebound without
-   * calling `enable()` again, but telemetry emitted before initialization cannot be recovered.
-   *
-   * The returned handle owns disabling these instances. Do not share them between SDKs.
-   * Configure collection filters and sanitization on each instance before registration.
+   * Instrumentations owned and disabled by this handle. Do not share instances.
+   * Construct upstream fetch, XHR, console and navigation with `enabled: false` before registration.
+   * Shared patches keep settings isolated. Fetch/XHR require an enabled trace pipeline.
+   * Fetch uses the last writer's trace headers. XHR preserves existing headers.
    */
   instrumentations?: readonly BrowserInstrumentation[];
   /**

@@ -22,6 +22,10 @@ import { AzureMonitorSpanExporter } from "./exporter/trace.js";
 import { PageViewInstrumentation } from "./instrumentation/pageView/index.js";
 import { PageViewCorrelation } from "./instrumentation/pageView/pageViewCorrelation.js";
 import {
+  claimInstrumentations,
+  isNetworkInstrumentation,
+} from "./instrumentation/sharedBrowserPatches.js";
+import {
   ATTR_TELEMETRY_DISTRO_NAME,
   ATTR_TELEMETRY_DISTRO_VERSION,
 } from "@opentelemetry/semantic-conventions";
@@ -146,6 +150,7 @@ export async function useMicrosoftOpenTelemetry(
   let flushPromise: Promise<void> | undefined;
   let unloadFlushPromise: Promise<void> | undefined;
   let removeUnloadSubscription: (() => void) | undefined;
+  let releaseInstrumentations: (() => void) | undefined;
   const flushForUnload = (): void => {
     if (stopping || unloadFlushPromise) return;
     beginUnloading();
@@ -205,12 +210,10 @@ export async function useMicrosoftOpenTelemetry(
           errors.push(error);
         }
       }
-      for (let i = instance ? instrumentations.length - 1 : -1; i >= 0; i--) {
-        try {
-          instrumentations[i].disable();
-        } catch (error) {
-          errors.push(error);
-        }
+      try {
+        releaseInstrumentations?.();
+      } catch (error) {
+        errors.push(error);
       }
       if (!initialized) {
         try {
@@ -311,6 +314,7 @@ export async function useMicrosoftOpenTelemetry(
     // Ownership transfers on call, including failed startup.
     processorsTransferred = true;
     instance = await startTelemetryInstance(instanceOptions);
+    releaseInstrumentations = claimInstrumentations(instrumentations);
     removeUnloadSubscription = subscribeToUnload(flushForUnload);
 
     // Bind to this instance's own providers, never the global router, so collection stays in
@@ -318,6 +322,7 @@ export async function useMicrosoftOpenTelemetry(
     for (const instrumentation of instrumentations) {
       instrumentation.setTracerProvider(instance.tracerProvider);
       instrumentation.setLoggerProvider?.(instance.loggerProvider);
+      if (!spanProcessors.length && isNetworkInstrumentation(instrumentation)) continue;
       if (!instrumentation.getConfig().enabled) instrumentation.enable();
     }
     instance.commit();

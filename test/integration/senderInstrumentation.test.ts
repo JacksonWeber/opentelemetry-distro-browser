@@ -47,7 +47,7 @@ describe.each(["index.js", "index.min.js"])("export instrumentation through %s",
       const nativeFetch = globalThis.fetch.bind(globalThis);
       const transport = vi.fn(nativeFetch);
       vi.stubGlobal("fetch", transport);
-      instrumentation = new FetchInstrumentation();
+      instrumentation = new FetchInstrumentation({ enabled: false });
       const runId = crypto.randomUUID();
       const ingestionEndpoint = `${inject("ingestionEndpoint")}${runId}`;
       const pipeline = createInMemoryPipeline();
@@ -118,6 +118,16 @@ describe.each(["index.js", "index.min.js"])("export instrumentation through %s",
         propagateTraceHeaderCorsUrls: [ENDPOINT],
       });
       const pipeline = createInMemoryPipeline();
+      if (alreadyEnabled) {
+        await expect(
+          distro.useMicrosoftOpenTelemetry({
+            ...pipeline.options,
+            instrumentations: [instrumentation],
+            pageView: { enabled: false },
+          }),
+        ).rejects.toThrow("browser-instrumentation-active");
+        return;
+      }
       handle = await distro.useMicrosoftOpenTelemetry({
         ...pipeline.options,
         azureMonitor: {
@@ -166,7 +176,7 @@ describe.each(["index.js", "index.min.js"])("export instrumentation through %s",
 async function startInstrumentedPipeline() {
   const transport = vi.fn<typeof fetch>().mockImplementation(async () => new Response(null));
   vi.stubGlobal("fetch", transport);
-  instrumentation = new FetchInstrumentation();
+  instrumentation = new FetchInstrumentation({ enabled: false });
   const pipeline = createInMemoryPipeline();
   handle = await useMicrosoftOpenTelemetry({
     ...pipeline.options,

@@ -116,28 +116,23 @@ for (const file of ["index.js", "index.min.js"]) {
     expect(httpDisable).toHaveBeenCalledOnce();
   });
 
-  it(`rebinds an already-enabled navigation logger created before initialization through ${file}`, async () => {
+  it(`rejects already-enabled navigation before binding providers through ${file}`, async () => {
     const distro = await loadDistro();
     const pipeline = createInMemoryPipeline();
     const navigation = new NavigationInstrumentation();
     const enable = vi.spyOn(navigation, "enable");
-    const handle = await distro.useMicrosoftOpenTelemetry({
-      ...pipeline.options,
-      instrumentations: [navigation],
-      // This covers rebinding, so the distribution's own page view is switched off to keep the
-      // emitted set exact. Left on, upstream navigation and page view both report the route.
-      pageView: { enabled: false },
-    });
-    handles.add(handle);
-    history.pushState(null, "", "/rebound");
-    await pipeline.logProcessor.forceFlush();
-    expect(pipeline.logExporter.getFinishedLogRecords()).toEqual([
-      expect.objectContaining({
-        eventName: "browser.navigation",
-        attributes: expect.objectContaining({ "url.full": `${location.origin}/rebound` }),
-      }),
-    ]);
-    expect(enable).not.toHaveBeenCalled();
+    try {
+      await expect(
+        distro.useMicrosoftOpenTelemetry({
+          ...pipeline.options,
+          instrumentations: [navigation],
+          pageView: { enabled: false },
+        }),
+      ).rejects.toThrow("browser-instrumentation-active");
+      expect(enable).not.toHaveBeenCalled();
+    } finally {
+      navigation.disable();
+    }
   });
 
   it(`leaves browser APIs untouched when everything is switched off through ${file}`, async () => {

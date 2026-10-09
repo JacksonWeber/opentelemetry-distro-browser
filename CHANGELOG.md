@@ -6,6 +6,9 @@ All notable changes to this package are documented in this file.
 
 ### Fixed
 
+- Share fetch, XHR, console and navigation patches across instances without nesting their
+  telemetry contexts. Preserve per-instance filters and hooks and restore owned methods after
+  the last subscriber stops. Register shared upstream instrumentations before first enablement.
 - Prevent pending page views from being lost during unload by settling them before pagehide or
   hidden-visibility flushes, including tab switches.
 

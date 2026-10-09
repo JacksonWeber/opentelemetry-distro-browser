@@ -66,10 +66,9 @@ rejected with a diagnostic rather than silently dropped. W3C Trace Context and
 Baggage round-trip across an instance boundary, and a pre-existing global OTel
 SDK is detected, not overwritten.
 
-**Constraint, not solved.** Instrumentations that patch a browser global cannot
-run in more than one instance - two instances both enabling fetch report one
-request twice - so a shared patch needs a designated owner until
-[M1](M1_PLANNING.md). In
+**Original constraint, addressed in M1.** Independently wrapping a browser global
+couples instances. Production registration now shares the method patch and fans out to
+instance-owned subscribers for the pinned upstream modules. In
 `@opentelemetry/browser-instrumentation` the shared-patch modules are
 `navigation`, `console`, `fetch` and `xhr`; the rest attach isolated listeners or
 observers and route cleanly.
