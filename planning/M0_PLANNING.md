@@ -4,7 +4,7 @@ Ship a thin distribution: configure the upstream `@opentelemetry/browser-sdk`, a
 Azure Monitor exporter, adopt the upstream browser instrumentations, and publish. M0 is
 single-instance and ES2022 ESM-only, and does not build its own SDK.
 
-Status: published as `@microsoft/opentelemetry-browser`; `0.1.0-alpha.2` is prepared (#79). The
+Status: published as `@microsoft/opentelemetry-browser`; `0.1.0-alpha.2` is published (#79) and `0.1.0-alpha.3` is prepared. The
 beta release and the items below remain.
 
 ## Remaining
@@ -44,7 +44,7 @@ beta release and the items below remain.
 | PR performance harness | Pull-request performance regression reporting and comparison (#38) |
 | Changelog check | CI changelog gate (#35) |
 | Test coverage | End-to-end page view and custom event (#32), context handling (#33), shared fixtures and PR coverage reports (#51) |
-| Release | First alpha published, package renamed (#31, #36); `0.1.0-alpha.2` prepared (#79) |
+| Release | First alpha published, package renamed (#31, #36); `0.1.0-alpha.2` published (#79); `0.1.0-alpha.3` prepared |
 | Public-release paperwork | `LICENSE`, `NOTICE.md`, `SECURITY.md`, `SUPPORT.md`, `PRIVACY.md`, `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md` |
 
 ## Deferred

@@ -65,7 +65,8 @@ await import("./app.js");
 collection is enabled by default. `getInstrumentations()` loads fetch and XHR instrumentation by
 default; its other instrumentations are opt-in.
 
-See the runnable [Azure Monitor, console, and OTLP samples](samples/) for complete applications.
+See the runnable [Azure Monitor, console, OTLP, and telemetry viewer samples](samples/) for
+complete applications.
 
 ### Manual telemetry
 
@@ -198,13 +199,13 @@ await useMicrosoftOpenTelemetry({
 
 ## Bundle size
 
-The production bundle is built and measured in CI. For `0.1.0-alpha.1`:
+The production bundle is built and measured in CI. For `0.1.0-alpha.3`:
 
-| Artifact                   | Size     |
-| -------------------------- | -------: |
-| Minified ESM               | 99.57 kB |
-| Minified ESM + gzip        | 28.94 kB |
-| Minified ESM + Brotli      | 25.55 kB |
+| Artifact                   | Size      |
+| -------------------------- | --------: |
+| Minified ESM               | 129.27 kB |
+| Minified ESM + gzip        |  39.40 kB |
+| Minified ESM + Brotli      |  33.96 kB |
 
 Run `npm run build && npm run size` to reproduce these measurements. Optional browser
 instrumentations are loaded through dynamic imports and remain outside the root bundle unless used.

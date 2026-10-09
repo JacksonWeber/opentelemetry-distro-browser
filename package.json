@@ -1,6 +1,6 @@
 {
   "name": "@microsoft/opentelemetry-browser",
-  "version": "0.1.0-alpha.2",
+  "version": "0.1.0-alpha.3",
   "description": "OpenTelemetry distribution for the browser",
   "license": "MIT",
   "type": "module",

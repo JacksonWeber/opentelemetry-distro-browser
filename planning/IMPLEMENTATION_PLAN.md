@@ -2,7 +2,7 @@
 
 **Status:** Active
 **Approach:** Greenfield browser distribution built on upstream OpenTelemetry APIs
-**Shipped:** Milestone M0, published as `@microsoft/opentelemetry-browser@0.1.0-alpha.1`
+**Shipped:** Milestone M0, published as `@microsoft/opentelemetry-browser@0.1.0-alpha.2`
 **Prior evidence:** Multi-instance browser PoC in [`../poc/`](../poc/)
 **Upstream alignment verified:** 2026-09-10 against
 [`open-telemetry/opentelemetry-browser`](https://github.com/open-telemetry/opentelemetry-browser)
