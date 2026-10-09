@@ -15,6 +15,8 @@ All notable changes to this package are documented in this file.
 
 ### Changed
 
+- Prevent pending page views from being lost during unload by settling them before pagehide or
+  hidden-visibility flushes, including tab switches.
 - Correlate page views, spans, and logs through shared operation IDs while preserving explicit
   application span contexts.
 - Fixed post-merge performance publishing for fork contributions by using the upstream
