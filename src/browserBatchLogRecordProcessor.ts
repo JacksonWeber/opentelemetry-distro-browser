@@ -15,6 +15,7 @@ import type {
   ReadableLogRecord,
   ReadWriteLogRecord,
 } from "@opentelemetry/sdk-logs";
+import { runLifecycleTasks } from "./shared/lifecycle.js";
 
 export type BrowserBatchLogRecordProcessorOptions = Pick<
   BatchLogRecordProcessorBrowserOptions,
@@ -86,7 +87,10 @@ export class BrowserBatchLogRecordProcessor implements LogRecordProcessor {
     for (let offset = 0; offset < records.length; offset += this.maxExportBatchSize) {
       operations.push(this.exportBatch(records.slice(offset, offset + this.maxExportBatchSize)));
     }
-    return Promise.all(operations).then(() => {});
+    return runLifecycleTasks(
+      operations.map((operation) => () => operation),
+      "Log flush failed",
+    );
   }
 
   public shutdown(): Promise<void> {

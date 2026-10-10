@@ -55,6 +55,11 @@ function create(options: Partial<BrowserBatchLogRecordProcessorOptions> = {}) {
     exporter,
     batches,
     finish,
+    finishNext(result: ExportResult) {
+      const callback = callbacks.shift();
+      if (!callback) throw new Error("No pending export to finish.");
+      callback(result);
+    },
   };
 }
 
@@ -99,6 +104,90 @@ it("schedules all flush batches without waiting for an older export response", a
   expect(settled).toBe(false);
   pipeline.finish();
   await flush;
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+it.each(["forceFlush", "shutdown"] as const)(
+  "waits for sibling batches after an export fails during %s",
+  async (method) => {
+    vi.useFakeTimers();
+    const pipeline = create({ maxExportBatchSize: 1 });
+    pipeline.logger.emit({ body: "failed batch" });
+    pipeline.logger.emit({ body: "pending batch" });
+    if (method === "shutdown") providers.delete(pipeline.provider);
+    const operation = pipeline.processor[method]();
+    let settled = false;
+    void operation.then(
+      () => (settled = true),
+      () => (settled = true),
+    );
+    const failure = new Error("first batch failed");
+    const rejection = expect(operation).rejects.toBe(failure);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pipeline.batches).toHaveLength(2);
+    pipeline.finishNext({ code: ExportResultCode.FAILED, error: failure });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).toBe(false);
+    expect(pipeline.exporter.shutdown).not.toHaveBeenCalled();
+
+    pipeline.finish();
+    await rejection;
+    expect(settled).toBe(true);
+    if (method === "shutdown") {
+      expect(pipeline.exporter.shutdown).toHaveBeenCalledOnce();
+      await expect(pipeline.provider.shutdown()).rejects.toBe(failure);
+    }
+    expect(vi.getTimerCount()).toBe(0);
+  },
+);
+
+it.each(["forceFlush", "shutdown"] as const)(
+  "waits for sibling batches after an older export times out during %s",
+  async (method) => {
+    vi.useFakeTimers();
+    const pipeline = create({ maxExportBatchSize: 1, exportTimeoutMillis: 100 });
+    pipeline.logger.emit({ body: "older batch" });
+    await vi.advanceTimersByTimeAsync(50);
+    pipeline.logger.emit({ body: "pending batch" });
+    if (method === "shutdown") providers.delete(pipeline.provider);
+    const operation = pipeline.processor[method]();
+    let settled = false;
+    void operation.then(
+      () => (settled = true),
+      () => (settled = true),
+    );
+    const rejection = expect(operation).rejects.toThrow("Operation timed out");
+    await vi.advanceTimersByTimeAsync(50);
+    expect(pipeline.batches).toHaveLength(2);
+    expect(settled).toBe(false);
+    expect(pipeline.exporter.shutdown).not.toHaveBeenCalled();
+
+    pipeline.finish();
+    await rejection;
+    expect(settled).toBe(true);
+    if (method === "shutdown") {
+      expect(pipeline.exporter.shutdown).toHaveBeenCalledOnce();
+      await expect(pipeline.provider.shutdown()).rejects.toThrow("Operation timed out");
+    }
+    expect(vi.getTimerCount()).toBe(0);
+  },
+);
+
+it("reports every failed batch after all exports settle", async () => {
+  vi.useFakeTimers();
+  const pipeline = create({ maxExportBatchSize: 1 });
+  pipeline.logger.emit({ body: "first batch" });
+  pipeline.logger.emit({ body: "second batch" });
+  const first = new Error("first failure");
+  const second = new Error("second failure");
+  const rejection = expect(pipeline.processor.forceFlush()).rejects.toMatchObject({
+    name: "AggregateError",
+    errors: [first, second],
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  pipeline.finishNext({ code: ExportResultCode.FAILED, error: first });
+  pipeline.finishNext({ code: ExportResultCode.FAILED, error: second });
+  await rejection;
   expect(vi.getTimerCount()).toBe(0);
 });
 
