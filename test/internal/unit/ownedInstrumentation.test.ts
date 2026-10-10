@@ -58,7 +58,9 @@ function pageViewCount(processor: RecordingProcessor): number {
 }
 
 beforeEach(() => {
-  if (location.href !== originalUrl) history.replaceState(null, "", originalUrl);
+  if (location.href !== originalUrl) {
+    history.replaceState(null, "", originalUrl);
+  }
   previousSession = localStorage.getItem(storageKey);
 });
 
@@ -71,7 +73,9 @@ afterEach(async () => {
   context.disable();
   diag.disable();
   vi.restoreAllMocks();
-  if (location.href !== originalUrl) history.replaceState(null, "", originalUrl);
+  if (location.href !== originalUrl) {
+    history.replaceState(null, "", originalUrl);
+  }
   if (previousSession === null) localStorage.removeItem(storageKey);
   else localStorage.setItem(storageKey, previousSession);
 });

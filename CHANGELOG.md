@@ -4,6 +4,11 @@ All notable changes to this package are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- Classify named browser log events as Azure Monitor custom events regardless of severity, while
+  preserving browser console records as trace messages with their severity.
+
 ### Fixed
 
 - Share fetch, XHR, console and navigation patches across instances without nesting their
@@ -11,6 +16,11 @@ All notable changes to this package are documented in this file.
   the last subscriber stops. Register shared upstream instrumentations before first enablement.
 - Prevent pending page views from being lost during unload by settling them before pagehide or
   hidden-visibility flushes, including tab switches.
+
+### Added
+
+- Publish the minimum supported Chrome, Edge, Firefox, and Safari versions and gate the built
+  browser bundle against those releases with real-browser acceptance tests.
 
 ## 0.1.0-alpha.3 - 2026-10-09
 

@@ -176,6 +176,40 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  browser-support:
+    name: Minimum supported ${{ matrix.browser }}
+    if: >-
+      github.actor != 'dependabot[bot]' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [Chrome, Edge, Firefox, Safari]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build browser bundles
+        run: npm run build
+
+      - name: Test the minimum supported browser version
+        env:
+          BROWSER_FAMILY: ${{ matrix.browser }}
+          BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME }}
+          BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
+        run: npm run test:browser-support
+
   coverage-base:
     name: Coverage baseline (Node 24)
     if: github.event_name == 'pull_request'

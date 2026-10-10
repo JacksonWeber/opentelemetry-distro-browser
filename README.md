@@ -240,19 +240,24 @@ OpenTelemetry APIs used by the distribution, including `trace` and `logs`.
 
 ## Browser support
 
-Like the Application Insights JavaScript SDK, support tracks the latest stable releases of the
-major browser families:
+The package targets ES2022 and supports these browser versions:
 
-| Chrome   | Firefox  | Edge     | Opera    | Safari   |
-| -------- | -------- | -------- | -------- | -------- |
-| Latest ✔ | Latest ✔ | Latest ✔ | Latest ✔ | Latest ✔ |
+| Chrome | Edge | Firefox | Safari |       Opera |
+| -----: | ---: | ------: | -----: | ----------: |
+|    94+ |  94+ |     93+ |  15.4+ | Latest stable |
 
-Internet Explorer and other browsers requiring ES5 are not supported. The ESM and CommonJS npm
-entries require a browser bundler; UMD and IIFE artifacts support classic script loading.
+The `browserslist` field in `package.json` is the machine-readable source of truth for the Chrome,
+Edge, Firefox, and Safari minimums. Raising one of those minimums is a compatibility change and must
+be reflected there and in this table. Opera support tracks its latest stable release. Internet
+Explorer and other browsers requiring ES5 are not supported. The ESM and CommonJS npm entries
+require a browser bundler; UMD and IIFE artifacts support classic script loading.
 
 CI runs the complete unit and emitted-bundle integration suites in current Playwright Chromium,
 Firefox, and WebKit. Chromium provides engine coverage for Chrome, Edge, and Opera; WebKit provides
-engine coverage for Safari.
+engine coverage for Safari. Real-browser acceptance tests require the
+`BROWSERSTACK_USERNAME` and `BROWSERSTACK_ACCESS_KEY` repository secrets and therefore do not run
+for pull requests from forks. For a local run, also set `BROWSER_FAMILY` to one of the four names in
+the versioned support matrix.
 
 The package publishes ESM and CommonJS entries through its `exports` map. Server-rendered builds can
 import the package, but browser telemetry should be initialized in client-side code.
