@@ -191,6 +191,152 @@ it("reports every failed batch after all exports settle", async () => {
   expect(vi.getTimerCount()).toBe(0);
 });
 
+it.each(["forceFlush", "shutdown"] as const)(
+  "allows exports to complete after 30 seconds during %s with a longer timeout",
+  async (method) => {
+    vi.useFakeTimers();
+    const pipeline = create({ exportTimeoutMillis: 60_000 });
+    pipeline.logger.emit({ body: "slow export" });
+    if (method === "shutdown") providers.delete(pipeline.provider);
+    let settled = false;
+    const operation = pipeline.processor[method]().then(
+      () => {
+        settled = true;
+        return undefined;
+      },
+      (error: unknown) => {
+        settled = true;
+        return error;
+      },
+    );
+    try {
+      await vi.advanceTimersByTimeAsync(40_000);
+      expect(pipeline.exporter.export).toHaveBeenCalledOnce();
+      expect(settled).toBe(false);
+      expect(pipeline.exporter.shutdown).not.toHaveBeenCalled();
+    } finally {
+      pipeline.finish();
+    }
+    expect(await operation).toBeUndefined();
+    if (method === "shutdown") {
+      expect(pipeline.exporter.shutdown).toHaveBeenCalledOnce();
+      await pipeline.provider.shutdown();
+    }
+    expect(vi.getTimerCount()).toBe(0);
+  },
+);
+
+it.each(["forceFlush", "shutdown"] as const)(
+  "uses the configured export deadline above 30 seconds during %s",
+  async (method) => {
+    vi.useFakeTimers();
+    const pipeline = create({ exportTimeoutMillis: 60_000 });
+    pipeline.logger.emit({ body: "stuck export" });
+    if (method === "shutdown") providers.delete(pipeline.provider);
+    let settled = false;
+    const operation = pipeline.processor[method]().then(
+      () => {
+        settled = true;
+        return undefined;
+      },
+      (error: unknown) => {
+        settled = true;
+        return error;
+      },
+    );
+    try {
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(settled).toBe(false);
+      expect(pipeline.exporter.shutdown).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toBe(true);
+      expect(await operation).toEqual(
+        expect.objectContaining({ message: expect.stringContaining("Operation timed out") }),
+      );
+      if (method === "shutdown") {
+        expect(pipeline.exporter.shutdown).toHaveBeenCalledOnce();
+        await expect(pipeline.provider.shutdown()).rejects.toThrow("Operation timed out");
+      }
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      pipeline.finish();
+    }
+  },
+);
+
+it.each(["rejects", "throws"] as const)(
+  "preserves the export failure when exporter shutdown also %s",
+  async (failureMode) => {
+    const pipeline = create();
+    const exportFailure = new Error("export failed");
+    const shutdownFailure = new Error("exporter shutdown failed");
+    pipeline.exporter.export.mockImplementation((_, callback) =>
+      callback({ code: ExportResultCode.FAILED, error: exportFailure }),
+    );
+    pipeline.exporter.shutdown.mockImplementation(() => {
+      if (failureMode === "throws") throw shutdownFailure;
+      return Promise.reject(shutdownFailure);
+    });
+    pipeline.logger.emit({ body: "failed export" });
+    providers.delete(pipeline.provider);
+    const operation = pipeline.processor.shutdown();
+    expect(pipeline.processor.shutdown()).toBe(operation);
+    await expect(operation).rejects.toMatchObject({
+      name: "AggregateError",
+      errors: [exportFailure, shutdownFailure],
+    });
+    expect(pipeline.exporter.shutdown).toHaveBeenCalledOnce();
+    await expect(pipeline.provider.shutdown()).rejects.toBeInstanceOf(AggregateError);
+  },
+);
+
+it("reports an exporter shutdown failure after a successful flush", async () => {
+  const pipeline = create();
+  const failure = new Error("exporter shutdown failed");
+  pipeline.exporter.export.mockImplementation((_, callback) =>
+    callback({ code: ExportResultCode.SUCCESS }),
+  );
+  pipeline.exporter.shutdown.mockRejectedValue(failure);
+  pipeline.logger.emit({ body: "delivered before shutdown" });
+  providers.delete(pipeline.provider);
+  await expect(pipeline.processor.shutdown()).rejects.toBe(failure);
+  expect(pipeline.exporter.export).toHaveBeenCalledOnce();
+  expect(pipeline.exporter.shutdown).toHaveBeenCalledOnce();
+  await expect(pipeline.provider.shutdown()).rejects.toBe(failure);
+});
+
+it("bounds exporter cleanup without hiding an earlier export failure", async () => {
+  vi.useFakeTimers();
+  const pipeline = create();
+  const failure = new Error("export failed");
+  pipeline.exporter.export.mockImplementation((_, callback) =>
+    callback({ code: ExportResultCode.FAILED, error: failure }),
+  );
+  pipeline.exporter.shutdown.mockReturnValue(new Promise<void>(() => {}));
+  pipeline.logger.emit({ body: "failed export" });
+  providers.delete(pipeline.provider);
+  let settled = false;
+  const operation = pipeline.processor.shutdown();
+  void operation.then(
+    () => (settled = true),
+    () => (settled = true),
+  );
+  const rejection = expect(operation).rejects.toMatchObject({
+    name: "AggregateError",
+    errors: [
+      failure,
+      expect.objectContaining({ message: expect.stringContaining("Operation timed out") }),
+    ],
+  });
+  await vi.advanceTimersByTimeAsync(29_999);
+  expect(settled).toBe(false);
+  expect(pipeline.exporter.shutdown).toHaveBeenCalledOnce();
+  await vi.advanceTimersByTimeAsync(1);
+  await rejection;
+  await expect(pipeline.provider.shutdown()).rejects.toBeInstanceOf(AggregateError);
+  expect(vi.getTimerCount()).toBe(0);
+});
+
 it("bounds the queue and batch size while an export is pending", async () => {
   vi.useFakeTimers();
   const warning = vi.spyOn(diag, "warn").mockImplementation(() => {});

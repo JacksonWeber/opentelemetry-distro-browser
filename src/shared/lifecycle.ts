@@ -9,9 +9,18 @@ export async function runLifecycleTasks(
   tasks: readonly (() => Promise<void>)[],
   message: string,
 ): Promise<void> {
-  const results = await Promise.allSettled(
+  return waitForAll(
     tasks.map((task) => callWithTimeout(Promise.resolve().then(task), 30_000)),
+    message,
   );
+}
+
+/** Waits for every already-bounded operation without imposing a second deadline. */
+export async function waitForAll(
+  operations: readonly Promise<void>[],
+  message: string,
+): Promise<void> {
+  const results = await Promise.allSettled(operations);
   const errors = results.flatMap((result) =>
     result.status === "rejected" ? [result.reason as unknown] : [],
   );

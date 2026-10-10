@@ -15,7 +15,7 @@ import type {
   ReadableLogRecord,
   ReadWriteLogRecord,
 } from "@opentelemetry/sdk-logs";
-import { runLifecycleTasks } from "./shared/lifecycle.js";
+import { runLifecycleTasks, waitForAll } from "./shared/lifecycle.js";
 
 export type BrowserBatchLogRecordProcessorOptions = Pick<
   BatchLogRecordProcessorBrowserOptions,
@@ -87,16 +87,20 @@ export class BrowserBatchLogRecordProcessor implements LogRecordProcessor {
     for (let offset = 0; offset < records.length; offset += this.maxExportBatchSize) {
       operations.push(this.exportBatch(records.slice(offset, offset + this.maxExportBatchSize)));
     }
-    return runLifecycleTasks(
-      operations.map((operation) => () => operation),
-      "Log flush failed",
-    );
+    return waitForAll(operations, "Log flush failed");
   }
 
   public shutdown(): Promise<void> {
     if (!this.shutdownPromise) {
       this.stopped = true;
-      this.shutdownPromise = this.forceFlush().finally(() => this.exporter.shutdown());
+      const flush = this.forceFlush();
+      const cleanup = (): Promise<void> =>
+        runLifecycleTasks([() => this.exporter.shutdown()], "Log exporter shutdown failed");
+      // Cleanup follows flush even on failure; keep each rejection instead of replacing it.
+      this.shutdownPromise = waitForAll(
+        [flush, flush.then(cleanup, cleanup)],
+        "Log shutdown failed",
+      );
     }
     return this.shutdownPromise;
   }

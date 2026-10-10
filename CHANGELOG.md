@@ -13,7 +13,8 @@ All notable changes to this package are documented in this file.
 
 - Send queued logs during navigation without waiting for earlier export responses, including
   the first page load and fixed-percentage sampling. Flush and shutdown wait for every batch
-  before reporting export failures.
+  before reporting export failures, preserve configured export deadlines, and report both
+  export and cleanup failures.
 - Prevent pending page views from being lost during unload by settling them before pagehide or
   hidden-visibility flushes, including tab switches.
 
