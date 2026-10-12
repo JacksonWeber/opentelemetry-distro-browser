@@ -4,6 +4,7 @@
 import { diag, type SpanContext } from "@opentelemetry/api";
 import type { RouterState } from "../routing/instanceRouter.js";
 import type { PageContextState } from "../routing/pageContext.js";
+import type { BrowserPatchState } from "../instrumentation/sharedBrowserPatches.js";
 
 const distroKey = /* @__PURE__ */ Symbol.for("@microsoft/opentelemetry-browser");
 const apiKey = /* @__PURE__ */ Symbol.for("opentelemetry.js.api.1");
@@ -18,6 +19,7 @@ interface SharedRegistry {
   page?: PageContextState;
   unloadSubscribers?: Set<() => void>;
   removeUnloadListeners?: () => void;
+  browserPatches?: BrowserPatchState;
   pending?: { signal: "trace" | "logs"; rollback: () => void }[];
 }
 

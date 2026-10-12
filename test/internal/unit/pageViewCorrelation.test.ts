@@ -35,7 +35,7 @@ afterEach(async () => {
   handle = undefined;
   history.pushState = originalPush;
   history.replaceState = originalReplace;
-  history.replaceState(null, "", originalUrl);
+  if (location.href !== originalUrl) history.replaceState(null, "", originalUrl);
   trace.disable();
   logs.disable();
   context.disable();
@@ -120,9 +120,12 @@ it.each([false, true])(
 );
 
 it.each([false, true])(
-  "uses one operation ID for the page, logs, spans and propagation (eager navigation=%s)",
-  async (enabled) => {
-    const navigation = new NavigationInstrumentation({ enabled });
+  "uses one operation ID for the page, logs, spans and propagation (Navigation API=%s)",
+  async (useNavigationApiIfAvailable) => {
+    const navigation = new NavigationInstrumentation({
+      enabled: false,
+      useNavigationApiIfAvailable,
+    });
     const pipeline = await start({
       instrumentations: [navigation],
       pageView: { sanitizeUrl: (url) => new URL(url).pathname },

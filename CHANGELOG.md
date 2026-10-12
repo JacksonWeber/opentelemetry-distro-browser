@@ -19,6 +19,9 @@ All notable changes to this package are documented in this file.
 
 ### Fixed
 
+- Share fetch, XHR, console and navigation patches across instances without nesting their
+  telemetry contexts. Preserve per-instance filters and hooks and restore owned methods after
+  the last subscriber stops. Register shared upstream instrumentations before first enablement.
 - Send queued logs during navigation without waiting for earlier export responses, including
   the first page load and fixed-percentage sampling. Flush and shutdown wait for every batch
   before reporting export failures, preserve configured export deadlines, and report both
