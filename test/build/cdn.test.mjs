@@ -39,15 +39,17 @@ test("the snippet loads this version's CDN bundle by default", async () => {
   assert.equal(src, getCdnUrl(version, `opentelemetry-browser.${version}.min.js`));
 });
 
-test("the documented snippet matches the generated loader", async () => {
+test("the documented snippets match the generated loader", async () => {
   const { getSdkLoaderScript } = await import("../../dist/esm/snippet.js");
-  const docs = await readFile(resolve(root, "docs/packaging.md"), "utf8");
   const script = getSdkLoaderScript({
     src: "https://js.monitor.azure.com/scripts/otel/CHANNEL/opentelemetry-browser.VERSION.min.js",
     connectionString: "YOUR_CONNECTION_STRING",
     integrity: "YOUR_INTEGRITY",
   });
-  assert.ok(docs.replaceAll("\r\n", "\n").includes(`<script>\n${script}\n</script>`));
+  for (const file of ["README.md", "docs/packaging.md"]) {
+    const docs = await readFile(resolve(root, file), "utf8");
+    assert.ok(docs.replaceAll("\r\n", "\n").includes(`<script>\n${script}\n</script>`), file);
+  }
 });
 
 test("the build prepares versioned CDN files with source maps and integrity", async () => {
