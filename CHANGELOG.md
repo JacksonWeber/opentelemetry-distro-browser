@@ -8,19 +8,25 @@ All notable changes to this package are documented in this file.
 
 - Classify named browser log events as Azure Monitor custom events regardless of severity, while
   preserving browser console records as trace messages with their severity.
+- Publish the minimum supported Chrome, Edge, Firefox, and Safari versions and gate the built
+  browser bundle against those releases with real-browser acceptance tests.
+
+### Changed
+
+- Include the browser runtime and upstream OpenTelemetry SDK version in the Azure Monitor
+  `ai.internal.sdkVersion` tag.
 
 ### Fixed
 
 - Share fetch, XHR, console and navigation patches across instances without nesting their
   telemetry contexts. Preserve per-instance filters and hooks and restore owned methods after
   the last subscriber stops. Register shared upstream instrumentations before first enablement.
+- Send queued logs during navigation without waiting for earlier export responses, including
+  the first page load and fixed-percentage sampling. Flush and shutdown wait for every batch
+  before reporting export failures, preserve configured export deadlines, and report both
+  export and cleanup failures.
 - Prevent pending page views from being lost during unload by settling them before pagehide or
   hidden-visibility flushes, including tab switches.
-
-### Added
-
-- Publish the minimum supported Chrome, Edge, Firefox, and Safari versions and gate the built
-  browser bundle against those releases with real-browser acceptance tests.
 
 ## 0.1.0-alpha.3 - 2026-10-09
 

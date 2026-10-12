@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 
 import type { Attributes, HrTime, SpanContext } from "@opentelemetry/api";
+import { SDK_INFO } from "@opentelemetry/core";
+import { ATTR_TELEMETRY_SDK_VERSION } from "@opentelemetry/semantic-conventions";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../shared/constants.js";
 import { isNonEmptyString, selectNonEmptyString } from "../shared/isNonEmptyString.js";
 import { isPageContext } from "../shared/pageOperationContext.js";
@@ -68,6 +70,11 @@ export function serializeAttribute(value: unknown): string {
   }
 }
 
+function getSdkVersion(): string {
+  const sdkVersion = SDK_INFO[ATTR_TELEMETRY_SDK_VERSION];
+  return `browser:otel${sdkVersion}:mot${OPENTELEMETRY_BROWSER_VERSION}`;
+}
+
 export function mapAttributes(
   attributes: Attributes,
   promotedAttributes: ReadonlySet<string>,
@@ -104,7 +111,7 @@ export function createTags(
   resourceAttributes: Attributes,
 ): Record<string, string> {
   const tags: Record<string, string> = {
-    "ai.internal.sdkVersion": `mot${OPENTELEMETRY_BROWSER_VERSION}`,
+    "ai.internal.sdkVersion": getSdkVersion(),
   };
   if (traceId) tags["ai.operation.id"] = traceId;
   if (parentContext?.spanId && !isPageContext(parentContext)) {

@@ -63,7 +63,6 @@ async function exportRecords(
     {
       exporter,
       samplingPercentage,
-      disableAutoFlushOnDocumentHide: true,
     },
     random,
   );
@@ -89,14 +88,21 @@ describe("AzureMonitorSamplingLogRecordProcessor", () => {
   );
 
   it("forwards batch processor options after removing the sampling percentage", async () => {
+    const exporter = new InMemoryLogRecordExporter();
     const processor = new AzureMonitorSamplingLogRecordProcessor({
-      exporter: new InMemoryLogRecordExporter(),
+      exporter,
       samplingPercentage: 100,
-      maxQueueSize: 17,
+      maxExportBatchSize: 1,
+      scheduledDelayMillis: 60_000,
     });
 
-    expect((processor as unknown as { _maxQueueSize: number })._maxQueueSize).toBe(17);
-    await processor.shutdown();
+    try {
+      processor.onEmit(makeRecord());
+      await Promise.resolve();
+      expect(exporter.getFinishedLogRecords()).toHaveLength(1);
+    } finally {
+      await processor.shutdown();
+    }
   });
 
   it("uses the trace ID score instead of trace flags for correlated records", async () => {

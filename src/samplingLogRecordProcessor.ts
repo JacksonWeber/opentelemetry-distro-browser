@@ -2,11 +2,11 @@
 // Licensed under the MIT License.
 
 import { isSpanContextValid } from "@opentelemetry/api";
+import type { ReadWriteLogRecord } from "@opentelemetry/sdk-logs";
 import {
-  BatchLogRecordProcessor,
-  type BatchLogRecordProcessorBrowserOptions,
-  type ReadWriteLogRecord,
-} from "@opentelemetry/sdk-logs";
+  BrowserBatchLogRecordProcessor,
+  type BrowserBatchLogRecordProcessorOptions,
+} from "./browserBatchLogRecordProcessor.js";
 import {
   AZURE_MONITOR_SAMPLE_RATE,
   getEffectiveSampleRate,
@@ -14,11 +14,11 @@ import {
   validateSamplingPercentage,
 } from "./sampling.js";
 
-export interface AzureMonitorSamplingLogRecordProcessorOptions extends BatchLogRecordProcessorBrowserOptions {
+export interface AzureMonitorSamplingLogRecordProcessorOptions extends BrowserBatchLogRecordProcessorOptions {
   samplingPercentage: number;
 }
 
-export class AzureMonitorSamplingLogRecordProcessor extends BatchLogRecordProcessor {
+export class AzureMonitorSamplingLogRecordProcessor extends BrowserBatchLogRecordProcessor {
   private readonly samplingPercentage: number;
 
   public constructor(

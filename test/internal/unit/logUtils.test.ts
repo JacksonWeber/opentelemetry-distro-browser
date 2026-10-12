@@ -1,7 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+import { SDK_INFO } from "@opentelemetry/core";
 import { resourceFromAttributes } from "@opentelemetry/resources";
+import { ATTR_TELEMETRY_SDK_VERSION } from "@opentelemetry/semantic-conventions";
 import { describe, expect, it } from "vitest";
 import { MAX_BEACON_BODY_SIZE } from "../../../src/exporter/constants.js";
 import type { ExceptionData } from "../../../src/exporter/telemetryModels.js";
@@ -195,7 +197,9 @@ describe("Azure Monitor log envelope mapping", () => {
     );
 
     expect(envelope.name).toBe("Microsoft.ApplicationInsights.Exception");
-    expect(envelope.tags["ai.internal.sdkVersion"]).toBe(`mot${OPENTELEMETRY_BROWSER_VERSION}`);
+    expect(envelope.tags["ai.internal.sdkVersion"]).toBe(
+      `browser:otel${SDK_INFO[ATTR_TELEMETRY_SDK_VERSION]}:mot${OPENTELEMETRY_BROWSER_VERSION}`,
+    );
     expect(envelope.data).toEqual({
       baseType: "ExceptionData",
       baseData: {
