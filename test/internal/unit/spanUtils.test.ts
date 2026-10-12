@@ -2,8 +2,10 @@
 // Licensed under the MIT License.
 
 import { SpanKind, SpanStatusCode } from "@opentelemetry/api";
+import { SDK_INFO } from "@opentelemetry/core";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
+import { ATTR_TELEMETRY_SDK_VERSION } from "@opentelemetry/semantic-conventions";
 import { describe, expect, it } from "vitest";
 import { spanToEnvelope } from "../../../src/exporter/spanUtils.js";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../../src/shared/constants.js";
@@ -66,7 +68,7 @@ describe("Azure Monitor span envelope mapping", () => {
       iKey: instrumentationKey,
       sampleRate: 100,
       tags: {
-        "ai.internal.sdkVersion": `mot${OPENTELEMETRY_BROWSER_VERSION}`,
+        "ai.internal.sdkVersion": `browser:otel${SDK_INFO[ATTR_TELEMETRY_SDK_VERSION]}:mot${OPENTELEMETRY_BROWSER_VERSION}`,
         "ai.operation.id": spanContext.traceId,
         "ai.operation.parentId": parentSpanContext.spanId,
         "ai.cloud.role": "browser-store",
