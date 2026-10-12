@@ -120,6 +120,8 @@ export interface MicrosoftOpenTelemetryBrowserTraceOptions {
 
 /**
  * Session options, captured at initialization. Lifetimes must be finite and nonnegative.
+ * Managed session IDs are added only when neither the record nor its resource has a non-empty
+ * string `session.id`. Azure Monitor export prefers a valid record value over the resource.
  * @public
  */
 export interface MicrosoftOpenTelemetryBrowserSessionOptions {

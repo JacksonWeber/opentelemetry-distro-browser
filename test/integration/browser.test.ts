@@ -3,6 +3,7 @@
 
 import { ROOT_CONTEXT, context, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
+import { resourceFromAttributes } from "@opentelemetry/resources";
 import { afterEach, expect, inject, it, vi } from "vitest";
 import { version } from "../../package.json";
 import type { AzureMonitorEnvelope } from "../../src/exporter/telemetryModels.js";
@@ -194,6 +195,67 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
     await telemetry.shutdown();
   }
 });
+
+it.each([true, false])(
+  "exports application session precedence to Azure Monitor (managed sessions=%s)",
+  async (enabled) => {
+    const runId = crypto.randomUUID();
+    const ingestionEndpoint = `${inject("ingestionEndpoint")}${encodeURIComponent(runId)}`;
+    const telemetry = await (
+      await import(/* @vite-ignore */ new URL("../../dist/esm/index.js", import.meta.url).href)
+    ).useMicrosoftOpenTelemetry({
+      azureMonitor: {
+        connectionString:
+          `InstrumentationKey=00000000-0000-0000-0000-000000000000;` +
+          `IngestionEndpoint=${ingestionEndpoint}`,
+      },
+      resource: resourceFromAttributes({ "session.id": "application-resource" }),
+      session: { enabled, persist: false },
+      pageView: { enabled: false },
+    });
+
+    try {
+      const cases = [
+        { name: "resource-only", attributes: {}, expected: "application-resource" },
+        {
+          name: "empty-record",
+          attributes: { "session.id": "" },
+          expected: "application-resource",
+        },
+        {
+          name: "record-override",
+          attributes: { "session.id": "application-record" },
+          expected: "application-record",
+        },
+      ];
+      for (const { name, attributes } of cases) {
+        trace.getTracer("session-precedence").startSpan(name, { attributes }).end();
+        logs.getLogger("session-precedence").emit({ eventName: name, attributes });
+      }
+      await telemetry.forceFlush();
+
+      const captured: AzureMonitorEnvelope[] = await fetch(
+        `${new URL(ingestionEndpoint).origin}/captured?runId=${encodeURIComponent(runId)}`,
+      ).then((response) => response.json());
+      expect(captured).toHaveLength(cases.length * 2);
+      for (const { name, expected } of cases) {
+        for (const baseType of ["RemoteDependencyData", "EventData"]) {
+          expect(captured).toContainEqual(
+            expect.objectContaining({
+              tags: expect.objectContaining({ "ai.session.id": expected }),
+              data: expect.objectContaining({
+                baseType,
+                baseData: expect.objectContaining({ name }),
+              }),
+            }),
+          );
+        }
+      }
+    } finally {
+      await telemetry.shutdown();
+    }
+  },
+);
 
 it("redacts the default page URL in the Azure Monitor ingestion payload", async () => {
   const runId = crypto.randomUUID();

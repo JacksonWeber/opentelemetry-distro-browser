@@ -19,6 +19,8 @@ All notable changes to this package are documented in this file.
 
 ### Fixed
 
+- Preserve application-provided resource `session.id` values during managed context enrichment
+  and Azure Monitor export, while retaining precedence for valid record-level session IDs.
 - Share fetch, XHR, console and navigation patches across instances without nesting their
   telemetry contexts. Preserve per-instance filters and hooks and restore owned methods after
   the last subscriber stops. Register shared upstream instrumentations before first enablement.

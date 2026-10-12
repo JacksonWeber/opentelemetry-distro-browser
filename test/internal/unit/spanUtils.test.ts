@@ -43,6 +43,33 @@ describe("Azure Monitor span envelope mapping", () => {
     },
   );
 
+  it.each([undefined, "", 0, false, ["invalid"], "record-session"])(
+    "prefers a valid record session ID over resource context (record=%j)",
+    (id) => {
+      const span = makeSpan({
+        attributes: { "session.id": id },
+        resource: resourceFromAttributes({ "session.id": "resource-session" }),
+      });
+      const envelope = spanToEnvelope(span, instrumentationKey);
+      expect(envelope.tags["ai.session.id"]).toBe(
+        id === "record-session" ? id : "resource-session",
+      );
+      expect(span.attributes["session.id"]).toEqual(id);
+      expect(span.resource.attributes["session.id"]).toBe("resource-session");
+    },
+  );
+
+  it.each([undefined, "", 0, false, ["invalid"]])(
+    "omits invalid resource session tags (resource=%j)",
+    (id) => {
+      const envelope = spanToEnvelope(
+        makeSpan({ resource: resourceFromAttributes({ "session.id": id }) }),
+        instrumentationKey,
+      );
+      expect(envelope.tags).not.toHaveProperty("ai.session.id");
+    },
+  );
+
   it("maps an HTTP client span to RemoteDependencyData", () => {
     const envelope = spanToEnvelope(
       makeSpan({

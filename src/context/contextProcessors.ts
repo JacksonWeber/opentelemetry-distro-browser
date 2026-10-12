@@ -24,21 +24,21 @@ function enrich(
   setAttribute: (name: string, value: string) => void,
   provider: BrowserContextProvider,
 ): void {
-  if (!isNonEmptyString(attributes["session.id"])) {
+  // Context configured on the record or its resource belongs to the application.
+  const hasAttribute = (name: string): boolean =>
+    isNonEmptyString(attributes[name]) || isNonEmptyString(resourceAttributes[name]);
+  if (!hasAttribute("session.id")) {
     const sessionId = provider.getSessionId();
     if (sessionId !== null) setAttribute("session.id", sessionId);
   }
-  // Identity configured on the record or its resource belongs to the application.
-  const hasIdentity = (name: string): boolean =>
-    isNonEmptyString(attributes[name]) || isNonEmptyString(resourceAttributes[name]);
-  if (!hasIdentity(ATTR_ENDUSER_PSEUDO_ID)) {
+  if (!hasAttribute(ATTR_ENDUSER_PSEUDO_ID)) {
     setAttribute(ATTR_ENDUSER_PSEUDO_ID, provider.getAnonymousUserId());
   }
   // Managed user and account form one identity; never mix them with application identity.
   if (
-    !hasIdentity(ATTR_USER_ID) &&
-    !hasIdentity(ATTR_ENDUSER_ID) &&
-    !hasIdentity(ATTR_USER_ACCOUNT_ID)
+    !hasAttribute(ATTR_USER_ID) &&
+    !hasAttribute(ATTR_ENDUSER_ID) &&
+    !hasAttribute(ATTR_USER_ACCOUNT_ID)
   ) {
     const userId = provider.getAuthenticatedUserId();
     if (userId !== undefined) setAttribute(ATTR_USER_ID, userId);

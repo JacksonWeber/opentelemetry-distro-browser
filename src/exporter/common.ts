@@ -139,8 +139,12 @@ export function createTags(
   if (isNonEmptyString(accountId)) {
     tags["ai.user.accountId"] = accountId;
   }
-  if (isNonEmptyString(attributes["session.id"])) {
-    tags["ai.session.id"] = attributes["session.id"];
+  const sessionId = selectNonEmptyString(
+    attributes["session.id"],
+    resourceAttributes["session.id"],
+  );
+  if (sessionId !== undefined) {
+    tags["ai.session.id"] = sessionId;
   }
   return tags;
 }

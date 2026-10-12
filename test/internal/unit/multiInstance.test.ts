@@ -13,6 +13,7 @@ import {
   type TracerProvider,
 } from "@opentelemetry/api";
 import { createNoopLogger, logs, type LoggerProvider } from "@opentelemetry/api-logs";
+import { resourceFromAttributes } from "@opentelemetry/resources";
 import { BasicTracerProvider } from "@opentelemetry/sdk-trace-base";
 import { StackContextManager } from "@opentelemetry/sdk-trace-web";
 import { afterEach, expect, it, vi } from "vitest";
@@ -191,6 +192,47 @@ it("binds global tracers and loggers to the selected instance at acquisition", a
 
   expect(await alpha.exported()).toEqual({ spans: ["default"], logs: ["default"] });
   expect(await beta.exported()).toEqual({ spans: ["beta"], logs: ["beta"] });
+});
+
+it("keeps resource session overrides isolated from another instance's managed session", async () => {
+  const pipeline = createInMemoryPipeline();
+  const resourceInstance = await start({
+    resource: resourceFromAttributes({ "session.id": "application-resource" }),
+    session: { enabled: true, persist: false },
+    ...pipeline.options,
+  });
+  const managedPipeline = createInMemoryPipeline();
+  const managedInstance = await start({
+    session: { enabled: true, persist: false },
+    ...managedPipeline.options,
+  });
+  resourceInstance.probe.record("resource");
+  managedInstance.probe.record("managed");
+  await Promise.all([pipeline.forceFlush(), managedPipeline.forceFlush()]);
+
+  expect(pipeline.spanExporter.getFinishedSpans()).toHaveLength(1);
+  expect(pipeline.logExporter.getFinishedLogRecords()).toHaveLength(1);
+  for (const record of [
+    ...pipeline.spanExporter.getFinishedSpans(),
+    ...pipeline.logExporter.getFinishedLogRecords(),
+  ]) {
+    expect(record.attributes["session.id"]).toBeUndefined();
+    expect(record.resource.attributes["session.id"]).toBe("application-resource");
+  }
+  const managedId = managedPipeline.spanExporter.getFinishedSpans()[0].attributes["session.id"];
+  expect(managedId).toMatch(/^[0-9a-f]{32}$/);
+  await resourceInstance.handle.shutdown();
+  managedInstance.probe.record("after-resource-shutdown");
+  await managedPipeline.forceFlush();
+  expect(managedPipeline.spanExporter.getFinishedSpans()).toHaveLength(2);
+  expect(managedPipeline.logExporter.getFinishedLogRecords()).toHaveLength(2);
+  for (const record of [
+    ...managedPipeline.spanExporter.getFinishedSpans(),
+    ...managedPipeline.logExporter.getFinishedLogRecords(),
+  ]) {
+    expect(record.attributes["session.id"]).toBe(managedId);
+    expect(record.resource.attributes["session.id"]).toBeUndefined();
+  }
 });
 
 it("keeps explicit async parents within each overlapping instance", async () => {

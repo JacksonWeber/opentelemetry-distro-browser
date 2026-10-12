@@ -70,6 +70,33 @@ describe("Azure Monitor log envelope mapping", () => {
     },
   );
 
+  it.each([undefined, "", 0, false, ["invalid"], "record-session"])(
+    "prefers a valid record session ID over resource context (record=%j)",
+    (id) => {
+      const record = makeLog({
+        attributes: { "session.id": id },
+        resource: resourceFromAttributes({ "session.id": "resource-session" }),
+      });
+      const envelope = logToEnvelope(record, instrumentationKey);
+      expect(envelope.tags["ai.session.id"]).toBe(
+        id === "record-session" ? id : "resource-session",
+      );
+      expect(record.attributes["session.id"]).toEqual(id);
+      expect(record.resource.attributes["session.id"]).toBe("resource-session");
+    },
+  );
+
+  it.each([undefined, "", 0, false, ["invalid"]])(
+    "omits invalid resource session tags (resource=%j)",
+    (id) => {
+      const envelope = logToEnvelope(
+        makeLog({ resource: resourceFromAttributes({ "session.id": id }) }),
+        instrumentationKey,
+      );
+      expect(envelope.tags).not.toHaveProperty("ai.session.id");
+    },
+  );
+
   it.each([
     ["browser.page_view", undefined],
     ["browser.page_view", ""],
