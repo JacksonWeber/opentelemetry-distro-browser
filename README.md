@@ -101,6 +101,35 @@ await telemetry.forceFlush();
 await telemetry.shutdown();
 ```
 
+### Snippet setup
+
+If the application does not use npm or a bundler, paste this snippet as the first script in each
+page's `<head>`, replacing `CHANNEL`, `VERSION`, `YOUR_CONNECTION_STRING`, and `YOUR_INTEGRITY`:
+
+<!-- prettier-ignore -->
+```html
+<script>
+!(function(w,d,c){var s=d.createElement("script");w.microsoftOpenTelemetry=new Promise(function(resolve,reject){s.src=c.src;s.crossOrigin=c.crossOrigin;if(c.integrity)s.integrity=c.integrity;s.onload=function(){var sdk=w.Microsoft&&w.Microsoft.OpenTelemetry;if(!sdk||typeof sdk.useMicrosoftOpenTelemetry!=="function"){reject(new Error("OpenTelemetry browser bundle did not expose Microsoft.OpenTelemetry"));return}Promise.resolve().then(function(){return sdk.useMicrosoftOpenTelemetry({azureMonitor:{connectionString:c.connectionString}})}).then(resolve,reject)};s.onerror=function(){reject(new Error("OpenTelemetry browser bundle failed to load: "+c.src))};d.head.appendChild(s)})})(window,document,{"src":"https://js.monitor.azure.com/scripts/otel/CHANNEL/opentelemetry-browser.VERSION.min.js","connectionString":"YOUR_CONNECTION_STRING","crossOrigin":"anonymous","integrity":"YOUR_INTEGRITY"});
+</script>
+```
+
+For example, `0.1.0-alpha.3` uses channel `alpha`, and its `YOUR_INTEGRITY` is the
+`ext["@min.js"].integrity` value in
+[`opentelemetry-browser.0.1.0-alpha.3.integrity.json`](https://js.monitor.azure.com/scripts/otel/alpha/opentelemetry-browser.0.1.0-alpha.3.integrity.json).
+The snippet enables Azure Monitor export and page views; use the npm package for other options.
+
+`window.microsoftOpenTelemetry` is a promise that resolves to the telemetry handle, or rejects when
+the bundle fails to load, fails its integrity check, or fails to initialize:
+
+```javascript
+window.microsoftOpenTelemetry.catch(function (error) {
+  console.error(error);
+});
+```
+
+See [Packaging](docs/packaging.md#cdn-and-loader-snippet) for CDN endpoints, Content Security
+Policy requirements, and generating the snippet with `getSdkLoaderScript()`.
+
 ## Configuration
 
 ### `MicrosoftOpenTelemetryBrowserOptions`

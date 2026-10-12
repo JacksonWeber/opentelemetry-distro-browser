@@ -6,6 +6,7 @@ All notable changes to this package are documented in this file.
 
 ### Added
 
+- Document CDN loader snippet setup and failure handling in the README.
 - Classify named browser log events as Azure Monitor custom events regardless of severity, while
   preserving browser console records as trace messages with their severity.
 - Publish the minimum supported Chrome, Edge, Firefox, and Safari versions and gate the built
