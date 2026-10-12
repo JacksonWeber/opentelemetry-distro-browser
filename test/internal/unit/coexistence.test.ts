@@ -4,7 +4,8 @@
 import { context, diag, propagation, trace, type TracerProvider } from "@opentelemetry/api";
 import { logs, type LoggerProvider as ApiLoggerProvider } from "@opentelemetry/api-logs";
 import { W3CTraceContextPropagator } from "@opentelemetry/core";
-import { BatchLogRecordProcessor, LoggerProvider } from "@opentelemetry/sdk-logs";
+import { LoggerProvider } from "@opentelemetry/sdk-logs";
+import { BrowserBatchLogRecordProcessor } from "../../../src/browserBatchLogRecordProcessor.js";
 import { BasicTracerProvider, BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { StackContextManager } from "@opentelemetry/sdk-trace-web";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -427,7 +428,7 @@ it("removes only new page registrations when propagation registration fails", as
 
 it("cleans up partially created owned processors before handing them to a pipeline", async () => {
   const spanShutdown = vi.spyOn(BatchSpanProcessor.prototype, "shutdown");
-  const logShutdown = vi.spyOn(BatchLogRecordProcessor.prototype, "shutdown");
+  const logShutdown = vi.spyOn(BrowserBatchLogRecordProcessor.prototype, "shutdown");
   const failure = new Error("session storage failed");
   vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
     throw failure;
@@ -457,7 +458,7 @@ it.each(["OTLP", "Azure Monitor"])(
     };
     diag.setLogger(logger);
     const spanShutdown = vi.spyOn(BatchSpanProcessor.prototype, "shutdown");
-    const logShutdown = vi.spyOn(BatchLogRecordProcessor.prototype, "shutdown");
+    const logShutdown = vi.spyOn(BrowserBatchLogRecordProcessor.prototype, "shutdown");
     const instrumentation = probe();
     const bind = vi.spyOn(instrumentation, "setTracerProvider");
 

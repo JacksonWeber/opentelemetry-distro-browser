@@ -45,6 +45,15 @@ export default async function setup(project: TestProject): Promise<() => Promise
         const runId = decodeURIComponent(ingestionMatch[1]);
         const envelopes = JSON.parse(await readRequestBody(request)) as unknown[];
         ingestedEnvelopes.set(runId, [...(ingestedEnvelopes.get(runId) ?? []), ...envelopes]);
+        if (
+          envelopes.some(
+            (envelope) =>
+              (envelope as { data?: { baseData?: { message?: string } } }).data?.baseData
+                ?.message === "pending-before-navigation",
+          )
+        ) {
+          await new Promise((resolve) => setTimeout(resolve, 2_000));
+        }
         response.writeHead(200, { "content-type": "application/json" });
         response.end(
           JSON.stringify({
