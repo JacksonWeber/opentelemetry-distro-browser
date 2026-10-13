@@ -47,6 +47,7 @@ All notable changes to this package are documented in this file.
 
 - Invoke Azure Monitor export callbacks only once when they throw, without reporting callback
   errors back to the same callback as export failures.
+- Fit unload telemetry with removable custom fields within one keepalive or Beacon request.
 
 ## 0.1.0-alpha.2 - 2026-10-08
 

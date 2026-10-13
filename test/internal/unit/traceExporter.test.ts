@@ -6,7 +6,10 @@ import { ExportResultCode } from "@opentelemetry/core";
 import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { beginUnloading, endUnloading } from "../../../src/exporter/common.js";
-import { MAX_BATCH_SIZE_IN_BYTES } from "../../../src/exporter/constants.js";
+import {
+  MAX_BATCH_SIZE_IN_BYTES,
+  MAX_PENDING_KEEPALIVE_BODY_SIZE,
+} from "../../../src/exporter/constants.js";
 import { AzureMonitorSpanExporter } from "../../../src/exporter/trace.js";
 import { createMockIngestionEndpoint } from "../../fixtures/azureMonitor.js";
 import { installFakeClock } from "../../fixtures/clock.js";
@@ -358,6 +361,61 @@ describe("AzureMonitorSpanExporter", () => {
       expect(fetch).toHaveBeenCalledOnce();
       expect(fetch.mock.calls[0][1]).toMatchObject({ keepalive: true });
       expect(sendBeacon).toHaveBeenCalledOnce();
+    } finally {
+      endUnloading();
+    }
+  });
+
+  it("fits unload telemetry into the aggregate keepalive limit", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetch);
+    const sendBeacon = vi.spyOn(navigator, "sendBeacon").mockReturnValue(true);
+    const exporter = new AzureMonitorSpanExporter({ connectionString });
+    const spans = Array.from({ length: 8 }, (_, index) => ({
+      ...makeSpan(`span-${index}`),
+      attributes: { payload: "x".repeat(10 * 1024) },
+    })) as ReadableSpan[];
+    beginUnloading();
+
+    try {
+      await expect(exportSpans(exporter, spans)).resolves.toEqual({
+        code: ExportResultCode.SUCCESS,
+      });
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(sendBeacon).not.toHaveBeenCalled();
+      const body = (fetch.mock.calls[0]?.[1] as RequestInit).body as Uint8Array<ArrayBuffer>;
+      expect(body.byteLength).toBeLessThanOrEqual(MAX_PENDING_KEEPALIVE_BODY_SIZE);
+      const deliveredNames = (
+        JSON.parse(new TextDecoder().decode(body)) as Array<{
+          data: { baseData: { name: string } };
+        }>
+      ).map((envelope) => envelope.data.baseData.name);
+      expect(deliveredNames).toEqual(spans.map((span) => span.name));
+    } finally {
+      endUnloading();
+    }
+  });
+
+  it("bounds full-batch serialization while fitting one-field unload envelopes", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetch);
+    const stringify = vi.spyOn(JSON, "stringify");
+    const exporter = new AzureMonitorSpanExporter({ connectionString });
+    const spans = Array.from({ length: 512 }, (_, index) => ({
+      ...makeSpan(`span-${index}`),
+      attributes: { payload: "x".repeat(1024) },
+    })) as ReadableSpan[];
+    beginUnloading();
+
+    try {
+      await expect(exportSpans(exporter, spans)).resolves.toMatchObject({
+        code: ExportResultCode.FAILED,
+        error: expect.objectContaining({ message: expect.stringContaining("of 512 envelopes") }),
+      });
+      const fullBatchSerializations = stringify.mock.calls.filter(
+        ([value]) => Array.isArray(value) && value.length === spans.length,
+      );
+      expect(fullBatchSerializations.length).toBeLessThanOrEqual(3);
     } finally {
       endUnloading();
     }

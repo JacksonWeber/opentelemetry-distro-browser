@@ -14,6 +14,7 @@ const runId = parameters.get("runId");
 const pageView = parameters.get("pageView") === "true";
 const inFlight = parameters.get("inFlight") === "true";
 const artifact = parameters.get("artifact");
+const largeBatch = parameters.get("largeBatch") === "true";
 if (!ingestionEndpoint || !runId) {
   throw new Error("Unload fixture requires ingestionEndpoint and runId parameters.");
 }
@@ -61,8 +62,16 @@ if (pageView) {
   window.requestAnimationFrame = () => 0;
   history.pushState(null, "", "#unsettled");
 }
-trace
-  .getTracer("browser-unload-test")
-  .startSpan("navigation-away", { attributes: { "test.run_id": runId } })
-  .end();
+const tracer = trace.getTracer("browser-unload-test");
+const spanCount = largeBatch ? 8 : 1;
+for (let index = 0; index < spanCount; index++) {
+  tracer
+    .startSpan(largeBatch ? `navigation-away-${index}` : "navigation-away", {
+      attributes: {
+        "test.run_id": runId,
+        ...(largeBatch ? { payload: "x".repeat(10 * 1024) } : {}),
+      },
+    })
+    .end();
+}
 document.body.dataset.ready = "true";

@@ -43,27 +43,53 @@ it.each([
   },
 );
 
-it("delivers queued telemetry after the source document navigates away", async () => {
-  const runId = crypto.randomUUID();
-  const ingestionEndpoint = `${inject("ingestionEndpoint")}${encodeURIComponent(runId)}`;
-  const fixtureUrl = new URL("./unloadFixture.html", import.meta.url);
-  fixtureUrl.searchParams.set("ingestionEndpoint", ingestionEndpoint);
-  fixtureUrl.searchParams.set("runId", runId);
-  const captureUrl = `${new URL(ingestionEndpoint).origin}/captured?runId=${encodeURIComponent(runId)}`;
+it.each([
+  { name: "a normal batch", largeBatch: false, expectedNames: ["navigation-away"] },
+  {
+    name: "a batch above the aggregate keepalive limit",
+    largeBatch: true,
+    expectedNames: Array.from({ length: 8 }, (_, index) => `navigation-away-${index}`),
+  },
+])(
+  "delivers $name after the source document navigates away",
+  async ({ largeBatch, expectedNames }) => {
+    const runId = crypto.randomUUID();
+    const ingestionEndpoint = `${inject("ingestionEndpoint")}${encodeURIComponent(runId)}`;
+    const fixtureUrl = new URL("./unloadFixture.html", import.meta.url);
+    fixtureUrl.searchParams.set("ingestionEndpoint", ingestionEndpoint);
+    fixtureUrl.searchParams.set("runId", runId);
+    if (largeBatch) fixtureUrl.searchParams.set("largeBatch", "true");
+    const captureUrl = `${new URL(ingestionEndpoint).origin}/captured?runId=${encodeURIComponent(runId)}`;
 
-  await expect(commands.verifyUnloadDelivery(fixtureUrl.href, captureUrl)).resolves.toEqual([
-    expect.objectContaining({
-      name: "Microsoft.ApplicationInsights.RemoteDependency",
-      data: expect.objectContaining({
-        baseType: "RemoteDependencyData",
-        baseData: expect.objectContaining({
-          name: "navigation-away",
-          properties: expect.objectContaining({ "test.run_id": runId }),
+    const envelopes = await commands.verifyUnloadDelivery(fixtureUrl.href, captureUrl);
+    expect(envelopes).toHaveLength(expectedNames.length);
+    expect(envelopes).toEqual(
+      expectedNames.map((name) =>
+        expect.objectContaining({
+          name: "Microsoft.ApplicationInsights.RemoteDependency",
+          data: expect.objectContaining({
+            baseType: "RemoteDependencyData",
+            baseData: expect.objectContaining({
+              name,
+              properties: expect.objectContaining({ "test.run_id": runId }),
+            }),
+          }),
         }),
-      }),
-    }),
-  ]);
-});
+      ),
+    );
+    if (largeBatch) {
+      expect(envelopes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            data: expect.objectContaining({
+              baseData: expect.objectContaining({ properties: { "test.run_id": runId } }),
+            }),
+          }),
+        ]),
+      );
+    }
+  },
+);
 
 it("delivers an unsettled page view after the source document navigates away", async () => {
   const runId = crypto.randomUUID();
