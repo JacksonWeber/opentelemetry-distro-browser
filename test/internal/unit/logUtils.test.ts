@@ -14,26 +14,98 @@ import { TEST_INSTRUMENTATION_KEY as instrumentationKey } from "../../fixtures/a
 import { createReadableLogRecord as makeLog, createSpanContext } from "../../fixtures/telemetry.js";
 
 const spanContext = createSpanContext();
+const pageViewDiagnostics = {
+  "browser.page_view.index": 0,
+  "browser.page_view.duration_source": "navigation_timing",
+  "browser.page_view.name_source": "document_title",
+  "browser.page_view.same_document": false,
+  "browser.page_view.type": "reload",
+};
 
 describe("Azure Monitor log envelope mapping", () => {
-  it("maps the reserved sample rate without exporting it as a custom measurement", () => {
-    const envelope = logToEnvelope(
-      makeLog({ attributes: { [AZURE_MONITOR_SAMPLE_RATE]: 25 }, body: "sampled" }),
-      instrumentationKey,
-    );
+  it.each([
+    undefined,
+    "browser.console",
+    "custom.event",
+    "exception",
+    "browser.page_view",
+    "browser.navigation",
+  ])("sets browser device tags and omits the default envelope version for %s", (eventName) => {
+    const envelope = logToEnvelope(makeLog({ eventName }), instrumentationKey);
 
-    expect(envelope.sampleRate).toBe(25);
-    expect(envelope.data.baseData.measurements).toBeUndefined();
+    expect(envelope.tags).toMatchObject({
+      "ai.device.type": "Browser",
+      "ai.device.id": "browser",
+    });
+    expect(envelope).not.toHaveProperty("ver");
+    expect(envelope.data.baseData.ver).toBe(2);
   });
 
-  it.each([undefined, 0])(
-    "defaults standalone log conversion with sample rate %s to full sampling",
+  it.each([0.000001, 25, 99.5])(
+    "maps the reserved sample rate %s without exporting it as a custom measurement",
+    (sampleRate) => {
+      const envelope = logToEnvelope(
+        makeLog({ attributes: { [AZURE_MONITOR_SAMPLE_RATE]: sampleRate }, body: "sampled" }),
+        instrumentationKey,
+      );
+
+      expect(envelope.sampleRate).toBe(sampleRate);
+      expect(envelope.data.baseData.measurements).toBeUndefined();
+    },
+  );
+
+  it.each([undefined, 0, 100, -1, 101, NaN, Infinity, "25"])(
+    "omits full sampling from standalone log conversion with sample rate %s",
     (sampleRate) => {
       const attributes =
         sampleRate === undefined ? {} : { [AZURE_MONITOR_SAMPLE_RATE]: sampleRate };
       expect(
-        logToEnvelope(makeLog({ attributes, body: "default" }), instrumentationKey).sampleRate,
-      ).toBe(100);
+        JSON.parse(JSON.stringify(logToEnvelope(makeLog({ attributes }), instrumentationKey))),
+      ).not.toHaveProperty("sampleRate");
+    },
+  );
+
+  it.each(["browser.page_view", "browser.navigation"])(
+    "excludes built-in page-view diagnostics from %s without changing source attributes",
+    (eventName) => {
+      const record = makeLog({
+        eventName,
+        attributes: {
+          ...pageViewDiagnostics,
+          "browser.page_view.custom": "kept",
+          itemCount: 2,
+          "browser.page_view.referrer": "https://example.test/previous",
+        },
+      });
+      const originalAttributes = { ...record.attributes };
+      const envelope = logToEnvelope(record, instrumentationKey);
+
+      expect(envelope.data.baseData).toMatchObject({
+        referredUri: "https://example.test/previous",
+        properties: { "browser.page_view.custom": "kept" },
+        measurements: { itemCount: 2 },
+      });
+      expect(envelope.data.baseData.properties).toEqual({ "browser.page_view.custom": "kept" });
+      expect(envelope.data.baseData.measurements).toEqual({ itemCount: 2 });
+      expect(record.attributes).toEqual(originalAttributes);
+    },
+  );
+
+  it.each([undefined, "custom.event", "exception"])(
+    "preserves page-view attributes on unrelated log events (%s)",
+    (eventName) => {
+      const envelope = logToEnvelope(
+        makeLog({ eventName, attributes: pageViewDiagnostics }),
+        instrumentationKey,
+      );
+
+      expect(envelope.data.baseData.measurements).toEqual({ "browser.page_view.index": 0 });
+      expect(envelope.data.baseData.properties).toEqual({
+        "browser.page_view.duration_source": "navigation_timing",
+        "browser.page_view.name_source": "document_title",
+        "browser.page_view.same_document": "false",
+        "browser.page_view.type": "reload",
+      });
     },
   );
 
@@ -648,7 +720,7 @@ describe("Azure Monitor log envelope mapping", () => {
           url: "https://shop.example.test/cart",
           duration: "00:00:00.4252500",
           referredUri: "https://shop.example.test/products",
-          properties: { "browser.page_view.same_document": "true" },
+          properties: undefined,
           measurements: undefined,
         },
       });
@@ -660,6 +732,7 @@ describe("Azure Monitor log envelope mapping", () => {
       makeLog({
         eventName: "browser.page_view",
         attributes: {
+          ...pageViewDiagnostics,
           "browser.page_view.name": "Cart",
           "browser.page_view.duration": 425.25,
           "browser.page_view.performance.total": 425.25,
@@ -668,7 +741,8 @@ describe("Azure Monitor log envelope mapping", () => {
           "browser.page_view.performance.received_response": 50.25,
           "browser.page_view.performance.dom_processing": 249.5,
           "url.full": "https://shop.example.test/cart",
-          "browser.page_view.same_document": false,
+          tenant: "north",
+          itemCount: 2,
           [AZURE_MONITOR_SAMPLE_RATE]: 25,
         },
       }),
@@ -683,7 +757,6 @@ describe("Azure Monitor log envelope mapping", () => {
       iKey: instrumentationKey,
       sampleRate: 25,
       tags: envelopes[0]?.tags,
-      ver: 1,
       data: {
         baseType: "PageviewPerformanceData",
         baseData: {
@@ -696,12 +769,49 @@ describe("Azure Monitor log envelope mapping", () => {
           sentRequest: "00:00:00.1005000",
           receivedResponse: "00:00:00.0502500",
           domProcessing: "00:00:00.2495000",
-          properties: { "browser.page_view.same_document": "false" },
-          measurements: undefined,
+          properties: { tenant: "north" },
+          measurements: { itemCount: 2 },
         },
       },
     });
     expect(envelopes[1]?.tags["ai.operation.id"]).toBe(spanContext.traceId);
+    expect(envelopes[1]?.tags).toMatchObject({
+      "ai.device.type": "Browser",
+      "ai.device.id": "browser",
+    });
+    expect(envelopes[0]?.data.baseData.properties).toEqual({ tenant: "north" });
+    expect(envelopes[0]?.data.baseData.measurements).toEqual({ itemCount: 2 });
+  });
+
+  it("omits default envelope fields and diagnostic custom fields from both page-view envelopes", () => {
+    const envelopes = logToEnvelopes(
+      makeLog({
+        eventName: "browser.page_view",
+        attributes: {
+          ...pageViewDiagnostics,
+          "browser.page_view.performance.total": 170,
+          "browser.page_view.performance.network_connect": 20,
+          "browser.page_view.performance.sent_request": 50,
+          "browser.page_view.performance.received_response": 30,
+          "browser.page_view.performance.dom_processing": 70,
+          [AZURE_MONITOR_SAMPLE_RATE]: 100,
+        },
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelopes).toHaveLength(2);
+    for (const envelope of envelopes) {
+      const serialized = JSON.parse(JSON.stringify(envelope));
+      expect(serialized).not.toHaveProperty("sampleRate");
+      expect(serialized).not.toHaveProperty("ver");
+      expect(serialized.data.baseData).not.toHaveProperty("properties");
+      expect(serialized.data.baseData).not.toHaveProperty("measurements");
+      expect(serialized.tags).toMatchObject({
+        "ai.device.type": "Browser",
+        "ai.device.id": "browser",
+      });
+    }
   });
 
   it("does not emit page-view performance when any phase is missing", () => {

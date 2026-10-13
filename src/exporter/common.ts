@@ -112,6 +112,8 @@ export function createTags(
 ): Record<string, string> {
   const tags: Record<string, string> = {
     "ai.internal.sdkVersion": getSdkVersion(),
+    "ai.device.type": "Browser",
+    "ai.device.id": "browser",
   };
   if (traceId) tags["ai.operation.id"] = traceId;
   if (parentContext?.spanId && !isPageContext(parentContext)) {
@@ -162,9 +164,8 @@ export function createEnvelope<T extends AzureMonitorBaseData>(
     name,
     time,
     iKey: instrumentationKey,
-    sampleRate,
+    sampleRate: sampleRate === 100 ? undefined : sampleRate,
     tags,
-    ver: 1,
     data: { baseType, baseData },
   };
 }

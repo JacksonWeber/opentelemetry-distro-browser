@@ -24,6 +24,9 @@ All notable changes to this package are documented in this file.
 
 ### Fixed
 
+- Set Azure Monitor browser device tags on all envelopes, omit default envelope version and
+  full-sampling fields, and exclude built-in page-view diagnostics and ordinals from custom
+  properties and measurements while retaining application custom fields and OpenTelemetry records.
 - Include every instrumentation in the `opentelemetry-browser` CDN and global bundles, exposed as
   `Microsoft.OpenTelemetry.getInstrumentations`, and enable the default `fetch` and XHR
   instrumentations from the loader snippet. Snippet users previously received no dependency

@@ -17,6 +17,23 @@ const spanContext = createSpanContext();
 const parentSpanContext = { ...spanContext, spanId: "0000000000000002" };
 
 describe("Azure Monitor span envelope mapping", () => {
+  it.each([
+    SpanKind.CLIENT,
+    SpanKind.SERVER,
+    SpanKind.CONSUMER,
+    SpanKind.INTERNAL,
+    SpanKind.PRODUCER,
+  ])("sets browser device tags and omits the default envelope version (kind=%i)", (kind) => {
+    const envelope = spanToEnvelope(makeSpan({ kind }), instrumentationKey);
+
+    expect(envelope.tags).toMatchObject({
+      "ai.device.type": "Browser",
+      "ai.device.id": "browser",
+    });
+    expect(envelope).not.toHaveProperty("ver");
+    expect(envelope.data.baseData.ver).toBe(2);
+  });
+
   it.each([SpanKind.CLIENT, SpanKind.SERVER, SpanKind.CONSUMER, SpanKind.INTERNAL])(
     "promotes standard session IDs to tags without changing the source span (kind=%i)",
     (kind) => {
@@ -93,14 +110,15 @@ describe("Azure Monitor span envelope mapping", () => {
       name: "Microsoft.ApplicationInsights.RemoteDependency",
       time: "2025-01-01T00:00:00.000Z",
       iKey: instrumentationKey,
-      sampleRate: 100,
+      sampleRate: undefined,
       tags: {
         "ai.internal.sdkVersion": `browser:otel${SDK_INFO[ATTR_TELEMETRY_SDK_VERSION]}:mot${OPENTELEMETRY_BROWSER_VERSION}`,
+        "ai.device.type": "Browser",
+        "ai.device.id": "browser",
         "ai.operation.id": spanContext.traceId,
         "ai.operation.parentId": parentSpanContext.spanId,
         "ai.cloud.role": "browser-store",
       },
-      ver: 1,
       data: {
         baseType: "RemoteDependencyData",
         baseData: {
@@ -262,22 +280,27 @@ describe("Azure Monitor span envelope mapping", () => {
     expect(envelope.data.baseData.duration).toBe("1.01:01:01.0010000");
   });
 
-  it("maps the reserved sample rate without exporting it as a custom measurement", () => {
-    const envelope = spanToEnvelope(
-      makeSpan({ attributes: { [AZURE_MONITOR_SAMPLE_RATE]: 25 } }),
-      instrumentationKey,
-    );
+  it.each([0.000001, 25, 99.5])(
+    "maps the reserved sample rate %s without exporting it as a custom measurement",
+    (sampleRate) => {
+      const envelope = spanToEnvelope(
+        makeSpan({ attributes: { [AZURE_MONITOR_SAMPLE_RATE]: sampleRate } }),
+        instrumentationKey,
+      );
 
-    expect(envelope.sampleRate).toBe(25);
-    expect(envelope.data.baseData.measurements).toBeUndefined();
-  });
+      expect(envelope.sampleRate).toBe(sampleRate);
+      expect(envelope.data.baseData.measurements).toBeUndefined();
+    },
+  );
 
-  it.each([undefined, 0])(
-    "defaults standalone span conversion with sample rate %s to full sampling",
+  it.each([undefined, 0, 100, -1, 101, NaN, Infinity, "25"])(
+    "omits full sampling from standalone span conversion with sample rate %s",
     (sampleRate) => {
       const attributes =
         sampleRate === undefined ? {} : { [AZURE_MONITOR_SAMPLE_RATE]: sampleRate };
-      expect(spanToEnvelope(makeSpan({ attributes }), instrumentationKey).sampleRate).toBe(100);
+      expect(
+        JSON.parse(JSON.stringify(spanToEnvelope(makeSpan({ attributes }), instrumentationKey))),
+      ).not.toHaveProperty("sampleRate");
     },
   );
 });

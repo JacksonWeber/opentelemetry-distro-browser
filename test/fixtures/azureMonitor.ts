@@ -44,9 +44,17 @@ export function assertAzureMonitorEnvelope(value: unknown): asserts value is Azu
   expect(value).toMatchObject({
     name: expect.any(String),
     iKey: expect.any(String),
-    ver: 1,
-    sampleRate: 100,
   });
+  if (value.ver !== undefined) expect(value.ver, "envelope.ver").toBe(1);
+  if (value.sampleRate !== undefined) {
+    assert(
+      typeof value.sampleRate === "number" &&
+        Number.isFinite(value.sampleRate) &&
+        value.sampleRate > 0 &&
+        value.sampleRate <= 100,
+      "envelope.sampleRate: expected a finite percentage in (0, 100]",
+    );
+  }
   assert(
     typeof value.time === "string" && Number.isFinite(Date.parse(value.time)),
     "envelope.time: expected an ISO timestamp",

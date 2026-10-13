@@ -92,12 +92,28 @@ describe("Azure Monitor envelope assertions", () => {
     );
   });
 
+  it.each([undefined, 0.000001, 25, 99.5, 100])(
+    "accepts omitted or valid sampling percentages (%s)",
+    (sampleRate) => {
+      assertAzureMonitorEnvelope({ ...message, sampleRate });
+    },
+  );
+
+  it("accepts explicitly supplied envelope defaults", () => {
+    assertAzureMonitorEnvelope({ ...message, ver: 1, sampleRate: 100 });
+  });
+
   it.each([
     ["null", null],
     ["array", []],
     ["instrumentation key", { ...message, iKey: undefined }],
     ["envelope version", { ...message, ver: 2 }],
-    ["sample rate", { ...message, sampleRate: 50 }],
+    ["zero sample rate", { ...message, sampleRate: 0 }],
+    ["negative sample rate", { ...message, sampleRate: -1 }],
+    ["excessive sample rate", { ...message, sampleRate: 101 }],
+    ["non-finite sample rate", { ...message, sampleRate: Infinity }],
+    ["NaN sample rate", { ...message, sampleRate: NaN }],
+    ["string sample rate", { ...message, sampleRate: "25" }],
     ["timestamp", { ...message, time: "not a date" }],
     ["non-ISO timestamp", { ...message, time: "2025-01-01" }],
     ["tags", { ...message, tags: { role: 42 } }],

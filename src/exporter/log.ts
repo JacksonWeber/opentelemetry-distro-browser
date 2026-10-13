@@ -12,6 +12,8 @@ import { logToEnvelopes } from "./logUtils.js";
  * @remarks
  * Synthetic page-operation contexts supply an operation ID, but not a parent ID.
  * Application and inherited span contexts retain their parent-ID mapping.
+ * Built-in page-view diagnostics remain on OpenTelemetry records but are omitted from
+ * Azure Monitor custom properties and measurements.
  *
  * @public
  */

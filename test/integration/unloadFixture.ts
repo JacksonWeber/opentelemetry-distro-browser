@@ -32,7 +32,16 @@ await useMicrosoftOpenTelemetry({
       `InstrumentationKey=00000000-0000-0000-0000-000000000000;` +
       `IngestionEndpoint=${ingestionEndpoint}`,
   },
-  pageView: { enabled: pageView, softNavigationSettleTimeoutMs: 60_000 },
+  pageView: {
+    enabled: pageView,
+    softNavigationSettleTimeoutMs: 60_000,
+    applyCustomLogRecordData: (record) => {
+      record.attributes = {
+        ...record.attributes,
+        "test.duration_source": record.attributes?.["browser.page_view.duration_source"],
+      };
+    },
+  },
   samplingPercentage: parameters.has("sampling") ? Number(parameters.get("sampling")) : undefined,
   instrumentations: inFlight
     ? [new ConsoleInstrumentation({ enabled: false, logMethods: ["error"] })]
