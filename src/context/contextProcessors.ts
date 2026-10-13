@@ -32,7 +32,8 @@ function enrich(
     if (sessionId !== null) setAttribute("session.id", sessionId);
   }
   if (!hasAttribute(ATTR_ENDUSER_PSEUDO_ID)) {
-    setAttribute(ATTR_ENDUSER_PSEUDO_ID, provider.getAnonymousUserId());
+    const anonymousUserId = provider.getAnonymousUserId();
+    if (anonymousUserId !== undefined) setAttribute(ATTR_ENDUSER_PSEUDO_ID, anonymousUserId);
   }
   // Managed user and account form one identity; never mix them with application identity.
   if (

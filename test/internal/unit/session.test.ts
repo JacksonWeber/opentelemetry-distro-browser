@@ -64,6 +64,7 @@ async function initialize(
   const records: ReadWriteLogRecord[] = [];
   const handle = await useMicrosoftOpenTelemetry({
     ...options,
+    userContext: { enabled: false },
     pageView: { enabled: false },
     spanProcessors: [
       {
@@ -416,6 +417,7 @@ it("awaits persisted restoration before starting providers or enabling instrumen
   const logIds: unknown[] = [];
   const pending = useMicrosoftOpenTelemetry({
     session: { enabled: true },
+    userContext: { enabled: false },
     pageView: { enabled: false },
     spanProcessors: [
       {

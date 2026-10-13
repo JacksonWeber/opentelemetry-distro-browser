@@ -101,7 +101,7 @@ export async function useMicrosoftOpenTelemetry(
     options.samplingPercentage === undefined
       ? new PageOperationSampler()
       : new ApplicationInsightsSampler(options.samplingPercentage);
-  const userContext = createUserContext(options.userContext?.enabled === true);
+  const userContext = createUserContext(options.userContext?.enabled);
   const azureMonitor = options.azureMonitor ? { ...options.azureMonitor } : undefined;
   let spanProcessors: SpanProcessor[] | undefined = options.spanProcessors?.slice();
   let logRecordProcessors: LogRecordProcessor[] | undefined = options.logRecordProcessors?.slice();
