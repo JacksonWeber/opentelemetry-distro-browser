@@ -27,10 +27,11 @@ CommonJS test runners such as Jest must transform those dependencies.
 
 The `opentelemetry-browser.*` SDK bundles are self-contained and expose `Microsoft.OpenTelemetry`.
 They also expose the standard OpenTelemetry APIs used by the bundled SDK, so direct-script
-consumers can emit manual telemetry without loading a second API copy. The
-`opentelemetry-browser-instrumentations.*` bundles expose `Microsoft.OpenTelemetryInstrumentations`
-and include their own API copy, which shares state with the SDK bundle through the OpenTelemetry
-global registry. Use IIFE when RequireJS may already be present; UMD deliberately registers with
+consumers can emit manual telemetry without loading a second API copy. They inline every
+instrumentation and expose `getInstrumentations`, because a page loading them from the CDN has no
+bundler to add instrumentations later. The `opentelemetry-browser-instrumentations.*` bundles expose
+only `Microsoft.OpenTelemetryInstrumentations` and include their own API copy, which shares state
+with the SDK bundle through the OpenTelemetry global registry. Use IIFE when RequireJS may already be present; UMD deliberately registers with
 AMD loaders.
 
 `npm run test:build` checks the output inventory, ESM and CommonJS package resolution, declaration
@@ -73,7 +74,7 @@ including alpha:
 
 | Artifact                                                   | Minified |  Gzip | Brotli |
 | ---------------------------------------------------------- | -------: | ----: | -----: |
-| `opentelemetry-browser.{iife,umd}.min.js`                  |   135 kB | 41 kB |  36 kB |
+| `opentelemetry-browser.{iife,umd}.min.js`                  |   180 kB | 54 kB |  47 kB |
 | `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |    63 kB | 19 kB |  17 kB |
 
 The browser bundles contain only ES2022 syntax. `npm run test:build` parses every emitted UMD and
@@ -94,7 +95,8 @@ The channel is `b` for stable releases and the prerelease identifier (`alpha`, `
 otherwise. Each module (`opentelemetry-browser` and `opentelemetry-browser-instrumentations`) is
 published as `min.js` and `js` (IIFE), and `umd.min.js` and `umd.js` (UMD), each with its source
 map, plus `<module>.<version>.integrity.json`. The integrity file lists every file's CDN URL and
-its SHA-256, SHA-384 and SHA-512 Subresource Integrity values.
+its SHA-256, SHA-384 and SHA-512 Subresource Integrity values. `<module>.<version>.size.svg` is a
+badge showing the minified and gzip size of that module's `min.js` bundle.
 
 `npm run build` prepares these files in `cdn/` from the same `dist/browser` bundles, renaming only
 the source map references. `npm run cdn:publish -- --account <storage-account>` uploads them with
@@ -104,15 +106,16 @@ never overwrites a published file, skips files that are already published with i
 and fails if a published file differs. Use `--dry-run` to list the URLs without uploading.
 
 The `./snippet` helper generates the copy/paste loader. Without `src`, it loads the `min.js` IIFE
-bundle for the package version, so the snippet and the bundle versions always match. The loader
-reads the `Microsoft.OpenTelemetry` global, which a UMD bundle does not set when an AMD loader is
+bundle for the package version, so the snippet and the bundle versions always match. It enables the
+same defaults as `getInstrumentations()`, `fetch` and XHR, alongside Azure Monitor export and page
+views. The loader reads the `Microsoft.OpenTelemetry` global, which a UMD bundle does not set when an AMD loader is
 present. Add the generated script to the page `<head>` and replace `CHANNEL`, `VERSION`,
 `YOUR_CONNECTION_STRING` and `YOUR_INTEGRITY` in the configuration object at its end:
 
 <!-- prettier-ignore -->
 ```html
 <script>
-!(function(w,d,c){var s=d.createElement("script");w.microsoftOpenTelemetry=new Promise(function(resolve,reject){s.src=c.src;s.crossOrigin=c.crossOrigin;if(c.integrity)s.integrity=c.integrity;s.onload=function(){var sdk=w.Microsoft&&w.Microsoft.OpenTelemetry;if(!sdk||typeof sdk.useMicrosoftOpenTelemetry!=="function"){reject(new Error("OpenTelemetry browser bundle did not expose Microsoft.OpenTelemetry"));return}Promise.resolve().then(function(){return sdk.useMicrosoftOpenTelemetry({azureMonitor:{connectionString:c.connectionString}})}).then(resolve,reject)};s.onerror=function(){reject(new Error("OpenTelemetry browser bundle failed to load: "+c.src))};d.head.appendChild(s)})})(window,document,{"src":"https://js.monitor.azure.com/scripts/otel/CHANNEL/opentelemetry-browser.VERSION.min.js","connectionString":"YOUR_CONNECTION_STRING","crossOrigin":"anonymous","integrity":"YOUR_INTEGRITY"});
+!(function(w,d,c){var s=d.createElement("script");w.microsoftOpenTelemetry=new Promise(function(resolve,reject){s.src=c.src;s.crossOrigin=c.crossOrigin;if(c.integrity)s.integrity=c.integrity;s.onload=function(){var sdk=w.Microsoft&&w.Microsoft.OpenTelemetry;if(!sdk||typeof sdk.useMicrosoftOpenTelemetry!=="function"){reject(new Error("OpenTelemetry browser bundle did not expose Microsoft.OpenTelemetry"));return}Promise.resolve().then(function(){return typeof sdk.getInstrumentations==="function"?sdk.getInstrumentations():[]}).then(function(instrumentations){return sdk.useMicrosoftOpenTelemetry({azureMonitor:{connectionString:c.connectionString},instrumentations:instrumentations})}).then(resolve,reject)};s.onerror=function(){reject(new Error("OpenTelemetry browser bundle failed to load: "+c.src))};d.head.appendChild(s)})})(window,document,{"src":"https://js.monitor.azure.com/scripts/otel/CHANNEL/opentelemetry-browser.VERSION.min.js","connectionString":"YOUR_CONNECTION_STRING","crossOrigin":"anonymous","integrity":"YOUR_INTEGRITY"});
 </script>
 ```
 
@@ -124,8 +127,8 @@ the Azure Monitor ingestion origin in `connect-src`.
 
 `npm run test:integration` loads the prepared CDN bundle cross-origin into a plain HTML page
 through the built snippet, under such a policy, in Chromium, Firefox, and WebKit. It verifies that
-page-view and span telemetry reaches an Azure Monitor ingestion endpoint, and that integrity
-mismatches and missing bundles reject initialization.
+page-view, span, `fetch` and XHR dependency telemetry reaches an Azure Monitor ingestion endpoint,
+and that integrity mismatches and missing bundles reject initialization.
 
 ## Performance measurements
 

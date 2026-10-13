@@ -102,6 +102,7 @@ it("loads a matching integrity-protected bundle and initializes asynchronously",
     });
     expect(loaderWindow.snippetOptions).toEqual({
       azureMonitor: { connectionString: "InstrumentationKey=test" },
+      instrumentations: [],
     });
     expect(
       Array.from(document.scripts).find((candidate) => candidate.src === fixtureUrl)?.integrity,
@@ -109,6 +110,68 @@ it("loads a matching integrity-protected bundle and initializes asynchronously",
   } finally {
     inlineScript.remove();
     removeLoadedScript(fixtureUrl);
+  }
+});
+
+it("enables the default instrumentations the bundle provides", async () => {
+  const src = URL.createObjectURL(
+    new Blob(
+      [
+        `window.Microsoft={OpenTelemetry:{` +
+          `getInstrumentations:function(options){window.instrumentationArguments=arguments.length;` +
+          `return Promise.resolve(["fetch","xhr"])},` +
+          `useMicrosoftOpenTelemetry:function(options){window.snippetOptions=options;` +
+          `return Promise.resolve({})}}};`,
+      ],
+      { type: "text/javascript" },
+    ),
+  );
+  const { inlineScript, initialization } = executeLoader({
+    src,
+    connectionString: "InstrumentationKey=test",
+  });
+
+  try {
+    await initialization;
+    expect((loaderWindow as { instrumentationArguments?: number }).instrumentationArguments).toBe(
+      0,
+    );
+    expect(loaderWindow.snippetOptions).toEqual({
+      azureMonitor: { connectionString: "InstrumentationKey=test" },
+      instrumentations: ["fetch", "xhr"],
+    });
+  } finally {
+    delete (loaderWindow as { instrumentationArguments?: number }).instrumentationArguments;
+    inlineScript.remove();
+    removeLoadedScript(src);
+    URL.revokeObjectURL(src);
+  }
+});
+
+it("rejects when the bundle cannot construct its instrumentations", async () => {
+  const src = URL.createObjectURL(
+    new Blob(
+      [
+        `window.Microsoft={OpenTelemetry:{` +
+          `getInstrumentations:function(){return Promise.reject(new Error("instrumentation failure"))},` +
+          `useMicrosoftOpenTelemetry:function(options){window.snippetOptions=options;` +
+          `return Promise.resolve({})}}};`,
+      ],
+      { type: "text/javascript" },
+    ),
+  );
+  const { inlineScript, initialization } = executeLoader({
+    src,
+    connectionString: "InstrumentationKey=test",
+  });
+
+  try {
+    await expect(initialization).rejects.toThrow("instrumentation failure");
+    expect(loaderWindow.snippetOptions).toBeUndefined();
+  } finally {
+    inlineScript.remove();
+    removeLoadedScript(src);
+    URL.revokeObjectURL(src);
   }
 });
 

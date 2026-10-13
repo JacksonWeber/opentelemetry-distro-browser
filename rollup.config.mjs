@@ -2,6 +2,7 @@ import commonjs from "@rollup/plugin-commonjs";
 import { nodeResolve } from "@rollup/plugin-node-resolve";
 import terser from "@rollup/plugin-terser";
 import typescript from "@rollup/plugin-typescript";
+import MagicString from "magic-string";
 import { dts } from "rollup-plugin-dts";
 import { visualizer } from "rollup-plugin-visualizer";
 
@@ -12,7 +13,30 @@ const esmOutput = {
 
 const externalOpenTelemetry = (id) => id.startsWith("@opentelemetry/");
 const compile = () => typescript({ tsconfig: "./tsconfig.src.json" });
-const bundleForBrowser = () => [nodeResolve({ browser: true }), commonjs(), compile()];
+
+const unsafeIdleCallbackCheck = 'typeof window.requestIdleCallback === "function"';
+// Upstream resource timing reads `window` when its module is evaluated, which throws in a worker.
+// The global bundles inline every instrumentation, so guard the check until upstream does.
+const workerSafeIdleCallback = {
+  name: "worker-safe-idle-callback",
+  transform(code, id) {
+    if (!/[\\/]@opentelemetry[\\/]browser-instrumentation[\\/].*idle-callback-shim\.js$/.test(id)) {
+      return null;
+    }
+    const index = code.indexOf(unsafeIdleCallbackCheck);
+    if (index === -1) {
+      this.error(`${id} no longer contains the guarded requestIdleCallback check.`);
+    }
+    const source = new MagicString(code).appendLeft(index, 'typeof window !== "undefined" && ');
+    return { code: source.toString(), map: source.generateMap({ hires: true }) };
+  },
+};
+const bundleForBrowser = () => [
+  nodeResolve({ browser: true }),
+  workerSafeIdleCallback,
+  commonjs(),
+  compile(),
+];
 
 // The CommonJS runtime loads its ESM-only dependencies with `import()`, so its declarations must
 // resolve them as ESM too; otherwise TypeScript rejects them under Node16 module resolution.
@@ -100,6 +124,7 @@ export default [
         format: "umd",
         name: "Microsoft.OpenTelemetry",
         exports: "named",
+        inlineDynamicImports: true,
         sourcemap: true,
       },
       {
@@ -107,6 +132,7 @@ export default [
         format: "umd",
         name: "Microsoft.OpenTelemetry",
         exports: "named",
+        inlineDynamicImports: true,
         sourcemap: true,
         plugins: [terser()],
       },
@@ -115,6 +141,7 @@ export default [
         format: "iife",
         name: "Microsoft.OpenTelemetry",
         exports: "named",
+        inlineDynamicImports: true,
         sourcemap: true,
       },
       {
@@ -122,6 +149,7 @@ export default [
         format: "iife",
         name: "Microsoft.OpenTelemetry",
         exports: "named",
+        inlineDynamicImports: true,
         sourcemap: true,
         plugins: [terser()],
       },

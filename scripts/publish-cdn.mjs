@@ -11,6 +11,7 @@ import {
   cacheControl,
   cdnDirectory,
   getCdnArtifacts,
+  getCdnBadges,
   getCdnPath,
   getCdnUrl,
   getContentType,
@@ -26,13 +27,14 @@ an identical existing file is skipped and a different one fails the publish.
 Authentication uses Azure CLI Entra ID login (--auth-mode login) unless
 AZURE_STORAGE_SAS_TOKEN is set.`;
 
-/** Lists the uploads for a version: bundles and source maps first, integrity files last. */
+/** Lists the uploads for a version: bundles, source maps and badges first, integrity files last. */
 export function getCdnUploads(version) {
   const files = getCdnArtifacts(version).flatMap(({ file }) => [file, `${file}.map`]);
+  const badges = getCdnBadges(version).map(({ file }) => file);
   const integrityFiles = [
     ...new Set(getCdnArtifacts(version).map(({ module }) => `${module}.${version}.integrity.json`)),
   ];
-  return [...files, ...integrityFiles].map((file) => ({
+  return [...files, ...badges, ...integrityFiles].map((file) => ({
     file,
     blob: `${getCdnPath(version)}/${file}`,
     url: getCdnUrl(version, file),

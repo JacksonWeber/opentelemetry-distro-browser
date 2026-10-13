@@ -22,6 +22,7 @@ interface BrowserBundle {
   readonly propagation: PropagationAPI;
   readonly trace: TraceAPI;
   readonly OPENTELEMETRY_BROWSER_VERSION: string;
+  getInstrumentations(options?: InstrumentationOptions): Promise<BrowserInstrumentation[]>;
   useMicrosoftOpenTelemetry(
     options?: MicrosoftOpenTelemetryBrowserOptions,
   ): Promise<MicrosoftOpenTelemetryBrowser>;
@@ -85,6 +86,33 @@ function captureAmdDefine<T>(): { define: AmdDefine; getRegistration: (file: str
 }
 
 async function exercise(bundle: BrowserBundle): Promise<void> {
+  // Every instrumentation is inlined, so constructing them all loads nothing else.
+  const instrumentations = await bundle.getInstrumentations({
+    console: { enabled: true },
+    errors: { enabled: true },
+    navigation: { enabled: true },
+    navigationTiming: { enabled: true },
+    resourceTiming: { enabled: true },
+    userAction: { enabled: true },
+    webVitals: { enabled: true },
+  });
+  expect(
+    instrumentations.map(
+      (instrumentation) =>
+        (instrumentation as unknown as { instrumentationName: string }).instrumentationName,
+    ),
+  ).toEqual([
+    "@opentelemetry/browser-instrumentation/fetch",
+    "@opentelemetry/browser-instrumentation/xhr",
+    "@opentelemetry/browser-instrumentation/console",
+    "@opentelemetry/browser-instrumentation/errors",
+    "@opentelemetry/browser-instrumentation/navigation",
+    "@opentelemetry/browser-instrumentation/navigation-timing",
+    "@opentelemetry/browser-instrumentation/resource-timing",
+    "@opentelemetry/browser-instrumentation/user-action",
+    "@opentelemetry/browser-instrumentation/web-vitals",
+  ]);
+
   const pipeline = createInMemoryPipeline();
   const telemetry = await bundle.useMicrosoftOpenTelemetry({
     ...pipeline.options,

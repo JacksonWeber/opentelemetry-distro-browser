@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { gzipSync } from "node:zlib";
 
 export const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const cdnOrigin = "https://js.monitor.azure.com";
@@ -48,8 +49,60 @@ export function getCdnArtifacts(version) {
   );
 }
 
-export const getContentType = (file) =>
-  file.endsWith(".js") ? "text/javascript; charset=utf-8" : "application/json; charset=utf-8";
+/** Size badge for each module's default (`min.js`) bundle, published next to it. */
+export const getCdnBadges = (version) =>
+  modules.map((module) => ({
+    module,
+    bundle: `${module}.${version}.min.js`,
+    file: `${module}.${version}.size.svg`,
+  }));
+
+export function getContentType(file) {
+  if (file.endsWith(".js")) return "text/javascript; charset=utf-8";
+  if (file.endsWith(".svg")) return "image/svg+xml; charset=utf-8";
+  return "application/json; charset=utf-8";
+}
+
+/** Formats the minified and gzip size of a bundle as the badge message. */
+export function getSizeBadgeMessage(bytes) {
+  const kib = (value) => `${(value / 1024).toFixed(1)} KiB`;
+  return `${kib(bytes.byteLength)} / ${kib(gzipSync(bytes, { level: 9 }).byteLength)} gzip`;
+}
+
+// Approximate Verdana 11px advance widths; `textLength` makes the rendered text fit exactly.
+const textWidth = (text) =>
+  Math.ceil(
+    [...text].reduce(
+      (width, char) =>
+        width + (/[\s.,:;/il|()]/.test(char) ? 3.9 : /[A-Z0-9]/.test(char) ? 7.6 : 6.8),
+      0,
+    ),
+  );
+
+/** Renders a self-contained, Shields-style flat badge without any network access. */
+export function renderBadge(label, message, color = "#007ec6") {
+  const escape = (text) => text.replace(/[&<>"]/g, (char) => `&#${char.charCodeAt(0)};`);
+  const labelWidth = textWidth(label) + 10;
+  const messageWidth = textWidth(message) + 10;
+  const width = labelWidth + messageWidth;
+  const text = (value, x, textLength) =>
+    `<text x="${x * 10}" y="150" fill="#010101" fill-opacity=".3" transform="scale(.1)" textLength="${textLength * 10}">${value}</text>` +
+    `<text x="${x * 10}" y="140" transform="scale(.1)" textLength="${textLength * 10}">${value}</text>`;
+  const title = escape(`${label}: ${message}`);
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="20" role="img" aria-label="${title}">` +
+    `<title>${title}</title>` +
+    `<linearGradient id="s" x2="0" y2="100%"><stop offset="0" stop-color="#bbb" stop-opacity=".1"/><stop offset="1" stop-opacity=".1"/></linearGradient>` +
+    `<clipPath id="r"><rect width="${width}" height="20" rx="3" fill="#fff"/></clipPath>` +
+    `<g clip-path="url(#r)"><rect width="${labelWidth}" height="20" fill="#555"/>` +
+    `<rect x="${labelWidth}" width="${messageWidth}" height="20" fill="${color}"/>` +
+    `<rect width="${width}" height="20" fill="url(#s)"/></g>` +
+    `<g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="110">` +
+    text(escape(label), labelWidth / 2, labelWidth - 10) +
+    text(escape(message), labelWidth + messageWidth / 2, messageWidth - 10) +
+    `</g></svg>\n`
+  );
+}
 
 const hash = (algorithm, bytes) => createHash(algorithm).update(bytes).digest("base64");
 
@@ -77,8 +130,8 @@ function renameSourceMapReference(code, source, file) {
 }
 
 /**
- * Copies the built browser bundles to `cdn/` under immutable versioned names, with source maps
- * and an `<module>.<version>.integrity.json` file per module.
+ * Copies the built browser bundles to `cdn/` under immutable versioned names, with source maps,
+ * a `<module>.<version>.size.svg` badge, and an `<module>.<version>.integrity.json` file per module.
  */
 export async function prepareCdn({ version, sourceDirectory, outputDirectory = cdnDirectory }) {
   await rm(outputDirectory, { recursive: true, force: true });
@@ -119,6 +172,14 @@ export async function prepareCdn({ version, sourceDirectory, outputDirectory = c
       ...getIntegrity(bytes),
     };
     integrityFiles.set(integrityFile, integrityJson);
+  }
+
+  for (const badge of getCdnBadges(version)) {
+    const bytes = await readFile(resolve(outputDirectory, badge.bundle));
+    await writeFile(
+      resolve(outputDirectory, badge.file),
+      renderBadge("size", getSizeBadgeMessage(bytes)),
+    );
   }
 
   for (const [file, json] of integrityFiles) {

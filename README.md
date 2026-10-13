@@ -109,14 +109,15 @@ page's `<head>`, replacing `CHANNEL`, `VERSION`, `YOUR_CONNECTION_STRING`, and `
 <!-- prettier-ignore -->
 ```html
 <script>
-!(function(w,d,c){var s=d.createElement("script");w.microsoftOpenTelemetry=new Promise(function(resolve,reject){s.src=c.src;s.crossOrigin=c.crossOrigin;if(c.integrity)s.integrity=c.integrity;s.onload=function(){var sdk=w.Microsoft&&w.Microsoft.OpenTelemetry;if(!sdk||typeof sdk.useMicrosoftOpenTelemetry!=="function"){reject(new Error("OpenTelemetry browser bundle did not expose Microsoft.OpenTelemetry"));return}Promise.resolve().then(function(){return sdk.useMicrosoftOpenTelemetry({azureMonitor:{connectionString:c.connectionString}})}).then(resolve,reject)};s.onerror=function(){reject(new Error("OpenTelemetry browser bundle failed to load: "+c.src))};d.head.appendChild(s)})})(window,document,{"src":"https://js.monitor.azure.com/scripts/otel/CHANNEL/opentelemetry-browser.VERSION.min.js","connectionString":"YOUR_CONNECTION_STRING","crossOrigin":"anonymous","integrity":"YOUR_INTEGRITY"});
+!(function(w,d,c){var s=d.createElement("script");w.microsoftOpenTelemetry=new Promise(function(resolve,reject){s.src=c.src;s.crossOrigin=c.crossOrigin;if(c.integrity)s.integrity=c.integrity;s.onload=function(){var sdk=w.Microsoft&&w.Microsoft.OpenTelemetry;if(!sdk||typeof sdk.useMicrosoftOpenTelemetry!=="function"){reject(new Error("OpenTelemetry browser bundle did not expose Microsoft.OpenTelemetry"));return}Promise.resolve().then(function(){return typeof sdk.getInstrumentations==="function"?sdk.getInstrumentations():[]}).then(function(instrumentations){return sdk.useMicrosoftOpenTelemetry({azureMonitor:{connectionString:c.connectionString},instrumentations:instrumentations})}).then(resolve,reject)};s.onerror=function(){reject(new Error("OpenTelemetry browser bundle failed to load: "+c.src))};d.head.appendChild(s)})})(window,document,{"src":"https://js.monitor.azure.com/scripts/otel/CHANNEL/opentelemetry-browser.VERSION.min.js","connectionString":"YOUR_CONNECTION_STRING","crossOrigin":"anonymous","integrity":"YOUR_INTEGRITY"});
 </script>
 ```
 
 For example, `0.1.0-alpha.3` uses channel `alpha`, and its `YOUR_INTEGRITY` is the
 `ext["@min.js"].integrity` value in
 [`opentelemetry-browser.0.1.0-alpha.3.integrity.json`](https://js.monitor.azure.com/scripts/otel/alpha/opentelemetry-browser.0.1.0-alpha.3.integrity.json).
-The snippet enables Azure Monitor export and page views; use the npm package for other options.
+The snippet enables Azure Monitor export, page views, and `fetch` and XHR dependency collection; use
+the npm package for other options.
 
 `window.microsoftOpenTelemetry` is a promise that resolves to the telemetry handle, or rejects when
 the bundle fails to load, fails its integrity check, or fails to initialize:
@@ -228,16 +229,31 @@ await useMicrosoftOpenTelemetry({
 
 ## Bundle size
 
-The production bundle is built and measured in CI. For `0.1.0-alpha.3`:
+The size depends on how the package is loaded. Sizes in KiB, measured from the current source:
 
-| Artifact                   | Size      |
-| -------------------------- | --------: |
-| Minified ESM               | 129.27 kB |
-| Minified ESM + gzip        |  39.40 kB |
-| Minified ESM + Brotli      |  33.96 kB |
+| Loaded from | Includes                                          | Minified |  gzip | Brotli |
+| ----------- | ------------------------------------------------- | -------: | ----: | -----: |
+| npm         | Distribution, page views and Azure Monitor export |    131.6 |  40.3 |   35.3 |
+| CDN         | Everything, including all nine instrumentations   |    176.9 |  53.0 |   46.1 |
 
-Run `npm run build && npm run size` to reproduce these measurements. Optional browser
-instrumentations are loaded through dynamic imports and remain outside the root bundle unless used.
+**npm.** The application's bundler removes code the application does not use. Instrumentations are
+loaded through dynamic imports only when enabled, so each one adds only its own code. Gzip added
+by each instrumentation, measured on its own:
+
+| Instrumentation | gzip | Instrumentation    | gzip |
+| --------------- | ---: | ------------------ | ---: |
+| `fetch`         |  2.3 | `navigationTiming` |  0.9 |
+| `xhr`           |  1.8 | `resourceTiming`   |  1.5 |
+| `console`       |  0.3 | `userAction`       |  0.8 |
+| `errors`        |  0.3 | `webVitals`        |  5.3 |
+| `navigation`    |  0.8 |                    |      |
+
+**CDN.** A page that loads a script file cannot remove unused code, and the file cannot know which
+features the page will enable, so `opentelemetry-browser.<version>.min.js` includes every
+instrumentation. The loader snippet enables `fetch` and `xhr`; the others are included but stay off
+unless enabled.
+
+Run `npm run build && npm run size` to reproduce these measurements.
 
 ## Package formats
 
@@ -251,15 +267,17 @@ Choose the format that matches how the application loads JavaScript:
 | Direct `<script>` loading | `dist/browser/opentelemetry-browser.iife.min.js` |
 
 The IIFE bundle exposes `Microsoft.OpenTelemetry`. Use it instead of UMD when RequireJS might already
-be present but the SDK should load as a global. Optional instrumentations have matching
-`opentelemetry-browser-instrumentations.{umd,iife}.js` bundles, each with a `.min.js` variant, that
-expose `Microsoft.OpenTelemetryInstrumentations`.
+be present but the SDK should load as a global. The SDK bundles include every instrumentation and
+expose `Microsoft.OpenTelemetry.getInstrumentations`; pass its result as `instrumentations`.
 
 ```html
 <script src="/vendor/opentelemetry-browser.iife.min.js"></script>
 <script>
-  Microsoft.OpenTelemetry.useMicrosoftOpenTelemetry({
-    azureMonitor: { connectionString: "InstrumentationKey=...;IngestionEndpoint=..." },
+  Microsoft.OpenTelemetry.getInstrumentations().then(function (instrumentations) {
+    return Microsoft.OpenTelemetry.useMicrosoftOpenTelemetry({
+      azureMonitor: { connectionString: "InstrumentationKey=...;IngestionEndpoint=..." },
+      instrumentations: instrumentations,
+    });
   });
 </script>
 ```
