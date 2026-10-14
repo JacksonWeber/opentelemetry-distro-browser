@@ -5,9 +5,13 @@ import { SDK_INFO } from "@opentelemetry/core";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { ATTR_TELEMETRY_SDK_VERSION } from "@opentelemetry/semantic-conventions";
 import { describe, expect, it } from "vitest";
-import { MAX_BEACON_BODY_SIZE } from "../../../src/exporter/constants.js";
-import type { ExceptionData } from "../../../src/exporter/telemetryModels.js";
-import { logToEnvelope, logToEnvelopes } from "../../../src/exporter/logUtils.js";
+import { MaxPropertyLengths, MAX_BEACON_BODY_SIZE } from "../../../src/exporter/constants.js";
+import type { ExceptionData, PageViewData } from "../../../src/exporter/telemetryModels.js";
+import {
+  createExceptionDetails,
+  logToEnvelope,
+  logToEnvelopes,
+} from "../../../src/exporter/logUtils.js";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../../src/shared/constants.js";
 import { AZURE_MONITOR_SAMPLE_RATE } from "../../../src/sampling.js";
 import { TEST_INSTRUMENTATION_KEY as instrumentationKey } from "../../fixtures/azureMonitor.js";
@@ -85,7 +89,10 @@ describe("Azure Monitor log envelope mapping", () => {
         properties: { "browser.page_view.custom": "kept" },
         measurements: { itemCount: 2 },
       });
-      expect(envelope.data.baseData.properties).toEqual({ "browser.page_view.custom": "kept" });
+      expect(envelope.data.baseData.properties).toEqual({
+        "browser.page_view.custom": "kept",
+        refUri: "https://example.test/previous",
+      });
       expect(envelope.data.baseData.measurements).toEqual({ itemCount: 2 });
       expect(record.attributes).toEqual(originalAttributes);
     },
@@ -270,9 +277,28 @@ describe("Azure Monitor log envelope mapping", () => {
       name: body ?? "Other",
       duration: "00:00:00.2500000",
       referredUri: "https://example.test/products",
-      properties: undefined,
+      properties: { refUri: "https://example.test/products" },
       measurements: undefined,
     });
+  });
+
+  it("applies the custom-dimension byte limit to page-view refUri", () => {
+    const referrer = "€".repeat(3_000);
+    const envelope = logToEnvelope(
+      makeLog({
+        eventName: "browser.page_view",
+        attributes: { "browser.page_view.referrer": referrer },
+      }),
+      instrumentationKey,
+    );
+    const baseData = envelope.data.baseData as PageViewData;
+    const refUri = baseData.properties?.refUri;
+
+    expect(baseData.referredUri).toBe(referrer);
+    expect(refUri).not.toContain("�");
+    expect(new TextEncoder().encode(refUri).byteLength).toBeLessThanOrEqual(
+      MaxPropertyLengths.THIRTEEN_BIT,
+    );
   });
 
   it("maps exception semantic attributes and severity", () => {
@@ -720,7 +746,9 @@ describe("Azure Monitor log envelope mapping", () => {
           url: "https://shop.example.test/cart",
           duration: "00:00:00.4252500",
           referredUri: "https://shop.example.test/products",
-          properties: undefined,
+          properties: {
+            refUri: "https://shop.example.test/products",
+          },
           measurements: undefined,
         },
       });
@@ -931,6 +959,58 @@ describe("Azure Monitor log envelope mapping", () => {
         measurements: { total: 42.5 },
       },
     });
+  });
+
+  it("truncates message, event name, and property values to Breeze schema limits", () => {
+    const message = logToEnvelope(
+      makeLog({ body: "m".repeat(40_000), attributes: { detail: "p".repeat(10_000) } }),
+      instrumentationKey,
+    );
+    const event = logToEnvelope(
+      makeLog({ eventName: "e".repeat(1_000), attributes: {} }),
+      instrumentationKey,
+    );
+
+    expect((message.data.baseData as { message: string }).message).toHaveLength(32_768);
+    expect(message.data.baseData.properties?.detail).toHaveLength(8_192);
+    expect((event.data.baseData as { name: string }).name).toHaveLength(512);
+  });
+
+  it("does not split surrogate pairs at message and event-name limits", () => {
+    const message = logToEnvelope(
+      makeLog({ body: `${"m".repeat(32_767)}\u{1f600}` }),
+      instrumentationKey,
+    );
+    const event = logToEnvelope(
+      makeLog({ eventName: `${"e".repeat(511)}\u{1f600}` }),
+      instrumentationKey,
+    );
+
+    expect((message.data.baseData as { message: string }).message).toBe("m".repeat(32_767));
+    expect((event.data.baseData as { name: string }).name).toBe("e".repeat(511));
+  });
+
+  it("does not emit unpaired surrogates from exception byte-budget truncation", () => {
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+    const attributes = { "exception.message": "\u{1f600}".repeat(100) };
+
+    for (let maxSize = 50; maxSize <= 256; maxSize++) {
+      const message = createExceptionDetails(attributes, undefined, maxSize).message;
+      expect(decoder.decode(encoder.encode(message))).toBe(message);
+    }
+  });
+
+  it("slices custom dimension values at the Breeze UTF-8 byte limit", () => {
+    const envelope = logToEnvelope(
+      makeLog({ attributes: { detail: "\u20ac".repeat(3_000) } }),
+      instrumentationKey,
+    );
+    const detail = envelope.data.baseData.properties?.detail;
+
+    expect(detail).toBe("\u20ac".repeat(2_730));
+    expect(detail).not.toContain("\ufffd");
+    expect(new TextEncoder().encode(detail).byteLength).toBeLessThanOrEqual(8_192);
   });
 
   it("maps other named logs to EventData regardless of body or severity", () => {

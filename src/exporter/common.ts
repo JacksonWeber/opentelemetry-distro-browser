@@ -15,8 +15,11 @@ import {
   ATTR_USER_ID,
 } from "../user/constants.js";
 import { AZURE_MONITOR_SAMPLE_RATE } from "../sampling.js";
+import { MaxPropertyLengths } from "./constants.js";
 
 let unloadingCount = 0;
+let textDecoder: TextDecoder | undefined;
+let textEncoder: TextEncoder | undefined;
 
 export function isUnloading(): boolean {
   return unloadingCount > 0;
@@ -70,9 +73,40 @@ export function serializeAttribute(value: unknown): string {
   }
 }
 
+export function truncateToLength(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  const truncated = value.substring(0, maxLength);
+  return /[\uD800-\uDBFF]$/.test(truncated)
+    ? truncated.substring(0, truncated.length - 1)
+    : truncated;
+}
+
 function getSdkVersion(): string {
   const sdkVersion = SDK_INFO[ATTR_TELEMETRY_SDK_VERSION];
   return `browser:otel${sdkVersion}:mot${OPENTELEMETRY_BROWSER_VERSION}`;
+}
+
+export function truncateCustomDimensions(
+  properties: Record<string, unknown>,
+): Record<string, string> {
+  const result: Record<string, string> = {};
+  textEncoder ??= new TextEncoder();
+
+  for (const key of Object.keys(properties)) {
+    let value =
+      typeof properties[key] === "string" ? properties[key] : serializeAttribute(properties[key]);
+    const maxSize: number = MaxPropertyLengths.THIRTEEN_BIT;
+    const valueBytes = textEncoder.encode(value);
+    if (valueBytes.byteLength > maxSize) {
+      let end = maxSize;
+      while ((valueBytes[end] & 0xc0) === 0x80) end--;
+      textDecoder ??= new TextDecoder();
+      value = textDecoder.decode(valueBytes.subarray(0, end));
+    }
+    result[key] = value;
+  }
+
+  return result;
 }
 
 export function mapAttributes(
@@ -98,7 +132,8 @@ export function mapAttributes(
   }
 
   return {
-    properties: Object.keys(properties).length > 0 ? properties : undefined,
+    properties:
+      Object.keys(properties).length > 0 ? truncateCustomDimensions(properties) : undefined,
     measurements: Object.keys(measurements).length > 0 ? measurements : undefined,
   };
 }

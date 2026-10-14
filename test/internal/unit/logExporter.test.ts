@@ -29,6 +29,20 @@ function exportLogs(
   return new Promise((resolve) => exporter.export(logs, resolve));
 }
 
+function makePayloadAttributes(totalLength: number, fill: string): Record<string, string> {
+  const attributes: Record<string, string> = {};
+  for (let remaining = totalLength, index = 0; remaining > 0; index++) {
+    const length = Math.min(8 * 1024, remaining);
+    attributes[`payload.${index}`] = fill.repeat(length);
+    remaining -= length;
+  }
+  return attributes;
+}
+
+function totalPropertyLength(properties: Record<string, string> | undefined): number {
+  return Object.values(properties ?? {}).reduce((total, value) => total + value.length, 0);
+}
+
 describe("AzureMonitorLogRecordExporter", () => {
   it("falls back to HTTPS instead of exporting logs to a non-loopback HTTP endpoint", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response("", { status: 200 }));
@@ -219,12 +233,12 @@ describe("AzureMonitorLogRecordExporter", () => {
     vi.stubGlobal("fetch", fetch);
     const sendBeacon = vi.spyOn(navigator, "sendBeacon").mockReturnValue(true);
     const exporter = new AzureMonitorLogRecordExporter({ connectionString });
-    const payload = "x".repeat(60 * 1024);
+    const attributes = makePayloadAttributes(60 * 1024, "x");
     beginUnloading();
 
     try {
       await expect(
-        exportLogs(exporter, [createReadableLogRecord({ attributes: { payload } })]),
+        exportLogs(exporter, [createReadableLogRecord({ attributes })]),
       ).resolves.toEqual({ code: ExportResultCode.SUCCESS });
       expect(fetch).not.toHaveBeenCalled();
       expect(sendBeacon).toHaveBeenCalledOnce();
@@ -234,7 +248,7 @@ describe("AzureMonitorLogRecordExporter", () => {
       const envelopes = JSON.parse(await body.text()) as Array<{
         data: { baseData: { properties?: Record<string, string> } };
       }>;
-      expect(envelopes[0]?.data.baseData.properties?.payload).toBe(payload);
+      expect(envelopes[0]?.data.baseData.properties).toEqual(attributes);
     } finally {
       endUnloading();
     }
@@ -285,7 +299,7 @@ describe("AzureMonitorLogRecordExporter", () => {
             attributes: {
               "exception.message": "Large custom field",
               "exception.stacktrace": "Error\n    at checkout (https://example.test/app.js:42:7)",
-              payload: "x".repeat(MAX_BEACON_BODY_SIZE),
+              ...makePayloadAttributes(MAX_BEACON_BODY_SIZE, "x"),
             },
           }),
         ]),
@@ -305,7 +319,9 @@ describe("AzureMonitorLogRecordExporter", () => {
           };
         };
       }>;
-      expect(envelopes[0]?.data.baseData.properties?.payload).toBeUndefined();
+      expect(totalPropertyLength(envelopes[0]?.data.baseData.properties)).toBeLessThan(
+        MAX_BEACON_BODY_SIZE,
+      );
       expect(envelopes[0]?.data.baseData.exceptions[0]).toMatchObject({
         message: "Large custom field",
         stack: "Error\n    at checkout (https://example.test/app.js:42:7)",
@@ -328,8 +344,8 @@ describe("AzureMonitorLogRecordExporter", () => {
     try {
       await expect(
         exportLogs(exporter, [
-          createReadableLogRecord({ attributes: { payload: "a".repeat(40 * 1024) } }),
-          createReadableLogRecord({ attributes: { payload: "b".repeat(40 * 1024) } }),
+          createReadableLogRecord({ attributes: makePayloadAttributes(40 * 1024, "a") }),
+          createReadableLogRecord({ attributes: makePayloadAttributes(40 * 1024, "b") }),
         ]),
       ).resolves.toEqual({ code: ExportResultCode.SUCCESS });
       expect(fetch).toHaveBeenCalledOnce();
@@ -340,9 +356,14 @@ describe("AzureMonitorLogRecordExporter", () => {
         data: { baseData: { properties?: Record<string, string> } };
       }>;
       expect(envelopes).toHaveLength(2);
-      expect(
-        envelopes.map((envelope) => envelope.data.baseData.properties?.payload?.length ?? 0).sort(),
-      ).toEqual([0, 40 * 1024]);
+      const retainedLengths = envelopes
+        .map((envelope) => totalPropertyLength(envelope.data.baseData.properties))
+        .sort((left, right) => left - right);
+      expect(retainedLengths).toEqual([16 * 1024, 40 * 1024]);
+      const retainedProperties = envelopes.flatMap((envelope) =>
+        Object.values(envelope.data.baseData.properties ?? {}),
+      );
+      expect(retainedProperties.every((value) => value.length <= 8 * 1024)).toBe(true);
     } finally {
       endUnloading();
     }

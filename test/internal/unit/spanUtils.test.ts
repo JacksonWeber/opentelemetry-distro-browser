@@ -7,7 +7,7 @@ import { resourceFromAttributes } from "@opentelemetry/resources";
 import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
 import { ATTR_TELEMETRY_SDK_VERSION } from "@opentelemetry/semantic-conventions";
 import { describe, expect, it } from "vitest";
-import { spanToEnvelope } from "../../../src/exporter/spanUtils.js";
+import { spanToEnvelope, spanToEnvelopes } from "../../../src/exporter/spanUtils.js";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../../src/shared/constants.js";
 import { AZURE_MONITOR_SAMPLE_RATE } from "../../../src/sampling.js";
 import { TEST_INSTRUMENTATION_KEY as instrumentationKey } from "../../fixtures/azureMonitor.js";
@@ -136,6 +136,186 @@ describe("Azure Monitor span envelope mapping", () => {
         },
       },
     });
+  });
+
+  it("maps parented internal spans to InProc dependencies", () => {
+    const envelope = spanToEnvelope(
+      makeSpan({
+        kind: SpanKind.INTERNAL,
+        name: "checkout.validate-cart",
+        parentSpanContext,
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.data.baseData).toMatchObject({ type: "InProc" });
+  });
+
+  it("leaves root internal spans as generic dependencies", () => {
+    const envelope = spanToEnvelope(
+      makeSpan({
+        kind: SpanKind.INTERNAL,
+        name: "checkout.validate-cart",
+        parentSpanContext: undefined,
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.data.baseData).toMatchObject({ type: "Dependency" });
+  });
+
+  it("classifies parented internal HTTP spans as HTTP dependencies", () => {
+    const envelope = spanToEnvelope(
+      makeSpan({
+        kind: SpanKind.INTERNAL,
+        parentSpanContext,
+        attributes: {
+          "http.request.method": "GET",
+          "url.full": "https://example.test/items",
+        },
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.data.baseData).toMatchObject({ type: "Http" });
+  });
+
+  it("does not split surrogate pairs in span and span-event names", () => {
+    const envelopes = spanToEnvelopes(
+      makeSpan({
+        name: `${"s".repeat(1_023)}\u{1f600}`,
+        events: [
+          {
+            name: `${"e".repeat(32_767)}\u{1f600}`,
+            time: [1_735_689_602, 0],
+            droppedAttributesCount: 0,
+          },
+        ],
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelopes[0].data.baseData).toMatchObject({ name: "s".repeat(1_023) });
+    expect(envelopes[1].data.baseData).toMatchObject({ message: "e".repeat(32_767) });
+  });
+
+  it("maps span events to envelopes parented to the span", () => {
+    const envelopes = spanToEnvelopes(
+      makeSpan({
+        spanContext: () => spanContext,
+        attributes: { "session.id": "session-1" },
+        events: [
+          {
+            name: "exception",
+            time: [1_735_689_601, 0],
+            attributes: {
+              "exception.type": "Error",
+              "exception.message": "boom",
+              "exception.stacktrace":
+                "Error: boom\n    at checkout (https://example.test/app.js:1:2)",
+            },
+            droppedAttributesCount: 0,
+          },
+          {
+            name: "checkout.step",
+            time: [1_735_689_602, 0],
+            attributes: { phase: "validate", attempt: 2 },
+            droppedAttributesCount: 0,
+          },
+        ],
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelopes).toHaveLength(3);
+    expect(envelopes[1]).toMatchObject({
+      name: "Microsoft.ApplicationInsights.Exception",
+      tags: {
+        "ai.operation.id": spanContext.traceId,
+        "ai.operation.parentId": spanContext.spanId,
+        "ai.session.id": "session-1",
+      },
+      data: {
+        baseType: "ExceptionData",
+        baseData: { exceptions: [{ typeName: "Error", message: "boom" }] },
+      },
+    });
+    expect(envelopes[2]).toMatchObject({
+      name: "Microsoft.ApplicationInsights.Message",
+      tags: {
+        "ai.operation.id": spanContext.traceId,
+        "ai.operation.parentId": spanContext.spanId,
+        "ai.session.id": "session-1",
+      },
+      data: {
+        baseType: "MessageData",
+        baseData: {
+          message: "checkout.step",
+          properties: { phase: "validate" },
+          measurements: { attempt: 2 },
+        },
+      },
+    });
+  });
+
+  it("prefers a span event session ID over the span session ID", () => {
+    const envelopes = spanToEnvelopes(
+      makeSpan({
+        attributes: { "session.id": "span-session" },
+        events: [
+          {
+            name: "checkout.step",
+            time: [1_735_689_602, 0],
+            attributes: { "session.id": "event-session" },
+            droppedAttributesCount: 0,
+          },
+        ],
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelopes[1].tags["ai.session.id"]).toBe("event-session");
+    expect(envelopes[1].data.baseData.properties).toBeUndefined();
+  });
+
+  it("keeps the span session ID when the span event session ID is empty", () => {
+    const envelopes = spanToEnvelopes(
+      makeSpan({
+        attributes: { "session.id": "span-session" },
+        events: [
+          {
+            name: "checkout.step",
+            time: [1_735_689_602, 0],
+            attributes: { "session.id": "" },
+            droppedAttributesCount: 0,
+          },
+        ],
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelopes[1].tags["ai.session.id"]).toBe("span-session");
+    expect(envelopes[1].data.baseData.properties).toBeUndefined();
+  });
+
+  it("omits the session tag when both span event and span session IDs are empty", () => {
+    const envelopes = spanToEnvelopes(
+      makeSpan({
+        attributes: { "session.id": "" },
+        events: [
+          {
+            name: "checkout.step",
+            time: [1_735_689_602, 0],
+            attributes: { "session.id": "" },
+            droppedAttributesCount: 0,
+          },
+        ],
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelopes[1].tags).not.toHaveProperty("ai.session.id");
+    expect(envelopes[1].data.baseData.properties).toBeUndefined();
   });
 
   it.each(["user.id", "enduser.id"])(

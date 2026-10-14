@@ -109,7 +109,10 @@ it("delivers an unsettled page view after the source document navigates away", a
           baseData: expect.objectContaining({
             url: `${fixtureUrl.href}#unsettled`,
             duration: expect.any(String),
-            properties: { "test.duration_source": "page_hide" },
+            properties: {
+              refUri: fixtureUrl.href,
+              "test.duration_source": "page_hide",
+            },
           }),
         }),
       }),

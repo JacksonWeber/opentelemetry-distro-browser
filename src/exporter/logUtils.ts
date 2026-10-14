@@ -29,11 +29,14 @@ import {
   mapAttributes,
   millisecondsToTimeSpan,
   serializeAttribute,
+  truncateCustomDimensions,
+  truncateToLength,
 } from "./common.js";
 import {
   EXCEPTION_MESSAGE,
   EXCEPTION_STACKTRACE,
   EXCEPTION_TYPE,
+  MaxPropertyLengths,
   MAX_BEACON_BODY_SIZE,
   NAVIGATION_DURATION,
   NAVIGATION_EVENT_NAME,
@@ -130,15 +133,9 @@ function mapSeverity(severityNumber: number | undefined): SeverityLevel | undefi
   return 4;
 }
 
-function getUtf8Size(value: string): number {
+export function getUtf8Size(value: string): number {
   textEncoder ??= new TextEncoder();
   return textEncoder.encode(value).byteLength;
-}
-
-function truncateToLength(value: string, maxLength: number): string {
-  if (value.length <= maxLength) return value;
-  const truncated = value.slice(0, maxLength);
-  return /[\uD800-\uDBFF]$/.test(truncated) ? truncated.slice(0, -1) : truncated;
 }
 
 function truncateJsonStringToSize(value: string, maxSizeInBytes: number): string | undefined {
@@ -333,7 +330,7 @@ function parseStack(stack: string, maxSizeInBytes: number): readonly StackFrame[
  * allocated in priority order: type name, raw stack (up to its distro byte cap), message, and
  * finally parsed frames from whatever space is left.
  */
-function createExceptionDetails(
+export function createExceptionDetails(
   attributes: ReadableLogRecord["attributes"],
   body: ReadableLogRecord["body"],
   maxSizeInBytes: number,
@@ -452,6 +449,10 @@ export function logToEnvelope(
     const pageViewId =
       explicitId === undefined || explicitId === "" ? logRecord.spanContext?.traceId : explicitId;
     const referrer = logRecord.attributes[ATTR_PAGE_VIEW_REFERRER];
+    const referrerValue =
+      referrer === undefined
+        ? undefined
+        : truncateToLength(serializeAttribute(referrer), MaxPropertyLengths.THIRTEEN_BIT);
     name = "Microsoft.ApplicationInsights.PageView";
     baseType = "PageViewData";
     baseData = {
@@ -468,15 +469,19 @@ export function logToEnvelope(
           ? undefined
           : serializeAttribute(logRecord.attributes[URL_FULL]),
       duration: typeof duration === "number" ? millisecondsToTimeSpan(duration) : undefined,
-      ...(referrer === undefined ? {} : { referredUri: serializeAttribute(referrer) }),
+      ...(referrerValue === undefined ? {} : { referredUri: referrerValue }),
       ...customFields,
+      properties:
+        referrerValue === undefined
+          ? customFields.properties
+          : truncateCustomDimensions({ ...customFields.properties, refUri: referrerValue }),
     };
   } else if (logRecord.eventName && logRecord.eventName !== "browser.console") {
     name = "Microsoft.ApplicationInsights.Event";
     baseType = "EventData";
     baseData = {
       ver: 2,
-      name: logRecord.eventName,
+      name: truncateToLength(logRecord.eventName, MaxPropertyLengths.NINE_BIT),
       ...customFields,
     };
   } else {
@@ -488,7 +493,7 @@ export function logToEnvelope(
         : serializeAttribute(logRecord.body) || DEFAULT_LOG_MESSAGE;
     baseData = {
       ver: 2,
-      message,
+      message: truncateToLength(message, MaxPropertyLengths.FIFTEEN_BIT),
       severityLevel,
       ...customFields,
     };

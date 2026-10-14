@@ -12,6 +12,14 @@ export const MAX_PENDING_KEEPALIVE_BODY_SIZE: number = 60 * 1024;
 export const MAX_PENDING_KEEPALIVE_REQUESTS: number = 9;
 export const MAX_BEACON_BODY_SIZE: number = 65_000;
 
+export const MaxPropertyLengths = {
+  NINE_BIT: 512,
+  TEN_BIT: 1024,
+  THIRTEEN_BIT: 8192,
+  FIFTEEN_BIT: 32768,
+  SIXTEEN_BIT: 65536,
+} as const;
+
 export const HTTP_METHOD = "http.request.method";
 export const HTTP_STATUS_CODE = "http.response.status_code";
 export const SERVER_ADDRESS = "server.address";

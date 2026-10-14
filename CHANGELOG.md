@@ -43,6 +43,9 @@ All notable changes to this package are documented in this file.
   the first page load and fixed-percentage sampling. Flush and shutdown wait for every batch
   before reporting export failures, preserve configured export deadlines, and report both
   export and cleanup failures.
+- Preserve Azure Monitor telemetry by exporting correlated span events, mapping named logs to
+  custom events, enforcing Breeze field limits, exposing page-view referrers as `refUri`, and
+  classifying parented internal spans as `InProc` dependencies.
 - Prevent pending page views from being lost during unload by settling them before pagehide or
   hidden-visibility flushes, including tab switches.
 

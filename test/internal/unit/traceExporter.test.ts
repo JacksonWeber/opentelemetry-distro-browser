@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { beginUnloading, endUnloading } from "../../../src/exporter/common.js";
 import {
   MAX_BATCH_SIZE_IN_BYTES,
+  MAX_BEACON_BODY_SIZE,
   MAX_PENDING_KEEPALIVE_BODY_SIZE,
 } from "../../../src/exporter/constants.js";
 import { AzureMonitorSpanExporter } from "../../../src/exporter/trace.js";
@@ -41,6 +42,16 @@ function makeSpan(name = "checkout"): ReadableSpan {
     resource: { attributes: {} },
     instrumentationScope: { name: "test" },
   } as unknown as ReadableSpan;
+}
+
+function makePayloadAttributes(totalLength: number): Record<string, string> {
+  const attributes: Record<string, string> = {};
+  for (let remaining = totalLength, index = 0; remaining > 0; index++) {
+    const length = Math.min(8 * 1024, remaining);
+    attributes[`payload.${index}`] = "x".repeat(length);
+    remaining -= length;
+  }
+  return attributes;
 }
 
 function exportSpan(exporter: AzureMonitorSpanExporter) {
@@ -94,6 +105,98 @@ describe("AzureMonitorSpanExporter", () => {
     }
   });
 
+  it("exports exception and ordinary span events as correlated envelopes", async () => {
+    const ingestion = createMockIngestionEndpoint();
+    vi.stubGlobal("fetch", ingestion.fetch);
+    const exporter = new AzureMonitorSpanExporter({ connectionString: ingestion.connectionString });
+    const span = {
+      ...makeSpan(),
+      events: [
+        {
+          name: "exception",
+          time: [1_735_689_601, 0],
+          attributes: { "exception.type": "Error", "exception.message": "boom" },
+          droppedAttributesCount: 0,
+        },
+        {
+          name: "checkout.step",
+          time: [1_735_689_602, 0],
+          attributes: { phase: "validate" },
+          droppedAttributesCount: 0,
+        },
+      ],
+    } as ReadableSpan;
+
+    try {
+      await expect(exportSpans(exporter, [span])).resolves.toEqual({
+        code: ExportResultCode.SUCCESS,
+      });
+      expect(ingestion.requests[0].envelopes).toHaveLength(3);
+      expect(ingestion.requests[0].envelopes.map((envelope) => envelope.data.baseType)).toEqual([
+        "RemoteDependencyData",
+        "ExceptionData",
+        "MessageData",
+      ]);
+      expect(ingestion.requests[0].envelopes.slice(1)).toEqual([
+        expect.objectContaining({
+          tags: expect.objectContaining({ "ai.operation.parentId": spanContext.spanId }),
+        }),
+        expect.objectContaining({
+          tags: expect.objectContaining({ "ai.operation.parentId": spanContext.spanId }),
+        }),
+      ]);
+    } finally {
+      await exporter.shutdown();
+    }
+  });
+
+  it("preserves each maximal span-event exception during normal exports", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetch);
+    const exporter = new AzureMonitorSpanExporter({ connectionString });
+    const maximalAttributes = {
+      "exception.message": "m".repeat(32 * 1024),
+      "exception.stacktrace": "s".repeat(32 * 1024),
+    };
+    const span = {
+      ...makeSpan(),
+      events: [1, 2].map((second) => ({
+        name: "exception",
+        time: [1_735_689_600 + second, 0],
+        attributes: maximalAttributes,
+        droppedAttributesCount: 0,
+      })),
+    } as ReadableSpan;
+
+    try {
+      await expect(exportSpans(exporter, [span])).resolves.toEqual({
+        code: ExportResultCode.SUCCESS,
+      });
+      const envelopes = (
+        await Promise.all(fetch.mock.calls.map((_, call) => requestEnvelopes(fetch, call)))
+      ).flat() as Array<{
+        data: {
+          baseType: string;
+          baseData: { exceptions?: Array<{ message: string; stack?: string }> };
+        };
+      }>;
+      const exceptions = envelopes
+        .filter((envelope) => envelope.data.baseType === "ExceptionData")
+        .map((envelope) => envelope.data.baseData.exceptions?.[0]);
+      expect(exceptions).toHaveLength(2);
+      expect(exceptions).toEqual([
+        expect.objectContaining({ message: expect.any(String), stack: expect.any(String) }),
+        expect.objectContaining({ message: expect.any(String), stack: expect.any(String) }),
+      ]);
+      expect(exceptions[0]!.message.length).toBeGreaterThan(0);
+      expect(exceptions[0]!.stack!.length).toBeGreaterThan(0);
+      expect(exceptions[1]!.message.length).toBe(exceptions[0]!.message.length);
+      expect(exceptions[1]!.stack!.length).toBe(exceptions[0]!.stack!.length);
+    } finally {
+      await exporter.shutdown();
+    }
+  });
+
   it("falls back to HTTPS instead of exporting spans to a non-loopback HTTP endpoint", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response("", { status: 200 }));
     vi.stubGlobal("fetch", fetch);
@@ -117,12 +220,12 @@ describe("AzureMonitorSpanExporter", () => {
     const first = {
       ...makeSpan(),
       name: "first",
-      attributes: { payload: "x".repeat(MAX_BATCH_SIZE_IN_BYTES / 2) },
+      attributes: makePayloadAttributes(MAX_BATCH_SIZE_IN_BYTES / 2),
     } as ReadableSpan;
     const second = {
       ...makeSpan(),
       name: "second",
-      attributes: { payload: "x".repeat(MAX_BATCH_SIZE_IN_BYTES / 2) },
+      attributes: makePayloadAttributes(MAX_BATCH_SIZE_IN_BYTES / 2),
     } as ReadableSpan;
 
     await expect(exportSpans(exporter, [first, second])).resolves.toEqual({
@@ -148,7 +251,7 @@ describe("AzureMonitorSpanExporter", () => {
 
     const oversized = {
       ...makeSpan("oversized"),
-      attributes: { payload: "x".repeat(MAX_BATCH_SIZE_IN_BYTES) },
+      attributes: makePayloadAttributes(MAX_BATCH_SIZE_IN_BYTES),
     } as ReadableSpan;
     await expect(exportSpans(exporter, [oversized])).resolves.toEqual({
       code: ExportResultCode.SUCCESS,
@@ -366,6 +469,96 @@ describe("AzureMonitorSpanExporter", () => {
     }
   });
 
+  it("fits a maximal span-event exception after preceding spans into the beacon limit", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => {
+      throw new TypeError("page unloading");
+    });
+    vi.stubGlobal("fetch", fetch);
+    const sendBeacon = vi.spyOn(navigator, "sendBeacon").mockReturnValue(true);
+    const exporter = new AzureMonitorSpanExporter({ connectionString });
+    const span = {
+      ...makeSpan(),
+      events: [
+        {
+          name: "exception",
+          time: [1_735_689_601, 0],
+          attributes: {
+            "exception.message": "m".repeat(32 * 1024),
+            "exception.stacktrace": "s".repeat(32 * 1024),
+          },
+          droppedAttributesCount: 0,
+        },
+      ],
+    } as ReadableSpan;
+    beginUnloading();
+
+    try {
+      await expect(exportSpans(exporter, [makeSpan("preceding"), span])).resolves.toEqual({
+        code: ExportResultCode.SUCCESS,
+      });
+      expect(fetch).not.toHaveBeenCalled();
+      expect(sendBeacon).toHaveBeenCalledOnce();
+      const body = sendBeacon.mock.calls[0][1] as Blob;
+      expect(body.size).toBeGreaterThan(MAX_PENDING_KEEPALIVE_BODY_SIZE);
+      expect(body.size).toBeLessThanOrEqual(MAX_BEACON_BODY_SIZE);
+      expect(JSON.parse(await body.text())).toHaveLength(3);
+    } finally {
+      endUnloading();
+    }
+  });
+
+  it("removes optional span properties before truncating unload exception data", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => {
+      throw new TypeError("page unloading");
+    });
+    vi.stubGlobal("fetch", fetch);
+    const sendBeacon = vi.spyOn(navigator, "sendBeacon").mockReturnValue(true);
+    const exporter = new AzureMonitorSpanExporter({ connectionString });
+    const preceding = {
+      ...makeSpan("preceding"),
+      attributes: makePayloadAttributes(7 * 8 * 1024),
+    } as ReadableSpan;
+    const exception = {
+      ...makeSpan("exception-parent"),
+      events: [
+        {
+          name: "exception",
+          time: [1_735_689_601, 0],
+          attributes: {
+            "exception.message": "m".repeat(32 * 1024),
+            "exception.stacktrace": "s".repeat(32 * 1024),
+          },
+          droppedAttributesCount: 0,
+        },
+      ],
+    } as ReadableSpan;
+    beginUnloading();
+
+    try {
+      await expect(exportSpans(exporter, [preceding, exception])).resolves.toEqual({
+        code: ExportResultCode.SUCCESS,
+      });
+      expect(sendBeacon).toHaveBeenCalledOnce();
+      const body = sendBeacon.mock.calls[0][1] as Blob;
+      expect(body.size).toBeLessThanOrEqual(MAX_BEACON_BODY_SIZE);
+      const envelopes = JSON.parse(await body.text()) as Array<{
+        data: {
+          baseData: {
+            properties?: Record<string, string>;
+            exceptions?: Array<{ message: string; stack?: string }>;
+          };
+        };
+      }>;
+      expect(envelopes).toHaveLength(3);
+      expect(envelopes[0]?.data.baseData.properties).toBeUndefined();
+      const details = envelopes[2]?.data.baseData.exceptions?.[0];
+      expect(details?.message.length).toBeGreaterThan(25 * 1024);
+      expect(details?.stack?.length).toBeGreaterThan(25 * 1024);
+    } finally {
+      endUnloading();
+    }
+  });
+
   it("fits unload telemetry into the aggregate keepalive limit", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response("", { status: 200 }));
     vi.stubGlobal("fetch", fetch);
@@ -381,10 +574,11 @@ describe("AzureMonitorSpanExporter", () => {
       await expect(exportSpans(exporter, spans)).resolves.toEqual({
         code: ExportResultCode.SUCCESS,
       });
-      expect(fetch).toHaveBeenCalledOnce();
-      expect(sendBeacon).not.toHaveBeenCalled();
-      const body = (fetch.mock.calls[0]?.[1] as RequestInit).body as Uint8Array<ArrayBuffer>;
-      expect(body.byteLength).toBeLessThanOrEqual(MAX_PENDING_KEEPALIVE_BODY_SIZE);
+      expect(fetch.mock.calls.length + sendBeacon.mock.calls.length).toBe(1);
+      const body = fetch.mock.calls.length
+        ? ((fetch.mock.calls[0]?.[1] as RequestInit).body as Uint8Array<ArrayBuffer>)
+        : new Uint8Array(await (sendBeacon.mock.calls[0]?.[1] as Blob).arrayBuffer());
+      expect(body.byteLength).toBeLessThanOrEqual(MAX_BEACON_BODY_SIZE);
       const deliveredNames = (
         JSON.parse(new TextDecoder().decode(body)) as Array<{
           data: { baseData: { name: string } };
