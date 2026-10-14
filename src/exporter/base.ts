@@ -126,7 +126,7 @@ export class AzureMonitorExportClient {
   }
 
   public async forceFlush(): Promise<void> {
-    // Customer telemetry has priority over best-effort stats in the shared keepalive budget.
+    // Customer exports get keepalive capacity before stats.
     await Promise.all([...this.#pending]);
     await this.#stats.forceFlush();
   }

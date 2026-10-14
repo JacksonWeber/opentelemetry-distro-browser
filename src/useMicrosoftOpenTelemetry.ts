@@ -241,7 +241,7 @@ export async function useMicrosoftOpenTelemetry(
         }
       }
       try {
-        // A processor can reject before reaching its exporter's shutdown.
+        // Also clean up exporters after processor failures.
         await runLifecycleTasks(
           azureMonitorExporters.map((exporter) => () => exporter.shutdown()),
           "SDK stats shutdown failed",

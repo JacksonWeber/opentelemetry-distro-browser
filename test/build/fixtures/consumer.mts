@@ -6,7 +6,7 @@ import {
   type MicrosoftOpenTelemetryBrowserOptions,
   type MicrosoftOpenTelemetryBrowserSessionOptions,
 } from "@microsoft/opentelemetry-browser";
-// @ts-expect-error Internal SDK stats do not have a public configuration type.
+// @ts-expect-error SDK stats types are internal.
 import type { AzureMonitorSdkStatsOptions as _SdkStatsOptions } from "@microsoft/opentelemetry-browser";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
@@ -61,7 +61,7 @@ const connectionString =
 export const azureMonitorOptions: MicrosoftOpenTelemetryBrowserOptions = {
   azureMonitor: { connectionString },
 };
-// @ts-expect-error SDK stats cannot be configured through the public initializer.
+// @ts-expect-error SDK stats options are internal.
 useMicrosoftOpenTelemetry({ azureMonitor: { connectionString, sdkStats: {} } });
 export const initialize: (
   config: MicrosoftOpenTelemetryBrowserOptions,

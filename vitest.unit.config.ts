@@ -10,8 +10,7 @@ export default defineConfig({
     ...config.test,
     browser: {
       ...config.test?.browser,
-      // WebKit counts History API calls across test iframes sharing one runner page.
-      // Keep this suite's many real navigations from exhausting another file's quota.
+      // Separate runner pages avoid WebKit's shared History API quota.
       instances: browserInstances.flatMap<BrowserInstance>((instance) =>
         instance.browser === "webkit"
           ? [

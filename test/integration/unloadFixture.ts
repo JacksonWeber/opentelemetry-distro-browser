@@ -115,6 +115,6 @@ for (let index = 0; index < spanCount; index++) {
     })
     .end();
 }
-// Let the normal customer batch finish without flushing stats counters.
+// Wait for customer delivery without flushing stats.
 await statsReady;
 document.body.dataset.ready = "true";

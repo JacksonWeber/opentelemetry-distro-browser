@@ -11,37 +11,18 @@ import { getInternalSdkStatsConfiguration } from "./sdkStatsConfiguration.js";
 import type { AzureMonitorEnvelope, MetricData } from "./telemetryModels.js";
 
 /**
- * Distro-owned internal network SDK stats, sent separately from application telemetry.
- *
- * @remarks
- * Each Azure Monitor exporter owns its counters and reports independently. Reports contain the
- * customer instrumentation key, effective ingestion stamp, SDK version, request counts and
- * average duration in milliseconds. They do not contain telemetry, user or session attributes,
- * exception messages, or ingestion URL paths and queries. No browser storage is used.
- *
- * Reports go directly to the distro-owned ingestion endpoint without a remote configuration
- * request. HTTPS is required except for localhost and loopback testing.
- * Accepted customer redirects update the route and stamp without resetting counters or timers.
- * Each attempt's endpoint controls eligibility, including responses that complete after a redirect.
- * Stats fetches omit credentials and referrers. Beacon fallback is disabled because it cannot
- * suppress referrers on pages with a permissive referrer policy.
- *
- * Reports bypass application sampling and processors. Empty windows send nothing.
- * Success counts require an HTTP response, not just successful beacon queuing.
- * Attempted reports are best effort and are not replayed, which avoids duplicating partially
- * accepted metrics. Report requests have a 10-second timeout.
- * Lifecycle stats flushes follow customer telemetry so they do not consume its unload capacity.
- * Failures are reported through diagnostics and do not fail customer telemetry flushes.
+ * Internal per-exporter network stats, separate from customer telemetry.
+ * Best-effort fetch: 10-second timeout, no retries or beacon fallback.
  * @internal
  */
 export interface InternalSdkStatsConfiguration {
-  /** Separate SDK stats destination key. Must be a UUID, never defaulted to the customer key. */
+  /** Internal stats UUID, not the customer's key. */
   readonly instrumentationKey: string;
-  /** Full SDK stats ingestion URL. Never falls back to the customer endpoint. */
+  /** Full stats ingestion URL. */
   readonly endpoint: string;
-  /** Reporting interval in milliseconds, from 1 through 2147483647. Defaults to one hour. */
+  /** Interval in ms (1..2147483647). Default: one hour. */
   readonly collectionIntervalMillis?: number;
-  /** Independently samples each stats metric from 0 through 100. Defaults to 100. */
+  /** Per-metric sampling percentage (0..100). Default: 100. */
   readonly samplingPercentage?: number;
 }
 
@@ -260,6 +241,6 @@ function reportFailure(error: unknown): void {
   try {
     diag.warn("SDK stats export failed", error);
   } catch {
-    // Application diagnostic loggers must not break best-effort stats or customer cleanup.
+    // Logger failures must not interrupt cleanup.
   }
 }

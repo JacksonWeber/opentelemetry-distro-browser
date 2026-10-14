@@ -8,7 +8,7 @@ export default defineConfig({
   resolve: { ...config.resolve, alias: [] },
   test: {
     ...config.test,
-    // Integration tests and navigation fixtures use the real stats configuration.
+    // Keep unit mocks out of integration tests.
     setupFiles: [],
     browser: {
       ...config.test?.browser,

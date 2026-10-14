@@ -9,11 +9,8 @@ const GOVERNMENT_CLOUD =
   /(?:^|\.)(?:azure\.us|applicationinsights\.us|usgovcloudapi\.net|azure\.microsoft\.scloud|azure\.eaglex\.ic\.gov)\.*$/i;
 
 /**
- * Distro-owned production ingestion destination with the .NET exporter's resource key.
- * Global routing is pinned to the production configuration observed on 2026-10-13.
- * EU stats remain disabled, matching the production EU configuration, without exporting them globally.
- * Government and air-gapped clouds do not participate in public-cloud SDK stats.
- * These ingestion identifiers are not authentication credentials.
+ * Production stats route as of 2026-10-13, using the .NET exporter's resource key.
+ * EU, government, and air-gapped routes are excluded.
  * @see https://github.com/Azure/azure-sdk-for-net/blob/main/sdk/monitor/Azure.Monitor.OpenTelemetry.Exporter/src/Internals/Statsbeat/StatsbeatConstants.cs
  */
 export function getInternalSdkStatsConfiguration(

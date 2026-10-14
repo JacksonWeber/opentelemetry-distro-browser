@@ -4,7 +4,7 @@
 import { callWithTimeout } from "@opentelemetry/core";
 import { getSharedRegistry, reportError } from "./globalOwnership.js";
 
-/** Runs all tasks, then optional following tasks, even when a sibling throws or never settles. */
+/** Runs bounded task groups in order, collecting all failures. */
 export async function runLifecycleTasks(
   tasks: readonly (() => Promise<void>)[],
   message: string,
