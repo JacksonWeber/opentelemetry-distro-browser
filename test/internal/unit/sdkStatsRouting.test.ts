@@ -6,6 +6,7 @@ import { AzureMonitorLogRecordExporter } from "../../../src/exporter/log.js";
 import { AzureMonitorSpanExporter } from "../../../src/exporter/trace.js";
 import { createInternalSdkStats } from "../../../src/exporter/sdkStats.js";
 import * as configuration from "../../../src/exporter/sdkStatsConfiguration.js";
+import * as actual from "../../../src/exporter/sdkStatsDestination.js";
 import { Sender } from "../../../src/exporter/sender.js";
 import type { AzureMonitorEnvelope, MetricData } from "../../../src/exporter/telemetryModels.js";
 import { TEST_INSTRUMENTATION_KEY } from "../../fixtures/azureMonitor.js";
@@ -13,9 +14,6 @@ import { installFakeClock } from "../../fixtures/clock.js";
 import { SDK_STATS_ENDPOINT } from "../../fixtures/sdkStats.js";
 import { createReadableLogRecord, createReadableSpan } from "../../fixtures/telemetry.js";
 
-const actual = await vi.importActual<typeof configuration>(
-  "../../../src/exporter/sdkStatsConfiguration.js",
-);
 const globalEndpoint = "https://dc.services.visualstudio.com";
 const westEndpoint = "https://westus2-2.in.applicationinsights.azure.com";
 const eastEndpoint = "https://eastus-1.in.applicationinsights.azure.com";

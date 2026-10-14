@@ -1,12 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { expect, it, vi } from "vitest";
+import { expect, it } from "vitest";
 import { SDK_STATS_ENDPOINT } from "../../fixtures/sdkStats.js";
-
-const { getInternalSdkStatsConfiguration } = await vi.importActual<
-  typeof import("../../../src/exporter/sdkStatsConfiguration.js")
->("../../../src/exporter/sdkStatsConfiguration.js");
+import { getInternalSdkStatsConfiguration } from "../../../src/exporter/sdkStatsDestination.js";
 
 it.each(["westus", "eastus2", "australiaeast", "unknown"])(
   "uses the official non-EU SDK stats resource for %s",
