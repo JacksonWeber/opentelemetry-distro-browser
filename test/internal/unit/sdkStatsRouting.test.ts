@@ -18,6 +18,12 @@ const globalEndpoint = "https://dc.services.visualstudio.com";
 const westEndpoint = "https://westus2-2.in.applicationinsights.azure.com";
 const eastEndpoint = "https://eastus-1.in.applicationinsights.azure.com";
 const euEndpoint = "https://westeurope-5.in.applicationinsights.azure.com";
+const governmentEndpoint = "https://usgovvirginia-0.in.applicationinsights.azure.us";
+const excludedRedirects = [
+  { endpoint: westEndpoint, excluded: governmentEndpoint },
+  { endpoint: "https://custom.example.test", excluded: governmentEndpoint },
+  { endpoint: "https://custom.example.test", excluded: euEndpoint },
+];
 const request = { body: new TextEncoder().encode("[]"), contentType: "application/json" };
 let reports: AzureMonitorEnvelope<MetricData>[][];
 let fetch: ReturnType<typeof vi.fn<typeof globalThis.fetch>>;
@@ -187,20 +193,90 @@ it.each([
   }
 });
 
-it("ignores an untrusted redirected endpoint without changing the stats stamp", async () => {
+it.each(
+  excludedRedirects.flatMap((redirect) =>
+    ["spans", "logs"].map((signal) => ({ ...redirect, signal })),
+  ),
+)(
+  "excludes $signal stats for an untrusted redirect from $endpoint to $excluded without changing routing",
+  async ({ endpoint, excluded, signal }) => {
+    const options = {
+      connectionString: `InstrumentationKey=${TEST_INSTRUMENTATION_KEY};IngestionEndpoint=${endpoint}`,
+    };
+    const exporter =
+      signal === "spans"
+        ? new AzureMonitorSpanExporter(options)
+        : new AzureMonitorLogRecordExporter(options);
+    const send = () => {
+      if (exporter instanceof AzureMonitorSpanExporter)
+        exporter.export([createReadableSpan()], () => {});
+      else exporter.export([createReadableLogRecord()], () => {});
+    };
+    fetch.mockResolvedValueOnce(redirected(excluded));
+    try {
+      send();
+      await exporter.forceFlush();
+      expect(reports).toEqual([]);
+      expect(fetch).toHaveBeenCalledOnce();
+      send();
+      await exporter.forceFlush();
+      expect(fetch.mock.calls[1][0]).toBe(`${endpoint}/v2/track`);
+      expect(successCount()).toBe(1);
+      expect(reports[0][0].data.baseData.properties?.host).toBe(
+        new URL(endpoint).hostname.split(".")[0],
+      );
+    } finally {
+      await exporter.shutdown();
+    }
+  },
+);
+
+it.each(excludedRedirects)(
+  "excludes response-body failures after an untrusted redirect from $endpoint to $excluded",
+  async ({ endpoint, excluded }) => {
+    const stats = createInternalSdkStats(
+      actual.getInternalSdkStatsConfiguration(endpoint),
+      TEST_INSTRUMENTATION_KEY,
+      endpoint,
+    );
+    const sender = new Sender({ endpoint: `${endpoint}/v2/track`, stats });
+    const error = new TypeError("Excluded response body failure");
+    const response = redirected(excluded);
+    vi.spyOn(response, "text").mockRejectedValue(error);
+    fetch.mockResolvedValueOnce(response);
+    try {
+      await expect(sender.send({ ...request, retry: false })).rejects.toBe(error);
+      await stats.forceFlush();
+      expect(reports).toEqual([]);
+      expect(fetch).toHaveBeenCalledOnce();
+      await sender.send(request);
+      expect(fetch.mock.calls[1][0]).toBe(`${endpoint}/v2/track`);
+      await stats.forceFlush();
+      expect(successCount()).toBe(1);
+      expect(reports.flat().map((envelope) => envelope.data.baseData.metrics[0].name)).toEqual([
+        "Request_Duration",
+        "Request_Success_Count",
+      ]);
+    } finally {
+      await stats.shutdown();
+    }
+  },
+);
+
+it("ignores an untrusted non-excluded redirect without changing the stats stamp", async () => {
   const stats = createInternalSdkStats(
     actual.getInternalSdkStatsConfiguration(westEndpoint),
     TEST_INSTRUMENTATION_KEY,
     westEndpoint,
   );
   const sender = new Sender({ endpoint: `${westEndpoint}/v2/track`, stats });
-  fetch.mockResolvedValueOnce(redirected("https://westeurope.evil.example"));
+  fetch.mockResolvedValueOnce(redirected("https://ingestion.evil.example"));
   try {
     await sender.send(request);
     await stats.forceFlush();
     expect(reports[0][0].data.baseData.properties?.host).toBe("westus2-2");
     expect(configuration.getInternalSdkStatsConfiguration).toHaveBeenCalledExactlyOnceWith(
-      `${westEndpoint}/v2/track`,
+      "https://ingestion.evil.example/v2/track",
     );
   } finally {
     await stats.shutdown();

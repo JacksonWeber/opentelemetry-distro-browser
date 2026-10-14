@@ -307,7 +307,7 @@ export class Sender {
       this.#stats?.updateEndpoint(redirectedEndpoint);
       this.#compress = isTrustedIngestionEndpoint(redirectedEndpoint);
     }
-    return redirectedEndpoint ?? attemptedEndpoint;
+    return response.url;
   }
 
   #sendWithBeacon(request: SendRequest, cause?: unknown): BeaconSenderResult {
