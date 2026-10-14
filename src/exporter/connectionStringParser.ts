@@ -18,6 +18,15 @@ type ConnectionStringKey =
 
 type ParsedConnectionString = Partial<Record<ConnectionStringKey, string>>;
 
+export function isSupportedEndpoint({ hostname, protocol }: URL): boolean {
+  const isLoopback =
+    hostname === "localhost" ||
+    hostname === "localhost." ||
+    hostname === "[::1]" ||
+    /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname);
+  return protocol === "https:" || (protocol === "http:" && isLoopback);
+}
+
 export interface ResolvedConnectionString {
   readonly instrumentationKey?: string;
   readonly ingestionEndpoint: string;
@@ -43,13 +52,7 @@ function sanitizeEndpoint(endpoint: string | undefined, name: string): string | 
 
   try {
     const sanitizedEndpoint = new URL(endpoint.trim());
-    const { hostname, protocol } = sanitizedEndpoint;
-    const isLoopback =
-      hostname === "localhost" ||
-      hostname === "localhost." ||
-      hostname === "[::1]" ||
-      /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname);
-    if (protocol === "https:" || (protocol === "http:" && isLoopback)) {
+    if (isSupportedEndpoint(sanitizedEndpoint)) {
       const value = sanitizedEndpoint.toString();
       return value.endsWith("/") ? value.slice(0, -1) : value;
     }

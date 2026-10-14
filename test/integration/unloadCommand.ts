@@ -28,6 +28,9 @@ export const verifyUnloadDelivery = defineBrowserCommand(
     fixturePage.on("requestfailed", (request) =>
       diagnostics.push(`requestfailed: ${request.url()} ${request.failure()?.errorText}`),
     );
+    fixturePage.on("request", (request) => {
+      if (request.method() === "POST") diagnostics.push(`POST: ${request.url()}`);
+    });
     fixturePage.on("response", (response) => {
       if (response.status() >= 400) {
         diagnostics.push(`response: ${response.status()} ${response.url()}`);
@@ -37,7 +40,7 @@ export const verifyUnloadDelivery = defineBrowserCommand(
       await fixturePage.goto(fixtureUrl);
       try {
         await fixturePage.waitForFunction(() => document.body.dataset.ready === "true", undefined, {
-          timeout: 5_000,
+          timeout: 15_000,
         });
       } catch (error) {
         throw new Error(`Unload fixture did not initialize. ${diagnostics.join(" | ")}`, {
@@ -55,7 +58,9 @@ export const verifyUnloadDelivery = defineBrowserCommand(
         await new Promise((resolve) => setTimeout(resolve, 50));
       } while (Date.now() < deadline);
 
-      return envelopes;
+      throw new Error(
+        `Unload delivered ${envelopes.length}/${expectedCount} envelopes. ${diagnostics.join(" | ")}`,
+      );
     } finally {
       await fixturePage.close();
     }

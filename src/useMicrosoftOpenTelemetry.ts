@@ -16,7 +16,7 @@ import {
   type LogRecordProcessor,
 } from "@opentelemetry/sdk-logs";
 import { BatchSpanProcessor, type SpanProcessor } from "@opentelemetry/sdk-trace-base";
-import { beginUnloading, endUnloading } from "./exporter/common.js";
+import { beginUnloading, endUnloading, isUnloading } from "./exporter/common.js";
 import { AzureMonitorLogRecordExporter } from "./exporter/log.js";
 import { AzureMonitorSpanExporter } from "./exporter/trace.js";
 import { PageViewInstrumentation } from "./instrumentation/pageView/index.js";
@@ -109,6 +109,7 @@ export async function useMicrosoftOpenTelemetry(
   let spanProcessors: SpanProcessor[] | undefined = options.spanProcessors?.slice();
   let logRecordProcessors: LogRecordProcessor[] | undefined = options.logRecordProcessors?.slice();
   const ownedProcessors: (SpanProcessor | LogRecordProcessor)[] = [];
+  const azureMonitorExporters: (AzureMonitorSpanExporter | AzureMonitorLogRecordExporter)[] = [];
   const traceOptions = options.traces && {
     ...options.traces,
     propagators: options.traces.propagators?.slice(),
@@ -162,9 +163,14 @@ export async function useMicrosoftOpenTelemetry(
   };
   function flushProcessors(): Promise<void> {
     const processors = [...(spanProcessors ?? []), ...(logRecordProcessors ?? [])];
+    const exporterTasks = azureMonitorExporters.map((exporter) => () => exporter.forceFlush());
     return runLifecycleTasks(
-      processors.map((processor) => () => processor.forceFlush()),
+      [
+        ...processors.map((processor) => () => processor.forceFlush()),
+        ...(isUnloading() ? exporterTasks : []),
+      ],
       "Telemetry flush failed",
+      exporterTasks,
     );
   }
 
@@ -243,6 +249,15 @@ export async function useMicrosoftOpenTelemetry(
           errors.push(error);
         }
       }
+      try {
+        // A processor can reject before reaching its exporter's shutdown.
+        await runLifecycleTasks(
+          azureMonitorExporters.map((exporter) => () => exporter.shutdown()),
+          "SDK stats shutdown failed",
+        );
+      } catch (error) {
+        errors.push(error);
+      }
       if (errors.length === 1) throw errors[0];
       if (errors.length > 1) throw new AggregateError(errors, "Telemetry shutdown failed");
     })().then(resolve, reject);
@@ -253,22 +268,26 @@ export async function useMicrosoftOpenTelemetry(
 
   try {
     if (spanProcessors?.length !== 0 && (azureMonitor || spanProcessors === undefined)) {
+      const exporter = azureMonitor ? new AzureMonitorSpanExporter(azureMonitor) : undefined;
+      if (exporter) azureMonitorExporters.push(exporter);
       const spanProcessor = new BatchSpanProcessor(
-        azureMonitor ? new AzureMonitorSpanExporter(azureMonitor) : new OTLPTraceExporter(),
+        exporter ?? new OTLPTraceExporter(),
         batchOptions,
       );
       ownedProcessors.push(spanProcessor);
       spanProcessors = [spanProcessor, ...(spanProcessors ?? [])];
     }
     if (logRecordProcessors?.length !== 0 && (azureMonitor || logRecordProcessors === undefined)) {
-      const logProcessor = azureMonitor
+      const exporter = azureMonitor ? new AzureMonitorLogRecordExporter(azureMonitor) : undefined;
+      if (exporter) azureMonitorExporters.push(exporter);
+      const logProcessor = exporter
         ? options.samplingPercentage === undefined
           ? new BatchLogRecordProcessor({
-              exporter: new AzureMonitorLogRecordExporter(azureMonitor),
+              exporter,
               ...batchOptions,
             })
           : new AzureMonitorSamplingLogRecordProcessor({
-              exporter: new AzureMonitorLogRecordExporter(azureMonitor),
+              exporter,
               samplingPercentage,
               ...batchOptions,
             })

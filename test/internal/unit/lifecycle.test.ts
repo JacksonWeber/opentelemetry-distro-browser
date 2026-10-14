@@ -15,9 +15,54 @@ import {
 import { isUnloading } from "../../../src/exporter/common.js";
 import { getSharedRegistry } from "../../../src/shared/globalOwnership.js";
 import { subscribeToUnload } from "../../../src/shared/lifecycle.js";
+import { installFakeClock } from "../../fixtures/clock.js";
+import * as statsConfiguration from "../../../src/exporter/sdkStatsConfiguration.js";
 
 const handles = new Set<MicrosoftOpenTelemetryBrowser>();
 const originalUrl = location.href;
+
+it.each(["spans", "logs"] as const)(
+  "stops SDK stats timers after a %s export fails during shutdown",
+  async (signal) => {
+    const clock = installFakeClock();
+    const diagnostic = vi.spyOn(diag, "error");
+    const fetch = vi.fn<typeof globalThis.fetch>(async (url) => {
+      if (String(url).startsWith("https://customer.example.test")) {
+        return new Response(null, { status: 400 });
+      }
+      return new Response(null);
+    });
+    vi.stubGlobal("fetch", fetch);
+    vi.spyOn(statsConfiguration, "getInternalSdkStatsConfiguration").mockReturnValue({
+      instrumentationKey: "11111111-1111-1111-1111-111111111111",
+      endpoint: "https://stats.example.test/v2/track",
+    });
+    const { handle } = await start({
+      azureMonitor: {
+        connectionString:
+          "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://customer.example.test",
+      },
+      spanProcessors: signal === "spans" ? undefined : [],
+      logRecordProcessors: signal === "logs" ? undefined : [],
+    });
+    handles.delete(handle);
+    if (signal === "spans") trace.getTracer("stats-shutdown").startSpan("rejected").end();
+    else logs.getLogger("stats-shutdown").emit({ body: "rejected" });
+    if (signal === "spans") await expect(handle.shutdown()).rejects.toThrow();
+    else {
+      // The upstream log processor reports export failures through diagnostics instead of rejection.
+      await expect(handle.shutdown()).resolves.toBeUndefined();
+      expect(diagnostic).toHaveBeenCalled();
+    }
+    expect(
+      fetch.mock.calls.filter(([url]) => url === "https://stats.example.test/v2/track"),
+    ).toHaveLength(1);
+    const calls = fetch.mock.calls.length;
+    await clock.advance(7_200_000);
+    expect(fetch).toHaveBeenCalledTimes(calls);
+    expect(vi.getTimerCount()).toBe(0);
+  },
+);
 
 afterEach(async () => {
   const results = await Promise.allSettled([...handles].map((handle) => handle.shutdown()));

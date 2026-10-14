@@ -161,6 +161,26 @@ test("the package exposes ESM and CommonJS entry points", () => {
   assert.equal(pkg.types, pkg.exports["."].import.types);
 });
 
+test("SDK stats have no public exports or configuration declarations", async () => {
+  for (const file of [
+    "dist/esm/index.d.ts",
+    "dist/commonjs/index.d.cts",
+    "dist/esm/snippet.d.ts",
+  ]) {
+    const declarations = await readFile(new URL(file, root), "utf8");
+    assert.doesNotMatch(declarations, /sdkStats|SdkStats/);
+  }
+  for (const distro of [
+    await import(new URL("dist/esm/index.js", root).href),
+    require(fileURLToPath(new URL("dist/commonjs/index.cjs", root))),
+  ]) {
+    assert.equal(
+      Object.keys(distro).some((name) => /sdkstats/i.test(name)),
+      false,
+    );
+  }
+});
+
 test("the build produces ESM, CommonJS, UMD, and IIFE artifacts", async () => {
   assert.deepEqual((await readdir(new URL("dist/", root))).sort(), ["browser", "commonjs", "esm"]);
   assert.deepEqual((await readdir(new URL("dist/esm/", root))).sort(), [

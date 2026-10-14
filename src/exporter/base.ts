@@ -8,6 +8,8 @@ import { isUnloading } from "./common.js";
 import { isValidInstrumentationKey, parseConnectionString } from "./connectionStringParser.js";
 import { MAX_BATCH_SIZE_IN_BYTES, MAX_BEACON_BODY_SIZE } from "./constants.js";
 import { Sender, type SenderResultType } from "./sender.js";
+import { createInternalSdkStats, type InternalSdkStats } from "./sdkStats.js";
+import { getInternalSdkStatsConfiguration } from "./sdkStatsConfiguration.js";
 import type { AzureMonitorBaseData, AzureMonitorEnvelope } from "./telemetryModels.js";
 
 const CONTENT_TYPE = "application/json";
@@ -34,6 +36,7 @@ export class AzureMonitorExportClient {
   private readonly sender: Sender;
   private readonly pending = new Set<Promise<void>>();
   private stopped = false;
+  private readonly stats: InternalSdkStats;
 
   public constructor(options: AzureMonitorOptions) {
     const { instrumentationKey, ingestionEndpoint } = parseConnectionString(
@@ -45,9 +48,12 @@ export class AzureMonitorExportClient {
       );
     }
     this.instrumentationKey = instrumentationKey;
+    const statsConfiguration = getInternalSdkStatsConfiguration(ingestionEndpoint);
+    this.stats = createInternalSdkStats(statsConfiguration, instrumentationKey, ingestionEndpoint);
     this.sender = new Sender({
       endpoint: `${ingestionEndpoint}/v2/track`,
       disableBeacon: options.disableBeacon,
+      stats: this.stats,
     });
   }
 
@@ -106,13 +112,17 @@ export class AzureMonitorExportClient {
   }
 
   public async forceFlush(): Promise<void> {
-    await Promise.all([...this.pending]);
+    // Queue existing stats before unload requests finish, while the document can still send.
+    const statsFlush = isUnloading() ? this.stats.forceFlush() : undefined;
+    await Promise.all([...this.pending, statsFlush]);
+    await this.stats.forceFlush();
   }
 
   public async shutdown(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
-    await this.forceFlush();
+    const pending = Promise.all([...this.pending]);
+    await this.stats.shutdown(pending);
   }
 }
 
