@@ -8,11 +8,6 @@ const EU_REGION =
 const GOVERNMENT_CLOUD =
   /(?:^|\.)(?:azure\.us|applicationinsights\.us|usgovcloudapi\.net|azure\.microsoft\.scloud|azure\.eaglex\.ic\.gov)\.*$/i;
 
-/**
- * Production stats route as of 2026-10-13, using the .NET exporter's resource key.
- * EU, government, and air-gapped routes are excluded.
- * @see https://github.com/Azure/azure-sdk-for-net/blob/main/sdk/monitor/Azure.Monitor.OpenTelemetry.Exporter/src/Internals/Statsbeat/StatsbeatConstants.cs
- */
 export function getInternalSdkStatsConfiguration(
   endpoint: string,
 ): InternalSdkStatsConfiguration | undefined {
