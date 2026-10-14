@@ -18,6 +18,9 @@ it.each(["westus", "eastus2", "australiaeast", "unknown"])(
 );
 
 it.each([
+  "austriaeast",
+  "belgiumcentral",
+  "denmarkeast",
   "francecentral",
   "germanywestcentral",
   "northeurope",
@@ -26,6 +29,9 @@ it.each([
   "switzerlandnorth",
   "uksouth",
   "westeurope",
+  "italynorth",
+  "polandcentral",
+  "spaincentral",
 ])("keeps production EU stats disabled without routing %s data globally", (region) => {
   expect(
     getInternalSdkStatsConfiguration(`https://${region}-5.in.applicationinsights.azure.com`),

@@ -36,6 +36,7 @@ let transport: ReturnType<typeof vi.fn<typeof globalThis.fetch>>;
 
 beforeEach(() => {
   payloads = [];
+  vi.mocked(statsConfiguration.getInternalSdkStatsConfiguration).mockReturnValue(options);
   vi.stubGlobal("CompressionStream", undefined);
   vi.spyOn(diag, "warn").mockImplementation(() => {});
   transport = vi.fn<typeof globalThis.fetch>(async (url, init) => {
@@ -212,6 +213,34 @@ it("accepts the production collector's success response without an errors field"
   expect(transport).toHaveBeenCalledOnce();
   expect(diag.warn).not.toHaveBeenCalled();
 });
+
+it("exports a valid zero-duration average instead of dropping the measurement", async () => {
+  const stats = createStats();
+  stats.countResponse(200, 0);
+  stats.countResponse(200, 0);
+  await stats.forceFlush();
+  expect(metrics()).toEqual({ Request_Duration: 0, Request_Success_Count: 2 });
+  payloads.flat().forEach(assertAzureMonitorEnvelope);
+});
+
+it.each(["forceFlush", "shutdown", "timer"] as const)(
+  "contains a throwing diagnostic logger during stats %s",
+  async (operation) => {
+    const clock = installFakeClock();
+    const stats = createStats();
+    vi.mocked(diag.warn).mockImplementation(() => {
+      throw new Error("Diagnostic logger failed");
+    });
+    transport.mockRejectedValue(new TypeError("Stats network failed"));
+    stats.countResponse(200, 10);
+    if (operation === "timer") {
+      await clock.advance(3_600_000);
+      expect(diag.warn).toHaveBeenCalled();
+    } else {
+      await expect(stats[operation]()).resolves.toBeUndefined();
+    }
+  },
+);
 
 it("reports the ingestion stamp rather than a full origin as required by the SDK stats schema", async () => {
   const stats = createStats({}, "https://westus2-2.in.applicationinsights.azure.com");

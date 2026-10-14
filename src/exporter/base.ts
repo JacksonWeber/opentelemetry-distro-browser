@@ -126,9 +126,8 @@ export class AzureMonitorExportClient {
   }
 
   public async forceFlush(): Promise<void> {
-    // Queue existing stats before unload requests finish, while the document can still send.
-    const statsFlush = isUnloading() ? this.#stats.forceFlush() : undefined;
-    await Promise.all([...this.#pending, statsFlush]);
+    // Customer telemetry has priority over best-effort stats in the shared keepalive budget.
+    await Promise.all([...this.#pending]);
     await this.#stats.forceFlush();
   }
 

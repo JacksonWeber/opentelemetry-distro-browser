@@ -17,9 +17,73 @@ import { getSharedRegistry } from "../../../src/shared/globalOwnership.js";
 import { subscribeToUnload } from "../../../src/shared/lifecycle.js";
 import { installFakeClock } from "../../fixtures/clock.js";
 import * as statsConfiguration from "../../../src/exporter/sdkStatsConfiguration.js";
+import { MAX_PENDING_KEEPALIVE_BODY_SIZE } from "../../../src/exporter/constants.js";
+import type { AzureMonitorEnvelope } from "../../../src/exporter/telemetryModels.js";
 
 const handles = new Set<MicrosoftOpenTelemetryBrowser>();
 const originalUrl = location.href;
+
+it("prioritizes a near-limit customer log batch over accumulated stats on unload", async () => {
+  const clock = installFakeClock();
+  vi.stubGlobal("CompressionStream", undefined);
+  const customerEndpoint = "https://customer.example.test/v2/track";
+  const statsEndpoint = "https://stats.example.test/v2/track";
+  const customerRequests: Request[] = [];
+  const statsRequests: Request[] = [];
+  const releases: (() => void)[] = [];
+  let hold = false;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn<typeof fetch>(async (url, init) => {
+      const request = new Request(url, init);
+      expect([customerEndpoint, statsEndpoint]).toContain(url);
+      (url === statsEndpoint ? statsRequests : customerRequests).push(request);
+      if (hold && init?.keepalive) await new Promise<void>((resolve) => releases.push(resolve));
+      return new Response(null);
+    }),
+  );
+  const beacon = vi.spyOn(navigator, "sendBeacon").mockReturnValue(false);
+  vi.mocked(statsConfiguration.getInternalSdkStatsConfiguration).mockReturnValue({
+    instrumentationKey: "11111111-1111-1111-1111-111111111111",
+    endpoint: statsEndpoint,
+  });
+  const { handle } = await start({
+    spanProcessors: [],
+    logRecordProcessors: undefined,
+    userContext: { enabled: false },
+    azureMonitor: {
+      connectionString:
+        "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://customer.example.test",
+      disableBeacon: true,
+    },
+  });
+  try {
+    const logger = logs.getLogger("capacity-test");
+    logger.emit({ body: "warmup" });
+    await clock.advance(1000);
+    await vi.waitFor(() => expect(customerRequests).toHaveLength(1));
+    const [envelope] = (await customerRequests[0].json()) as AzureMonitorEnvelope[];
+    const empty = {
+      ...envelope,
+      data: { ...envelope.data, baseData: { ...envelope.data.baseData, message: "" } },
+    };
+    const overhead = new TextEncoder().encode(JSON.stringify([empty, empty])).byteLength;
+    const bodySize = MAX_PENDING_KEEPALIVE_BODY_SIZE - 100 - overhead;
+    hold = true;
+    logger.emit({ body: "a".repeat(Math.floor(bodySize / 2)) });
+    logger.emit({ body: "b".repeat(Math.ceil(bodySize / 2)) });
+    globalThis.dispatchEvent(new Event("pagehide"));
+    await vi.waitFor(() => expect(customerRequests).toHaveLength(2));
+    const body = await customerRequests[1].clone().arrayBuffer();
+    expect(body.byteLength).toBe(MAX_PENDING_KEEPALIVE_BODY_SIZE - 100);
+    expect(statsRequests).toHaveLength(0);
+    expect(beacon).not.toHaveBeenCalled();
+  } finally {
+    hold = false;
+    releases.forEach((resolve) => resolve());
+    await handle.shutdown();
+  }
+});
 
 it.each(["spans", "logs"] as const)(
   "stops SDK stats timers after a %s export fails during shutdown",

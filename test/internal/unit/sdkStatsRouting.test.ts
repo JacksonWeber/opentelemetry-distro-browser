@@ -64,9 +64,15 @@ function successCount(): number {
     );
 }
 
-it.each(["spans", "logs"] as const)(
-  "updates %s stats after accepted redirects without leaking EU counters",
-  async (signal) => {
+it.each([
+  { signal: "spans", excluded: euEndpoint },
+  { signal: "logs", excluded: euEndpoint },
+  { signal: "spans", excluded: "https://italynorth-0.in.applicationinsights.azure.com" },
+  { signal: "logs", excluded: "https://polandcentral-0.in.applicationinsights.azure.com" },
+  { signal: "spans", excluded: "https://spaincentral-0.in.applicationinsights.azure.com" },
+])(
+  "updates $signal stats after accepted redirects to $excluded without leaking EU counters",
+  async ({ signal, excluded }) => {
     const options = {
       connectionString: `InstrumentationKey=${TEST_INSTRUMENTATION_KEY};IngestionEndpoint=${globalEndpoint}`,
     };
@@ -82,12 +88,12 @@ it.each(["spans", "logs"] as const)(
       });
     try {
       await send();
-      fetch.mockResolvedValueOnce(redirected(euEndpoint));
+      fetch.mockResolvedValueOnce(redirected(excluded));
       await send();
       await exporter.forceFlush();
       expect(reports).toEqual([]);
       await send();
-      expect(fetch.mock.calls.at(-1)?.[0]).toBe(`${euEndpoint}/v2/track`);
+      expect(fetch.mock.calls.at(-1)?.[0]).toBe(`${excluded}/v2/track`);
       fetch.mockResolvedValueOnce(redirected(westEndpoint));
       await send();
       await exporter.forceFlush();
@@ -97,6 +103,53 @@ it.each(["spans", "logs"] as const)(
       ).toBe(true);
     } finally {
       await exporter.shutdown();
+    }
+  },
+);
+
+it.each(["response", "exception", "body failure"] as const)(
+  "does not attribute a late excluded EU %s to a concurrently accepted non-EU route",
+  async (kind) => {
+    const stats = createInternalSdkStats(undefined, TEST_INSTRUMENTATION_KEY, euEndpoint);
+    const sender = new Sender({ endpoint: `${euEndpoint}/v2/track`, stats });
+    let complete!: (response: Response) => void;
+    let reject!: (error: Error) => void;
+    fetch
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve, fail) => {
+            complete = resolve;
+            reject = fail;
+          }),
+      )
+      .mockResolvedValueOnce(redirected(westEndpoint));
+    try {
+      const late = sender.send({ ...request, retry: false });
+      const failure = kind === "response" ? undefined : expect(late).rejects.toBeDefined();
+      await sender.send({ ...request, retry: false });
+      if (kind === "exception") {
+        reject(new TypeError("Excluded EU network failure"));
+      } else {
+        const response = new Response(null);
+        if (kind === "body failure") {
+          vi.spyOn(response, "text").mockRejectedValue(new TypeError("Excluded EU body failure"));
+        }
+        complete(response);
+      }
+      if (failure) await failure;
+      else await late;
+      await stats.forceFlush();
+      expect(successCount()).toBe(1);
+      expect(
+        reports
+          .flat()
+          .some((envelope) => envelope.data.baseData.metrics[0].name === "Exception_Count"),
+      ).toBe(false);
+      expect(
+        reports.flat().every((envelope) => envelope.data.baseData.properties?.host === "westus2-2"),
+      ).toBe(true);
+    } finally {
+      await stats.shutdown();
     }
   },
 );
@@ -146,7 +199,9 @@ it("ignores an untrusted redirected endpoint without changing the stats stamp", 
     await sender.send(request);
     await stats.forceFlush();
     expect(reports[0][0].data.baseData.properties?.host).toBe("westus2-2");
-    expect(configuration.getInternalSdkStatsConfiguration).not.toHaveBeenCalled();
+    expect(configuration.getInternalSdkStatsConfiguration).toHaveBeenCalledExactlyOnceWith(
+      `${westEndpoint}/v2/track`,
+    );
   } finally {
     await stats.shutdown();
   }

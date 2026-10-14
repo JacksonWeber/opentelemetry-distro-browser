@@ -227,13 +227,15 @@ export class Sender {
 
     try {
       let response: Response;
+      let endpoint = this.#endpoint;
       try {
         const payload = unloading || !this.#compress ? undefined : await gzipPayload(request.body);
+        endpoint = this.#endpoint;
         const startTime = Date.now();
         try {
           // Browser context may not survive compression or retry awaits, so suppress at the call.
           response = await context.with(suppressTracing(context.active()), () =>
-            this.#fetch(this.#endpoint, {
+            this.#fetch(endpoint, {
               method: "POST",
               headers: {
                 "content-type": request.contentType,
@@ -247,14 +249,14 @@ export class Sender {
             }),
           );
         } catch (error) {
-          this.#stats?.countException(error);
+          this.#stats?.countException(error, endpoint);
           if (!isBrowserTransportFailure(error)) {
             throw error;
           }
           throw new BrowserTransportError(error);
         }
-        this.#rememberRedirectEndpoint(response);
-        this.#stats?.countResponse(response.status, Date.now() - startTime);
+        endpoint = this.#rememberRedirectEndpoint(response, endpoint);
+        this.#stats?.countResponse(response.status, Date.now() - startTime, endpoint);
       } catch (error) {
         if (unloading && !request.signal?.aborted) {
           return this.#sendWithBeacon(
@@ -270,7 +272,7 @@ export class Sender {
       try {
         result = await response.text();
       } catch (error) {
-        this.#stats?.countException(error);
+        this.#stats?.countException(error, endpoint);
         if (!isBrowserTransportFailure(error)) {
           throw error;
         }
@@ -296,20 +298,20 @@ export class Sender {
     }
   }
 
-  #rememberRedirectEndpoint(response: Response): void {
-    if (!response.redirected || response.url === this.#endpoint) {
-      return;
-    }
+  #rememberRedirectEndpoint(response: Response, attemptedEndpoint: string): string {
+    if (!response.redirected) return attemptedEndpoint;
 
-    const redirectedEndpoint = getTrustedIngestionEndpoint(this.#endpoint, response.url);
-    if (redirectedEndpoint !== undefined) {
+    const redirectedEndpoint = getTrustedIngestionEndpoint(attemptedEndpoint, response.url);
+    if (redirectedEndpoint !== undefined && redirectedEndpoint !== this.#endpoint) {
       this.#endpoint = redirectedEndpoint;
       this.#stats?.updateEndpoint(redirectedEndpoint);
       this.#compress = isTrustedIngestionEndpoint(redirectedEndpoint);
     }
+    return redirectedEndpoint ?? attemptedEndpoint;
   }
 
   #sendWithBeacon(request: SendRequest, cause?: unknown): BeaconSenderResult {
+    const endpoint = this.#endpoint;
     if (request.body.byteLength > MAX_BEACON_BODY_SIZE) {
       throw new RangeError(
         `Unload payload size ${request.body.byteLength} exceeds the ${MAX_BEACON_BODY_SIZE} byte beacon limit.`,
@@ -321,21 +323,21 @@ export class Sender {
       const error = new Error("sendBeacon fallback is unavailable for the unload request.", {
         cause,
       });
-      this.#stats?.countException(error);
+      this.#stats?.countException(error, endpoint);
       throw error;
     }
 
     const body = new Blob([request.body], { type: "text/plain;charset=UTF-8" });
     let queued: boolean;
     try {
-      queued = this.#sendBeacon(this.#endpoint, body);
+      queued = this.#sendBeacon(endpoint, body);
     } catch (error) {
-      this.#stats?.countException(error);
+      this.#stats?.countException(error, endpoint);
       throw error;
     }
     if (!queued) {
       const error = new Error("sendBeacon could not queue the unload request.", { cause });
-      this.#stats?.countException(error);
+      this.#stats?.countException(error, endpoint);
       throw error;
     }
 

@@ -11,7 +11,7 @@ import { createUserContext } from "./user/createUserContext.js";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { BrowserBatchLogRecordProcessor } from "./browserBatchLogRecordProcessor.js";
 import { BatchSpanProcessor, type SpanProcessor } from "@opentelemetry/sdk-trace-base";
-import { beginUnloading, endUnloading, isUnloading } from "./exporter/common.js";
+import { beginUnloading, endUnloading } from "./exporter/common.js";
 import { AzureMonitorLogRecordExporter } from "./exporter/log.js";
 import { AzureMonitorSpanExporter } from "./exporter/trace.js";
 import { PageViewInstrumentation } from "./instrumentation/pageView/index.js";
@@ -161,10 +161,7 @@ export async function useMicrosoftOpenTelemetry(
     const processors = [...(spanProcessors ?? []), ...(logRecordProcessors ?? [])];
     const exporterTasks = azureMonitorExporters.map((exporter) => () => exporter.forceFlush());
     return runLifecycleTasks(
-      [
-        ...processors.map((processor) => () => processor.forceFlush()),
-        ...(isUnloading() ? exporterTasks : []),
-      ],
+      processors.map((processor) => () => processor.forceFlush()),
       "Telemetry flush failed",
       exporterTasks,
     );

@@ -22,6 +22,7 @@ import type { AzureMonitorEnvelope, MetricData } from "./telemetryModels.js";
  * Reports go directly to the distro-owned ingestion endpoint without a remote configuration
  * request. HTTPS is required except for localhost and loopback testing.
  * Accepted customer redirects update the route and stamp without resetting counters or timers.
+ * Each attempt's endpoint controls eligibility, including responses that complete after a redirect.
  * Stats fetches omit credentials and referrers. Beacon fallback is disabled because it cannot
  * suppress referrers on pages with a permissive referrer policy.
  *
@@ -29,6 +30,7 @@ import type { AzureMonitorEnvelope, MetricData } from "./telemetryModels.js";
  * Success counts require an HTTP response, not just successful beacon queuing.
  * Attempted reports are best effort and are not replayed, which avoids duplicating partially
  * accepted metrics. Report requests have a 10-second timeout.
+ * Lifecycle stats flushes follow customer telemetry so they do not consume its unload capacity.
  * Failures are reported through diagnostics and do not fail customer telemetry flushes.
  * @internal
  */
@@ -47,8 +49,8 @@ const RETRY_STATUSES = [401, 403, 408, 429, 500, 502, 503, 504];
 
 export interface InternalSdkStats {
   updateEndpoint(endpoint: string): void;
-  countResponse(status: number, duration: number): void;
-  countException(error: unknown): void;
+  countResponse(status: number, duration: number, endpoint?: string): void;
+  countException(error: unknown, endpoint?: string): void;
   forceFlush(): Promise<void>;
   shutdown(pending?: Promise<unknown>): Promise<void>;
 }
@@ -97,8 +99,8 @@ export function createInternalSdkStats(
     if (!route) sending?.abort();
   }
 
-  function countResponse(status: number, elapsed: number): void {
-    if (disabled || !route) return;
+  function countResponse(status: number, elapsed: number, endpoint?: string): void {
+    if (disabled || !route || (endpoint && !getInternalSdkStatsConfiguration(endpoint))) return;
     requests++;
     duration += Math.max(0, elapsed);
     if (status >= 200 && status < 300) {
@@ -114,8 +116,8 @@ export function createInternalSdkStats(
     schedule();
   }
 
-  function countException(error: unknown): void {
-    if (disabled || !route) return;
+  function countException(error: unknown, endpoint?: string): void {
+    if (disabled || !route || (endpoint && !getInternalSdkStatsConfiguration(endpoint))) return;
     const type =
       error instanceof DOMException &&
       (error.name === "TimeoutError" || error.name === "AbortError")
@@ -179,7 +181,7 @@ export function createInternalSdkStats(
     const envelopes: AzureMonitorEnvelope<MetricData>[] = [];
     const time = new Date().toISOString();
     const append = (key: string, value: number): void => {
-      if (value <= 0 || (sampleRate < 100 && Math.random() * 100 >= sampleRate)) return;
+      if (value < 0 || (sampleRate < 100 && Math.random() * 100 >= sampleRate)) return;
       const [name, code] = key.split(":");
       envelopes.push(
         createEnvelope(
@@ -255,5 +257,9 @@ function resolveRoute(
 }
 
 function reportFailure(error: unknown): void {
-  diag.warn("SDK stats export failed", error);
+  try {
+    diag.warn("SDK stats export failed", error);
+  } catch {
+    // Application diagnostic loggers must not break best-effort stats or customer cleanup.
+  }
 }

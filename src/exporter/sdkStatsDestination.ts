@@ -3,7 +3,8 @@
 
 import type { InternalSdkStatsConfiguration } from "./sdkStats.js";
 
-const EU_REGION = /^(?:france|germany|northeurope|norway|sweden|switzerland|uk|westeurope)/i;
+const EU_REGION =
+  /^(?:austria|belgium|denmark|france|germany|italy|northeurope|norway|poland|spain|sweden|switzerland|uk|westeurope)/i;
 const GOVERNMENT_CLOUD =
   /(?:^|\.)(?:azure\.us|applicationinsights\.us|usgovcloudapi\.net|azure\.microsoft\.scloud|azure\.eaglex\.ic\.gov)\.*$/i;
 
