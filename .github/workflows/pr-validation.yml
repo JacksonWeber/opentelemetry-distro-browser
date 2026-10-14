@@ -64,6 +64,9 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Generate API documentation
+        run: npm run docs
+
       - name: Check types
         run: npm run typecheck
 

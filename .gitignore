@@ -6,6 +6,9 @@
 # Node.js dependencies
 node_modules/
 
+# Generated API documentation
+docs/api/
+
 # User-specific files
 *.rsuser
 *.suo
