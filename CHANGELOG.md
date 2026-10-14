@@ -6,18 +6,52 @@ All notable changes to this package are documented in this file.
 
 ### Added
 
+- Send internal Azure Monitor network SDK stats directly to the production stats collector without
+  public configuration or remote configuration requests. Keep counters isolated per exporter,
+  follow accepted customer redirects, exclude disabled EU and government-cloud routes, and suppress
+  request referrers. Stats use bounded best-effort fetch delivery, including keepalive on unload.
+- Document CDN loader snippet setup and failure handling in the README.
 - Classify named browser log events as Azure Monitor custom events regardless of severity, while
   preserving browser console records as trace messages with their severity.
+- Publish the minimum supported Chrome, Edge, Firefox, and Safari versions and gate the built
+  browser bundle against those releases with real-browser acceptance tests.
+- Publish a `<module>.<version>.size.svg` size badge with each CDN release, generated at build time.
+
+### Changed
+
+- Include the browser runtime and upstream OpenTelemetry SDK version in the Azure Monitor
+  `ai.internal.sdkVersion` tag.
+- Persist distribution-generated anonymous user IDs by default so Application Insights user
+  metrics remain stable across page loads and SDK instances. Authenticated user and account IDs
+  remain memory-only unless `userContext: { enabled: true }` is configured; set `enabled: false`
+  to disable managed identity persistence and user metrics.
 
 ### Fixed
 
+- Only gzip Azure Monitor request bodies for recognized first-party ingestion endpoints in the
+  public, US Government, and China clouds. Custom ingestion endpoints, such as proxies that parse
+  request bodies as JSON, now receive uncompressed JSON.
+- Set Azure Monitor browser device tags on all envelopes, omit default envelope version and
+  full-sampling fields, and exclude built-in page-view diagnostics and ordinals from custom
+  properties and measurements while retaining application custom fields and OpenTelemetry records.
+- Include every instrumentation in the `opentelemetry-browser` CDN and global bundles, exposed as
+  `Microsoft.OpenTelemetry.getInstrumentations`, and enable the default `fetch` and XHR
+  instrumentations from the loader snippet. Snippet users previously received no dependency
+  telemetry.
+- Preserve application-provided resource `session.id` values during managed context enrichment
+  and Azure Monitor export, while retaining precedence for valid record-level session IDs.
+- Share fetch, XHR, console and navigation patches across instances without nesting their
+  telemetry contexts. Preserve per-instance filters and hooks and restore owned methods after
+  the last subscriber stops. Register shared upstream instrumentations before first enablement.
+- Send queued logs during navigation without waiting for earlier export responses, including
+  the first page load and fixed-percentage sampling. Flush and shutdown wait for every batch
+  before reporting export failures, preserve configured export deadlines, and report both
+  export and cleanup failures.
+- Preserve Azure Monitor telemetry by exporting correlated span events, mapping named logs to
+  custom events, enforcing Breeze field limits, exposing page-view referrers as `refUri`, and
+  classifying parented internal spans as `InProc` dependencies.
 - Prevent pending page views from being lost during unload by settling them before pagehide or
   hidden-visibility flushes, including tab switches.
-
-### Added
-
-- Publish the minimum supported Chrome, Edge, Firefox, and Safari versions and gate the built
-  browser bundle against those releases with real-browser acceptance tests.
 
 ## 0.1.0-alpha.3 - 2026-10-09
 
@@ -35,6 +69,7 @@ All notable changes to this package are documented in this file.
 
 - Invoke Azure Monitor export callbacks only once when they throw, without reporting callback
   errors back to the same callback as export failures.
+- Fit unload telemetry with removable custom fields within one keepalive or Beacon request.
 
 ## 0.1.0-alpha.2 - 2026-10-08
 

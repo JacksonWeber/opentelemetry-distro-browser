@@ -1,0 +1,28 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "name": "@microsoft/opentelemetry-browser",
+  "entryPoints": [
+    "src/index.ts",
+    "src/instrumentation/browserInstrumentation/index.ts",
+    "src/snippet.ts"
+  ],
+  "entryPointStrategy": "resolve",
+  "tsconfig": "tsconfig.src.json",
+  "out": "docs/api",
+  "readme": "none",
+  "includeVersion": true,
+  "excludeInternal": true,
+  "excludePrivate": true,
+  "excludeProtected": true,
+  "externalSymbolLinkMappings": {
+    "@opentelemetry/sdk-logs": {
+      "ReadableLogRecord": "https://open-telemetry.github.io/opentelemetry-js/interfaces/_opentelemetry_sdk-logs.ReadableLogRecord.html"
+    },
+    "@opentelemetry/sdk-trace": {
+      "ReadableSpan": "https://open-telemetry.github.io/opentelemetry-js/interfaces/_opentelemetry_sdk-trace-base.ReadableSpan.html"
+    }
+  },
+  "githubPages": true,
+  "cleanOutputDir": true,
+  "treatWarningsAsErrors": true
+}

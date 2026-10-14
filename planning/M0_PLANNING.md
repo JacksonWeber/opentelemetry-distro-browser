@@ -4,15 +4,15 @@ Ship a thin distribution: configure the upstream `@opentelemetry/browser-sdk`, a
 Azure Monitor exporter, adopt the upstream browser instrumentations, and publish. M0 is
 single-instance and ES2022 ESM-only, and does not build its own SDK.
 
-Status: published as `@microsoft/opentelemetry-browser`; `0.1.0-alpha.2` is published (#79) and `0.1.0-alpha.3` is prepared. The
-beta release and the items below remain.
+Status: published as `@microsoft/opentelemetry-browser`; `0.1.0-alpha.3` is the latest release on npm
+and the CDN (#90). The beta release and the items below remain.
 
 ## Remaining
 
 | Item | Description |
 | --- | --- |
 | Semconv barrel lint | ESLint `no-restricted-imports` banning barrel imports from `@opentelemetry/semantic-conventions`, permitting the individual `ATTR_*`/`METRIC_*` constants |
-| Root bundle budget | Size budgets become blocking at beta. The root entry point currently exceeds its budget (about 39 kB gzip against 34 kB), so it must be reduced or the budget re-approved before the beta is published |
+| Root bundle budget | Size budgets become blocking at beta. The root entry point currently exceeds its budget, so it must be reduced or the budget re-approved before the beta is published |
 | Beta documentation | Event catalogue covering every distribution-emitted event, its attributes and source module, plus release notes for the capabilities added since the first alpha |
 | Beta validation and publish | End-to-end validation against a real Application Insights resource, then publication to the `beta` dist-tag |
 
@@ -32,19 +32,20 @@ beta release and the items below remain.
 | Breeze transport | Retry, backoff and throttle handling (#24) |
 | Trusted redirects | Redirect handling (#22) |
 | Compression | gzip request compression (#20) |
-| Unload delivery | `sendBeacon` fallback (#16), payload limits and tests (#34) |
+| Unload delivery | `sendBeacon` fallback (#16), payload limits and tests (#34), unload batches fitted to the keepalive and Beacon limits (#88), queued logs delivered during navigation with a pending export (#101) |
 | Page views | Page view instrumentation, on by default (#17), with page view ID and referrer mapping (#39) |
 | Page correlation | Page views, spans and logs share operation IDs (#29) |
 | Exception stacks | `parsedStack` frames on exception telemetry (#41) |
 | Self-telemetry loop guard | Azure Monitor export requests suppress tracing so `fetch` instrumentation does not capture them (#59) |
 | Flush coalescing | Concurrent `forceFlush()` calls share one operation (#43) |
-| Ingestion fixes | Empty message bodies populated (#50); HTTPS required for non-loopback endpoints (#74); empty connection string fields ignored (#75) |
+| Ingestion fixes | Empty message bodies populated (#50); HTTPS required for non-loopback endpoints (#74); empty connection string fields ignored (#75); duplicate export callbacks fixed (#87); `EventData` classification fixed (#92) |
+| Retry bounds | A 30-second retry-wait budget keeps long `Retry-After` values from stalling `forceFlush()` and `shutdown()` (#76) |
 | Instrumentation entry point | `getInstrumentations()` on `./instrumentations`, each module dynamically imported (#21) |
 | Size harness | `scripts/measure-bundle-size.mjs` (#37), scenario trends (#49), per-entry-point budgets reported during alpha (#52) |
 | PR performance harness | Pull-request performance regression reporting and comparison (#38) |
 | Changelog check | CI changelog gate (#35) |
 | Test coverage | End-to-end page view and custom event (#32), context handling (#33), shared fixtures and PR coverage reports (#51) |
-| Release | First alpha published, package renamed (#31, #36); `0.1.0-alpha.2` published (#79); `0.1.0-alpha.3` prepared |
+| Release | First alpha published, package renamed (#31, #36); `0.1.0-alpha.2` (#79) and `0.1.0-alpha.3` (#90) published |
 | Public-release paperwork | `LICENSE`, `NOTICE.md`, `SECURITY.md`, `SUPPORT.md`, `PRIVACY.md`, `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md` |
 
 ## Deferred

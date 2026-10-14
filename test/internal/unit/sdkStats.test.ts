@@ -6,7 +6,7 @@ import { ExportResultCode } from "@opentelemetry/core";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { AzureMonitorLogRecordExporter } from "../../../src/exporter/log.js";
 import { AzureMonitorSpanExporter } from "../../../src/exporter/trace.js";
-import { beginUnloading, endUnloading } from "../../../src/exporter/common.js";
+import { beginUnloading, endUnloading, getSdkVersion } from "../../../src/exporter/common.js";
 import {
   createInternalSdkStats,
   type InternalSdkStats,
@@ -125,7 +125,7 @@ it("sends the reference metric names, status buckets, average duration and separ
     assertAzureMonitorEnvelope(envelope);
     expect(envelope.iKey).toBe(STATS_KEY);
     expect(envelope.tags).toEqual({
-      "ai.internal.sdkVersion": `mot${OPENTELEMETRY_BROWSER_VERSION}`,
+      "ai.internal.sdkVersion": getSdkVersion(),
     });
     expect(envelope.data.baseData.properties).toMatchObject({
       rp: "unknown",

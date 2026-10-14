@@ -3,6 +3,7 @@
 
 import { context, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
+import { resourceFromAttributes } from "@opentelemetry/resources";
 import type { ReadWriteLogRecord } from "@opentelemetry/sdk-logs";
 import type { Span } from "@opentelemetry/sdk-trace-base";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -55,12 +56,15 @@ afterEach(async () => {
 
 async function initialize(
   shutdown: () => Promise<void> = async () => {},
-  options: Pick<MicrosoftOpenTelemetryBrowserOptions, "session"> = { session: { enabled: true } },
+  options: Pick<MicrosoftOpenTelemetryBrowserOptions, "session" | "resource"> = {
+    session: { enabled: true },
+  },
 ) {
   const spans: Span[] = [];
   const records: ReadWriteLogRecord[] = [];
   const handle = await useMicrosoftOpenTelemetry({
     ...options,
+    userContext: { enabled: false },
     pageView: { enabled: false },
     spanProcessors: [
       {
@@ -352,6 +356,55 @@ it("replaces an empty application session ID with managed context", async () => 
   expect(records.at(-1)?.attributes["session.id"]).toBe(spans.at(-1)?.attributes["session.id"]);
 });
 
+it.each([undefined, "", 0, false, ["invalid"], "application-record"])(
+  "preserves resource session context with record session.id=%j",
+  async (id) => {
+    const { emit, spans, records } = await initialize(undefined, {
+      session: { enabled: true, persist: false, inactivityTimeout: 1, maxDuration: 2 },
+      resource: resourceFromAttributes({ "session.id": "application-resource" }),
+    });
+    trace
+      .getTracer("application")
+      .startSpan("manual", { attributes: { "session.id": id } })
+      .end();
+    logs.getLogger("application").emit({ attributes: { "session.id": id } });
+
+    for (const record of [...spans, ...records]) {
+      expect(record.attributes["session.id"]).toEqual(id);
+      expect(record.resource.attributes["session.id"]).toBe("application-resource");
+    }
+
+    vi.setSystemTime(Date.now() + 2000);
+    expect(emit()).toBeUndefined();
+    for (const record of [spans.at(-1)!, records.at(-1)!]) {
+      expect(record.resource.attributes["session.id"]).toBe("application-resource");
+    }
+  },
+);
+
+it.each([undefined, "", 0, false, ["invalid"]])(
+  "uses managed context only when neither record nor resource has a valid session ID (resource=%j)",
+  async (resourceId) => {
+    const { emit, spans, records } = await initialize(undefined, {
+      session: { enabled: true, persist: false },
+      resource: resourceFromAttributes({ "session.id": resourceId }),
+    });
+    const managedId = emit();
+    expect(managedId).toMatch(/^[0-9a-f]{32}$/);
+    for (const recordId of [undefined, "", 0, false, ["invalid"]]) {
+      trace
+        .getTracer("application")
+        .startSpan("manual", { attributes: { "session.id": recordId } })
+        .end();
+      logs.getLogger("application").emit({ attributes: { "session.id": recordId } });
+      for (const record of [spans.at(-1)!, records.at(-1)!]) {
+        expect(record.attributes["session.id"]).toBe(managedId);
+        expect(record.resource.attributes["session.id"]).toEqual(resourceId);
+      }
+    }
+  },
+);
+
 it("awaits persisted restoration before starting providers or enabling instrumentation", async () => {
   const restored = { id: "restored-session", startTimestamp: Date.now() - 1000 };
   localStorage.setItem(storageKey, JSON.stringify(restored));
@@ -364,6 +417,7 @@ it("awaits persisted restoration before starting providers or enabling instrumen
   const logIds: unknown[] = [];
   const pending = useMicrosoftOpenTelemetry({
     session: { enabled: true },
+    userContext: { enabled: false },
     pageView: { enabled: false },
     spanProcessors: [
       {

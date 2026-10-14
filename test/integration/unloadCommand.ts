@@ -21,7 +21,10 @@ export const verifyUnloadDelivery = defineBrowserCommand(
     captureUrl: string,
     expectedCount: number = 1,
   ): Promise<unknown[]> => {
-    const fixturePage = await page.context().newPage();
+    const browser = page.context().browser();
+    if (!browser) throw new Error("Unload tests require a browser connection.");
+    const fixtureContext = await browser.newContext();
+    const fixturePage = await fixtureContext.newPage();
     const diagnostics: string[] = [];
     fixturePage.on("console", (message) => diagnostics.push(`console: ${message.text()}`));
     fixturePage.on("pageerror", (error) => diagnostics.push(`pageerror: ${error.message}`));
@@ -62,7 +65,7 @@ export const verifyUnloadDelivery = defineBrowserCommand(
         `Unload delivered ${envelopes.length}/${expectedCount} envelopes. ${diagnostics.join(" | ")}`,
       );
     } finally {
-      await fixturePage.close();
+      await fixtureContext.close();
     }
   },
 );

@@ -6,12 +6,17 @@ import { createHash } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
+import vm from "node:vm";
 import {
   cacheControl,
   cdnDirectory,
   getCdnArtifacts,
+  getCdnBadges,
   getCdnChannel,
   getCdnUrl,
+  getSizeBadgeMessage,
+  renderBadge,
   root,
 } from "../../scripts/cdn.mjs";
 import { getCdnUploads, publishCdn } from "../../scripts/publish-cdn.mjs";
@@ -39,15 +44,17 @@ test("the snippet loads this version's CDN bundle by default", async () => {
   assert.equal(src, getCdnUrl(version, `opentelemetry-browser.${version}.min.js`));
 });
 
-test("the documented snippet matches the generated loader", async () => {
+test("the documented snippets match the generated loader", async () => {
   const { getSdkLoaderScript } = await import("../../dist/esm/snippet.js");
-  const docs = await readFile(resolve(root, "docs/packaging.md"), "utf8");
   const script = getSdkLoaderScript({
     src: "https://js.monitor.azure.com/scripts/otel/CHANNEL/opentelemetry-browser.VERSION.min.js",
     connectionString: "YOUR_CONNECTION_STRING",
     integrity: "YOUR_INTEGRITY",
   });
-  assert.ok(docs.replaceAll("\r\n", "\n").includes(`<script>\n${script}\n</script>`));
+  for (const file of ["README.md", "docs/packaging.md"]) {
+    const docs = await readFile(resolve(root, file), "utf8");
+    assert.ok(docs.replaceAll("\r\n", "\n").includes(`<script>\n${script}\n</script>`), file);
+  }
 });
 
 test("the build prepares versioned CDN files with source maps and integrity", async () => {
@@ -58,7 +65,11 @@ test("the build prepares versioned CDN files with source maps and integrity", as
   ];
   assert.deepEqual(
     (await readdir(cdnDirectory)).sort(),
-    [...artifacts.flatMap(({ file }) => [file, `${file}.map`]), ...integrityFiles].sort(),
+    [
+      ...artifacts.flatMap(({ file }) => [file, `${file}.map`]),
+      ...getCdnBadges(version).map(({ file }) => file),
+      ...integrityFiles,
+    ].sort(),
   );
 
   for (const integrityFile of integrityFiles) {
@@ -100,11 +111,107 @@ test("the build prepares versioned CDN files with source maps and integrity", as
   }
 });
 
+test("publishes a size badge for each default CDN bundle", async () => {
+  for (const badge of getCdnBadges(version)) {
+    const bytes = await readFile(resolve(cdnDirectory, badge.bundle));
+    const message = getSizeBadgeMessage(bytes);
+    assert.match(message, /^\d+\.\d KiB \/ \d+\.\d KiB gzip$/);
+    assert.equal(
+      await readFile(resolve(cdnDirectory, badge.file), "utf8"),
+      renderBadge("size", message),
+    );
+  }
+  assert.match(renderBadge("a&b", "<1>"), /aria-label="a&#38;b: &#60;1&#62;"/);
+});
+
+/** Evaluates a CDN script in a worker-like realm: browser APIs a worker has, but no window or DOM. */
+function loadInWorkerRealm(code, file) {
+  const realm = vm.createContext({
+    console,
+    setTimeout,
+    clearTimeout,
+    setInterval,
+    clearInterval,
+    queueMicrotask,
+    performance,
+    URL,
+    TextEncoder,
+    TextDecoder,
+    navigator: { userAgent: "worker", language: "en-US" },
+    location: new URL("https://example.test/worker.js"),
+  });
+  vm.runInContext("self = globalThis;", realm);
+  vm.runInContext(code, realm, { filename: file });
+  return vm.runInContext("globalThis.Microsoft", realm);
+}
+
+const runtimeKeys = async (entry) =>
+  Object.keys(await import(pathToFileURL(resolve(root, "dist", "esm", entry)).href));
+
+test("every CDN bundle loads without window and exposes the full npm API", async () => {
+  const otelApi = ["context", "diag", "logs", "metrics", "propagation", "trace"];
+  const sdkKeys = [
+    ...new Set([
+      ...(await runtimeKeys("index.js")),
+      ...(await runtimeKeys("instrumentations.js")),
+      ...otelApi,
+    ]),
+  ].sort();
+  const instrumentationKeys = (await runtimeKeys("instrumentations.js")).sort();
+  assert.ok(sdkKeys.includes("useMicrosoftOpenTelemetry"));
+  assert.ok(sdkKeys.includes("getInstrumentations"));
+
+  for (const artifact of getCdnArtifacts(version)) {
+    const code = await readFile(resolve(cdnDirectory, artifact.file), "utf8");
+    const microsoft = loadInWorkerRealm(code, artifact.file);
+    if (artifact.module === "opentelemetry-browser") {
+      assert.deepEqual(Object.keys(microsoft.OpenTelemetry).sort(), sdkKeys, artifact.file);
+    } else {
+      assert.deepEqual(
+        Object.keys(microsoft.OpenTelemetryInstrumentations).sort(),
+        instrumentationKeys,
+        artifact.file,
+      );
+    }
+  }
+});
+
+test("the default CDN bundle carries every instrumentation without loading other files", async () => {
+  const code = await readFile(
+    resolve(cdnDirectory, `opentelemetry-browser.${version}.min.js`),
+    "utf8",
+  );
+  // Inlined, not code-split: a CDN script cannot load sibling chunks.
+  assert.doesNotMatch(code, /\bimport\(/);
+  const { getInstrumentations } = loadInWorkerRealm(code, "min.js").OpenTelemetry;
+  const all = Object.fromEntries(
+    [
+      "fetch",
+      "xhr",
+      "console",
+      "errors",
+      "navigation",
+      "navigationTiming",
+      "resourceTiming",
+      "userAction",
+      "webVitals",
+    ].map((name) => [name, { enabled: true }]),
+  );
+  const instrumentations = await getInstrumentations(all);
+  assert.equal(instrumentations.length, Object.keys(all).length);
+  assert.equal(new Set(instrumentations.map((i) => i.instrumentationName)).size, 9);
+  assert.equal((await getInstrumentations()).length, 2, "fetch and xhr are on by default");
+});
+
 test("publishes immutable files without overwriting and uploads integrity files last", async () => {
   const uploads = getCdnUploads(version);
-  assert.equal(uploads.length, getCdnArtifacts(version).length * 2 + 2);
+  assert.equal(uploads.length, getCdnArtifacts(version).length * 2 + 2 + 2);
   assert.match(uploads.at(-1).file, /\.integrity\.json$/);
   assert.match(uploads.at(-2).file, /\.integrity\.json$/);
+  assert.deepEqual(
+    uploads.filter(({ file }) => file.endsWith(".svg")).map(({ contentType }) => contentType),
+    ["image/svg+xml; charset=utf-8", "image/svg+xml; charset=utf-8"],
+  );
   assert.ok(
     uploads.every(({ blob }) => blob.startsWith(`scripts/otel/${getCdnChannel(version)}/`)),
   );

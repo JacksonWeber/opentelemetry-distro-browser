@@ -1,37 +1,118 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+import { SDK_INFO } from "@opentelemetry/core";
 import { resourceFromAttributes } from "@opentelemetry/resources";
+import { ATTR_TELEMETRY_SDK_VERSION } from "@opentelemetry/semantic-conventions";
 import { describe, expect, it } from "vitest";
-import { MAX_BEACON_BODY_SIZE } from "../../../src/exporter/constants.js";
-import type { ExceptionData } from "../../../src/exporter/telemetryModels.js";
-import { logToEnvelope, logToEnvelopes } from "../../../src/exporter/logUtils.js";
+import { MaxPropertyLengths, MAX_BEACON_BODY_SIZE } from "../../../src/exporter/constants.js";
+import type { ExceptionData, PageViewData } from "../../../src/exporter/telemetryModels.js";
+import {
+  createExceptionDetails,
+  logToEnvelope,
+  logToEnvelopes,
+} from "../../../src/exporter/logUtils.js";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../../src/shared/constants.js";
 import { AZURE_MONITOR_SAMPLE_RATE } from "../../../src/sampling.js";
 import { TEST_INSTRUMENTATION_KEY as instrumentationKey } from "../../fixtures/azureMonitor.js";
 import { createReadableLogRecord as makeLog, createSpanContext } from "../../fixtures/telemetry.js";
 
 const spanContext = createSpanContext();
+const pageViewDiagnostics = {
+  "browser.page_view.index": 0,
+  "browser.page_view.duration_source": "navigation_timing",
+  "browser.page_view.name_source": "document_title",
+  "browser.page_view.same_document": false,
+  "browser.page_view.type": "reload",
+};
 
 describe("Azure Monitor log envelope mapping", () => {
-  it("maps the reserved sample rate without exporting it as a custom measurement", () => {
-    const envelope = logToEnvelope(
-      makeLog({ attributes: { [AZURE_MONITOR_SAMPLE_RATE]: 25 }, body: "sampled" }),
-      instrumentationKey,
-    );
+  it.each([
+    undefined,
+    "browser.console",
+    "custom.event",
+    "exception",
+    "browser.page_view",
+    "browser.navigation",
+  ])("sets browser device tags and omits the default envelope version for %s", (eventName) => {
+    const envelope = logToEnvelope(makeLog({ eventName }), instrumentationKey);
 
-    expect(envelope.sampleRate).toBe(25);
-    expect(envelope.data.baseData.measurements).toBeUndefined();
+    expect(envelope.tags).toMatchObject({
+      "ai.device.type": "Browser",
+      "ai.device.id": "browser",
+    });
+    expect(envelope).not.toHaveProperty("ver");
+    expect(envelope.data.baseData.ver).toBe(2);
   });
 
-  it.each([undefined, 0])(
-    "defaults standalone log conversion with sample rate %s to full sampling",
+  it.each([0.000001, 25, 99.5])(
+    "maps the reserved sample rate %s without exporting it as a custom measurement",
+    (sampleRate) => {
+      const envelope = logToEnvelope(
+        makeLog({ attributes: { [AZURE_MONITOR_SAMPLE_RATE]: sampleRate }, body: "sampled" }),
+        instrumentationKey,
+      );
+
+      expect(envelope.sampleRate).toBe(sampleRate);
+      expect(envelope.data.baseData.measurements).toBeUndefined();
+    },
+  );
+
+  it.each([undefined, 0, 100, -1, 101, NaN, Infinity, "25"])(
+    "omits full sampling from standalone log conversion with sample rate %s",
     (sampleRate) => {
       const attributes =
         sampleRate === undefined ? {} : { [AZURE_MONITOR_SAMPLE_RATE]: sampleRate };
       expect(
-        logToEnvelope(makeLog({ attributes, body: "default" }), instrumentationKey).sampleRate,
-      ).toBe(100);
+        JSON.parse(JSON.stringify(logToEnvelope(makeLog({ attributes }), instrumentationKey))),
+      ).not.toHaveProperty("sampleRate");
+    },
+  );
+
+  it.each(["browser.page_view", "browser.navigation"])(
+    "excludes built-in page-view diagnostics from %s without changing source attributes",
+    (eventName) => {
+      const record = makeLog({
+        eventName,
+        attributes: {
+          ...pageViewDiagnostics,
+          "browser.page_view.custom": "kept",
+          itemCount: 2,
+          "browser.page_view.referrer": "https://example.test/previous",
+        },
+      });
+      const originalAttributes = { ...record.attributes };
+      const envelope = logToEnvelope(record, instrumentationKey);
+
+      expect(envelope.data.baseData).toMatchObject({
+        referredUri: "https://example.test/previous",
+        properties: { "browser.page_view.custom": "kept" },
+        measurements: { itemCount: 2 },
+      });
+      expect(envelope.data.baseData.properties).toEqual({
+        "browser.page_view.custom": "kept",
+        refUri: "https://example.test/previous",
+      });
+      expect(envelope.data.baseData.measurements).toEqual({ itemCount: 2 });
+      expect(record.attributes).toEqual(originalAttributes);
+    },
+  );
+
+  it.each([undefined, "custom.event", "exception"])(
+    "preserves page-view attributes on unrelated log events (%s)",
+    (eventName) => {
+      const envelope = logToEnvelope(
+        makeLog({ eventName, attributes: pageViewDiagnostics }),
+        instrumentationKey,
+      );
+
+      expect(envelope.data.baseData.measurements).toEqual({ "browser.page_view.index": 0 });
+      expect(envelope.data.baseData.properties).toEqual({
+        "browser.page_view.duration_source": "navigation_timing",
+        "browser.page_view.name_source": "document_title",
+        "browser.page_view.same_document": "false",
+        "browser.page_view.type": "reload",
+      });
     },
   );
 
@@ -65,6 +146,33 @@ describe("Azure Monitor log envelope mapping", () => {
       if (id === 0) expect(envelope.data.baseData.measurements?.["session.id"]).toBe(0);
       else if (id !== undefined)
         expect(envelope.data.baseData.properties?.["session.id"]).toBeDefined();
+    },
+  );
+
+  it.each([undefined, "", 0, false, ["invalid"], "record-session"])(
+    "prefers a valid record session ID over resource context (record=%j)",
+    (id) => {
+      const record = makeLog({
+        attributes: { "session.id": id },
+        resource: resourceFromAttributes({ "session.id": "resource-session" }),
+      });
+      const envelope = logToEnvelope(record, instrumentationKey);
+      expect(envelope.tags["ai.session.id"]).toBe(
+        id === "record-session" ? id : "resource-session",
+      );
+      expect(record.attributes["session.id"]).toEqual(id);
+      expect(record.resource.attributes["session.id"]).toBe("resource-session");
+    },
+  );
+
+  it.each([undefined, "", 0, false, ["invalid"]])(
+    "omits invalid resource session tags (resource=%j)",
+    (id) => {
+      const envelope = logToEnvelope(
+        makeLog({ resource: resourceFromAttributes({ "session.id": id }) }),
+        instrumentationKey,
+      );
+      expect(envelope.tags).not.toHaveProperty("ai.session.id");
     },
   );
 
@@ -169,9 +277,28 @@ describe("Azure Monitor log envelope mapping", () => {
       name: body ?? "Other",
       duration: "00:00:00.2500000",
       referredUri: "https://example.test/products",
-      properties: undefined,
+      properties: { refUri: "https://example.test/products" },
       measurements: undefined,
     });
+  });
+
+  it("applies the custom-dimension byte limit to page-view refUri", () => {
+    const referrer = "€".repeat(3_000);
+    const envelope = logToEnvelope(
+      makeLog({
+        eventName: "browser.page_view",
+        attributes: { "browser.page_view.referrer": referrer },
+      }),
+      instrumentationKey,
+    );
+    const baseData = envelope.data.baseData as PageViewData;
+    const refUri = baseData.properties?.refUri;
+
+    expect(baseData.referredUri).toBe(referrer);
+    expect(refUri).not.toContain("�");
+    expect(new TextEncoder().encode(refUri).byteLength).toBeLessThanOrEqual(
+      MaxPropertyLengths.THIRTEEN_BIT,
+    );
   });
 
   it("maps exception semantic attributes and severity", () => {
@@ -195,7 +322,9 @@ describe("Azure Monitor log envelope mapping", () => {
     );
 
     expect(envelope.name).toBe("Microsoft.ApplicationInsights.Exception");
-    expect(envelope.tags["ai.internal.sdkVersion"]).toBe(`mot${OPENTELEMETRY_BROWSER_VERSION}`);
+    expect(envelope.tags["ai.internal.sdkVersion"]).toBe(
+      `browser:otel${SDK_INFO[ATTR_TELEMETRY_SDK_VERSION]}:mot${OPENTELEMETRY_BROWSER_VERSION}`,
+    );
     expect(envelope.data).toEqual({
       baseType: "ExceptionData",
       baseData: {
@@ -617,7 +746,9 @@ describe("Azure Monitor log envelope mapping", () => {
           url: "https://shop.example.test/cart",
           duration: "00:00:00.4252500",
           referredUri: "https://shop.example.test/products",
-          properties: { "browser.page_view.same_document": "true" },
+          properties: {
+            refUri: "https://shop.example.test/products",
+          },
           measurements: undefined,
         },
       });
@@ -629,6 +760,7 @@ describe("Azure Monitor log envelope mapping", () => {
       makeLog({
         eventName: "browser.page_view",
         attributes: {
+          ...pageViewDiagnostics,
           "browser.page_view.name": "Cart",
           "browser.page_view.duration": 425.25,
           "browser.page_view.performance.total": 425.25,
@@ -637,7 +769,8 @@ describe("Azure Monitor log envelope mapping", () => {
           "browser.page_view.performance.received_response": 50.25,
           "browser.page_view.performance.dom_processing": 249.5,
           "url.full": "https://shop.example.test/cart",
-          "browser.page_view.same_document": false,
+          tenant: "north",
+          itemCount: 2,
           [AZURE_MONITOR_SAMPLE_RATE]: 25,
         },
       }),
@@ -652,7 +785,6 @@ describe("Azure Monitor log envelope mapping", () => {
       iKey: instrumentationKey,
       sampleRate: 25,
       tags: envelopes[0]?.tags,
-      ver: 1,
       data: {
         baseType: "PageviewPerformanceData",
         baseData: {
@@ -665,12 +797,49 @@ describe("Azure Monitor log envelope mapping", () => {
           sentRequest: "00:00:00.1005000",
           receivedResponse: "00:00:00.0502500",
           domProcessing: "00:00:00.2495000",
-          properties: { "browser.page_view.same_document": "false" },
-          measurements: undefined,
+          properties: { tenant: "north" },
+          measurements: { itemCount: 2 },
         },
       },
     });
     expect(envelopes[1]?.tags["ai.operation.id"]).toBe(spanContext.traceId);
+    expect(envelopes[1]?.tags).toMatchObject({
+      "ai.device.type": "Browser",
+      "ai.device.id": "browser",
+    });
+    expect(envelopes[0]?.data.baseData.properties).toEqual({ tenant: "north" });
+    expect(envelopes[0]?.data.baseData.measurements).toEqual({ itemCount: 2 });
+  });
+
+  it("omits default envelope fields and diagnostic custom fields from both page-view envelopes", () => {
+    const envelopes = logToEnvelopes(
+      makeLog({
+        eventName: "browser.page_view",
+        attributes: {
+          ...pageViewDiagnostics,
+          "browser.page_view.performance.total": 170,
+          "browser.page_view.performance.network_connect": 20,
+          "browser.page_view.performance.sent_request": 50,
+          "browser.page_view.performance.received_response": 30,
+          "browser.page_view.performance.dom_processing": 70,
+          [AZURE_MONITOR_SAMPLE_RATE]: 100,
+        },
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelopes).toHaveLength(2);
+    for (const envelope of envelopes) {
+      const serialized = JSON.parse(JSON.stringify(envelope));
+      expect(serialized).not.toHaveProperty("sampleRate");
+      expect(serialized).not.toHaveProperty("ver");
+      expect(serialized.data.baseData).not.toHaveProperty("properties");
+      expect(serialized.data.baseData).not.toHaveProperty("measurements");
+      expect(serialized.tags).toMatchObject({
+        "ai.device.type": "Browser",
+        "ai.device.id": "browser",
+      });
+    }
   });
 
   it("does not emit page-view performance when any phase is missing", () => {
@@ -790,6 +959,58 @@ describe("Azure Monitor log envelope mapping", () => {
         measurements: { total: 42.5 },
       },
     });
+  });
+
+  it("truncates message, event name, and property values to Breeze schema limits", () => {
+    const message = logToEnvelope(
+      makeLog({ body: "m".repeat(40_000), attributes: { detail: "p".repeat(10_000) } }),
+      instrumentationKey,
+    );
+    const event = logToEnvelope(
+      makeLog({ eventName: "e".repeat(1_000), attributes: {} }),
+      instrumentationKey,
+    );
+
+    expect((message.data.baseData as { message: string }).message).toHaveLength(32_768);
+    expect(message.data.baseData.properties?.detail).toHaveLength(8_192);
+    expect((event.data.baseData as { name: string }).name).toHaveLength(512);
+  });
+
+  it("does not split surrogate pairs at message and event-name limits", () => {
+    const message = logToEnvelope(
+      makeLog({ body: `${"m".repeat(32_767)}\u{1f600}` }),
+      instrumentationKey,
+    );
+    const event = logToEnvelope(
+      makeLog({ eventName: `${"e".repeat(511)}\u{1f600}` }),
+      instrumentationKey,
+    );
+
+    expect((message.data.baseData as { message: string }).message).toBe("m".repeat(32_767));
+    expect((event.data.baseData as { name: string }).name).toBe("e".repeat(511));
+  });
+
+  it("does not emit unpaired surrogates from exception byte-budget truncation", () => {
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+    const attributes = { "exception.message": "\u{1f600}".repeat(100) };
+
+    for (let maxSize = 50; maxSize <= 256; maxSize++) {
+      const message = createExceptionDetails(attributes, undefined, maxSize).message;
+      expect(decoder.decode(encoder.encode(message))).toBe(message);
+    }
+  });
+
+  it("slices custom dimension values at the Breeze UTF-8 byte limit", () => {
+    const envelope = logToEnvelope(
+      makeLog({ attributes: { detail: "\u20ac".repeat(3_000) } }),
+      instrumentationKey,
+    );
+    const detail = envelope.data.baseData.properties?.detail;
+
+    expect(detail).toBe("\u20ac".repeat(2_730));
+    expect(detail).not.toContain("\ufffd");
+    expect(new TextEncoder().encode(detail).byteLength).toBeLessThanOrEqual(8_192);
   });
 
   it("maps other named logs to EventData regardless of body or severity", () => {

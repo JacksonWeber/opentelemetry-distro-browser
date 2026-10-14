@@ -146,6 +146,9 @@ it.each([
           language: "JavaScript",
         });
         expect(Object.keys(envelope.tags)).toEqual(["ai.internal.sdkVersion"]);
+        expect(envelope.tags["ai.internal.sdkVersion"]).toBe(
+          customer[0].tags["ai.internal.sdkVersion"],
+        );
       }
       expect(JSON.stringify(stats)).not.toMatch(
         /private-user|private-account|application span|application log|ai\.operation|ai\.session/,

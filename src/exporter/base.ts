@@ -6,7 +6,11 @@ import { ExportResultCode } from "@opentelemetry/core";
 import { isSamplingRejection, parseBreezeResponse } from "./breezeUtils.js";
 import { isUnloading } from "./common.js";
 import { isValidInstrumentationKey, parseConnectionString } from "./connectionStringParser.js";
-import { MAX_BATCH_SIZE_IN_BYTES, MAX_BEACON_BODY_SIZE } from "./constants.js";
+import {
+  MAX_BATCH_SIZE_IN_BYTES,
+  MAX_BEACON_BODY_SIZE,
+  MAX_PENDING_KEEPALIVE_BODY_SIZE,
+} from "./constants.js";
 import { Sender, type SenderResultType } from "./sender.js";
 import { createInternalSdkStats, type InternalSdkStats } from "./sdkStats.js";
 import { getInternalSdkStatsConfiguration } from "./sdkStatsConfiguration.js";
@@ -69,12 +73,12 @@ export class AzureMonitorExportClient {
     }
 
     const unloading = isUnloading();
-    let requests: ReturnType<typeof createBatchRequests>;
+    let batchResult: ReturnType<typeof createBatchRequests>;
     try {
-      requests = createBatchRequests(
+      batchResult = createBatchRequests(
         envelopes,
-        unloading ? MAX_BEACON_BODY_SIZE : MAX_BATCH_SIZE_IN_BYTES,
-        !unloading,
+        unloading ? MAX_PENDING_KEEPALIVE_BODY_SIZE : MAX_BATCH_SIZE_IN_BYTES,
+        unloading,
       );
     } catch (error) {
       callback({
@@ -84,7 +88,7 @@ export class AzureMonitorExportClient {
       return;
     }
     const operation = Promise.allSettled(
-      requests.map(({ body, envelopes: batchEnvelopes }) =>
+      batchResult.requests.map(({ body, envelopes: batchEnvelopes }) =>
         this.sender.send({
           body,
           contentType: CONTENT_TYPE,
@@ -99,7 +103,19 @@ export class AzureMonitorExportClient {
           if (result.status === "rejected") throw result.reason;
           fulfilled.push(result.value);
         }
-        return toExportResult(fulfilled);
+        const exportResult = toExportResult(fulfilled);
+        if (
+          exportResult.code === ExportResultCode.FAILED ||
+          batchResult.droppedEnvelopeCount === 0
+        ) {
+          return exportResult;
+        }
+        return {
+          code: ExportResultCode.FAILED,
+          error: new Error(
+            `Unload payload exceeded the aggregate beacon limit; delivered ${envelopes.length - batchResult.droppedEnvelopeCount} of ${envelopes.length} envelopes.`,
+          ),
+        };
       })
       .catch((error: unknown): ExportResult => ({
         code: ExportResultCode.FAILED,
@@ -129,12 +145,44 @@ export class AzureMonitorExportClient {
 function createBatchRequests(
   envelopes: readonly AzureMonitorEnvelope[],
   maxBatchSize: number,
-  allowMultipleBatches: boolean,
-): Array<{
-  body: Uint8Array<ArrayBuffer>;
-  envelopes: readonly AzureMonitorEnvelope[];
-}> {
+  enforceMaxBatchSize: boolean,
+): {
+  requests: Array<{
+    body: Uint8Array<ArrayBuffer>;
+    envelopes: readonly AzureMonitorEnvelope[];
+  }>;
+  droppedEnvelopeCount: number;
+} {
   const encoder = new TextEncoder();
+  if (enforceMaxBatchSize) {
+    if (envelopes.length === 0) return { requests: [], droppedEnvelopeCount: 0 };
+    const original = serializeBatch(envelopes, encoder);
+    const fitted =
+      original.size <= MAX_BEACON_BODY_SIZE
+        ? original
+        : fitBatchCustomFields(envelopes, MAX_BEACON_BODY_SIZE, encoder);
+    let deliverable = fitted;
+    if (fitted.size > MAX_BEACON_BODY_SIZE) {
+      const subset = selectEnvelopeSubset(fitted.envelopes, MAX_BEACON_BODY_SIZE, encoder);
+      deliverable = fitBatchCustomFields(
+        subset.indexes.map((index) => envelopes[index]),
+        MAX_BEACON_BODY_SIZE,
+        encoder,
+      );
+    }
+    if (deliverable.envelopes.length === 0) {
+      throw new RangeError(
+        `Unload payload size ${fitted.size} exceeds the ${MAX_BEACON_BODY_SIZE} byte aggregate beacon limit.`,
+      );
+    }
+    return {
+      requests: [
+        { body: encoder.encode(deliverable.serialized), envelopes: deliverable.envelopes },
+      ],
+      droppedEnvelopeCount: fitted.envelopes.length - deliverable.envelopes.length,
+    };
+  }
+
   const requests: Array<{
     body: Uint8Array<ArrayBuffer>;
     envelopes: readonly AzureMonitorEnvelope[];
@@ -157,40 +205,68 @@ function createBatchRequests(
   for (const envelope of envelopes) {
     // Normal exports treat maxBatchSize as a split threshold only. A single oversized envelope is
     // still sent on its own so ingestion can report a per-item failure; rejecting it locally would
-    // hide that diagnostic. Only unload (beacon) exports enforce a hard aggregate limit.
+    // hide that diagnostic.
     const separatorSize = batch.length === 0 ? 0 : 1;
-    const {
-      envelope: fittedEnvelope,
-      serialized,
-      size: serializedSize,
-    } = allowMultipleBatches
-      ? serializeEnvelope(envelope, encoder)
-      : fitEnvelopeCustomFields(envelope, maxBatchSize - batchSize - separatorSize, encoder);
-    if (!allowMultipleBatches && serializedSize + 2 > maxBatchSize) {
-      throw new RangeError(
-        `Single-envelope payload size ${serializedSize + 2}, including JSON array brackets, exceeds the ${maxBatchSize} byte limit.`,
-      );
-    }
+    const { serialized, size: serializedSize } = serializeEnvelope(envelope, encoder);
     if (batch.length > 0 && batchSize + separatorSize + serializedSize > maxBatchSize) {
-      if (!allowMultipleBatches) {
-        throw new RangeError(
-          `Unload payload size ${batchSize + separatorSize + serializedSize} exceeds the ${maxBatchSize} byte aggregate limit.`,
-        );
-      }
       flush();
     }
-    batch.push(fittedEnvelope);
+    batch.push(envelope);
     serializedBatch.push(serialized);
     batchSize += (batch.length === 1 ? 0 : 1) + serializedSize;
   }
   flush();
-  return requests;
+  return { requests, droppedEnvelopeCount: 0 };
 }
 
 interface SerializedEnvelope {
   envelope: AzureMonitorEnvelope;
   serialized: string;
   size: number;
+}
+
+interface SerializedBatch {
+  envelopes: readonly AzureMonitorEnvelope[];
+  serialized: string;
+  size: number;
+}
+
+interface SerializedEnvelopeSubset extends SerializedBatch {
+  indexes: readonly number[];
+}
+
+function serializeBatch(
+  envelopes: readonly AzureMonitorEnvelope[],
+  encoder: TextEncoder,
+): SerializedBatch {
+  const serialized = JSON.stringify(envelopes);
+  return { envelopes, serialized, size: encoder.encode(serialized).byteLength };
+}
+
+function selectEnvelopeSubset(
+  envelopes: readonly AzureMonitorEnvelope[],
+  maxBatchSize: number,
+  encoder: TextEncoder,
+): SerializedEnvelopeSubset {
+  const selected: AzureMonitorEnvelope[] = [];
+  const indexes: number[] = [];
+  const serializedEnvelopes: string[] = [];
+  let size = 2;
+  for (const [index, envelope] of envelopes.entries()) {
+    const serializedEnvelope = serializeEnvelope(envelope, encoder);
+    const separatorSize = selected.length === 0 ? 0 : 1;
+    if (size + separatorSize + serializedEnvelope.size > maxBatchSize) continue;
+    selected.push(envelope);
+    indexes.push(index);
+    serializedEnvelopes.push(serializedEnvelope.serialized);
+    size += separatorSize + serializedEnvelope.size;
+  }
+  return {
+    envelopes: selected,
+    indexes,
+    serialized: `[${serializedEnvelopes.join(",")}]`,
+    size,
+  };
 }
 
 function serializeEnvelope(
@@ -201,65 +277,66 @@ function serializeEnvelope(
   return { envelope, serialized, size: encoder.encode(serialized).byteLength };
 }
 
-function fitEnvelopeCustomFields(
-  envelope: AzureMonitorEnvelope,
-  maxSerializedSize: number,
+function fitBatchCustomFields(
+  envelopes: readonly AzureMonitorEnvelope[],
+  maxBatchSize: number,
   encoder: TextEncoder,
-): SerializedEnvelope {
-  const original = serializeEnvelope(envelope, encoder);
-  if (original.size <= maxSerializedSize) return original;
+): SerializedBatch {
+  const original = serializeBatch(envelopes, encoder);
+  if (original.size <= maxBatchSize) return original;
 
-  const sourceBaseData = envelope.data.baseData;
-  const properties = sourceBaseData.properties ? { ...sourceBaseData.properties } : undefined;
-  const measurements = sourceBaseData.measurements ? { ...sourceBaseData.measurements } : undefined;
-  if (!properties && !measurements) return original;
-
-  // Remaining entry counts avoid re-enumerating keys after every removal.
-  const remaining = [
-    properties ? Object.keys(properties).length : 0,
-    measurements ? Object.keys(measurements).length : 0,
-  ];
-  const createFittedEnvelope = (): AzureMonitorEnvelope => {
-    const baseData: AzureMonitorBaseData = {
-      ...sourceBaseData,
-      properties: remaining[0] > 0 ? properties : undefined,
-      measurements: remaining[1] > 0 ? measurements : undefined,
+  const customFields: Array<{ size: number; remove: () => number }> = [];
+  const createFittedEnvelopes = envelopes.map((envelope) => {
+    const sourceBaseData = envelope.data.baseData;
+    const properties = sourceBaseData.properties ? { ...sourceBaseData.properties } : undefined;
+    const measurements = sourceBaseData.measurements
+      ? { ...sourceBaseData.measurements }
+      : undefined;
+    const remaining = [
+      properties ? Object.keys(properties).length : 0,
+      measurements ? Object.keys(measurements).length : 0,
+    ];
+    [properties, measurements].forEach((fields, index) => {
+      if (!fields) return;
+      const wrapperSize =
+        encoder.encode(JSON.stringify(index === 0 ? "properties" : "measurements")).byteLength + 3;
+      for (const key of Object.keys(fields)) {
+        customFields.push({
+          size: encoder.encode(JSON.stringify([key, fields[key]])).byteLength,
+          remove: () => {
+            delete fields[key];
+            return --remaining[index] === 0 ? wrapperSize : 0;
+          },
+        });
+      }
+    });
+    return (): AzureMonitorEnvelope => {
+      const baseData: AzureMonitorBaseData = {
+        ...sourceBaseData,
+        properties: remaining[0] > 0 ? properties : undefined,
+        measurements: remaining[1] > 0 ? measurements : undefined,
+      };
+      return { ...envelope, data: { ...envelope.data, baseData } };
     };
-    return {
-      ...envelope,
-      data: { ...envelope.data, baseData },
-    };
-  };
-  const customFields: Array<{ size: number; remove: () => boolean }> = [];
-  [properties, measurements].forEach((fields, index) => {
-    if (!fields) return;
-    for (const key of Object.keys(fields)) {
-      customFields.push({
-        size: encoder.encode(JSON.stringify([key, fields[key]])).byteLength,
-        remove: () => {
-          delete fields[key];
-          return --remaining[index] === 0;
-        },
-      });
-    }
   });
   customFields.sort((left, right) => right.size - left.size);
 
   // Re-serialize only when the estimate might fit. Removing a defined `"key":value` entry and its
-  // comma saves exactly the `["key",value]` size minus 1 byte (undefined values save nothing), so
-  // the estimate never exceeds the real size and no fitting state is skipped. Emptying an object
-  // also drops its wrapper, so that case is always measured. The estimate starts from the
-  // normalized envelope because empty containers are omitted there.
-  let estimatedSize = serializeEnvelope(createFittedEnvelope(), encoder).size;
+  // comma saves exactly the `["key",value]` size minus 1 byte (undefined values save nothing).
+  // Emptying an object also removes its serialized property-name wrapper. The estimate starts from
+  // the normalized batch because empty containers are omitted there.
+  const createBatch = (): AzureMonitorEnvelope[] =>
+    createFittedEnvelopes.map((createEnvelope) => createEnvelope());
+  let fitted = serializeBatch(createBatch(), encoder);
+  let estimatedSize = fitted.size;
   for (const field of customFields) {
-    const emptied = field.remove();
-    estimatedSize -= field.size - 1;
-    if (!emptied && estimatedSize > maxSerializedSize) continue;
-    const fitted = serializeEnvelope(createFittedEnvelope(), encoder);
-    if (fitted.size <= maxSerializedSize) return fitted;
+    estimatedSize -= field.size - 1 + field.remove();
+    if (estimatedSize > maxBatchSize) continue;
+    fitted = serializeBatch(createBatch(), encoder);
+    if (fitted.size <= maxBatchSize) return fitted;
     estimatedSize = fitted.size;
   }
-  return serializeEnvelope(createFittedEnvelope(), encoder);
+  return fitted;
 }
 
 function toExportResult(results: readonly SenderResultType[]): ExportResult {

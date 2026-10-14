@@ -4,7 +4,9 @@
 import type { ExportResult } from "@opentelemetry/core";
 import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace-base";
 import { AzureMonitorExportClient, type AzureMonitorOptions } from "./base.js";
-import { spanToEnvelope } from "./spanUtils.js";
+import { isUnloading } from "./common.js";
+import { spanToEnvelopes } from "./spanUtils.js";
+import type { AzureMonitorEnvelope } from "./telemetryModels.js";
 
 /**
  * Exports OpenTelemetry spans to Azure Monitor.
@@ -23,10 +25,14 @@ export class AzureMonitorSpanExporter implements SpanExporter {
   }
 
   public export(spans: ReadableSpan[], callback: (result: ExportResult) => void): void {
-    this.client.export(
-      spans.map((span) => spanToEnvelope(span, this.client.instrumentationKey)),
-      callback,
-    );
+    const envelopes: AzureMonitorEnvelope[] = [];
+    const unloading = isUnloading();
+    for (const span of spans) {
+      envelopes.push(
+        ...spanToEnvelopes(span, this.client.instrumentationKey, unloading ? envelopes : undefined),
+      );
+    }
+    this.client.export(envelopes, callback);
   }
 
   public forceFlush(): Promise<void> {

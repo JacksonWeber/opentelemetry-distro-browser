@@ -58,6 +58,9 @@ const inlineJson = (value: unknown): string =>
  * initialize. Without `src`, it loads this package version's bundle from the CDN; supply the
  * matching `integrity` value from the release's `integrity.json` to verify it.
  *
+ * When the loaded bundle exposes `getInstrumentations`, as the package's browser bundles do, the
+ * loader enables its default instrumentations, `fetch` and `xhr`, alongside page views.
+ *
  * @public
  */
 export function getSdkLoaderScript(config: SdkLoaderConfig): string {
@@ -81,5 +84,5 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
     crossOrigin: config.crossOrigin ?? "anonymous",
     ...(config.integrity === undefined ? {} : { integrity: config.integrity }),
   });
-  return `!(function(w,d,c){var s=d.createElement("script");w.microsoftOpenTelemetry=new Promise(function(resolve,reject){s.src=c.src;s.crossOrigin=c.crossOrigin;if(c.integrity)s.integrity=c.integrity;s.onload=function(){var sdk=w.Microsoft&&w.Microsoft.OpenTelemetry;if(!sdk||typeof sdk.useMicrosoftOpenTelemetry!=="function"){reject(new Error("OpenTelemetry browser bundle did not expose Microsoft.OpenTelemetry"));return}Promise.resolve().then(function(){return sdk.useMicrosoftOpenTelemetry({azureMonitor:{connectionString:c.connectionString}})}).then(resolve,reject)};s.onerror=function(){reject(new Error("OpenTelemetry browser bundle failed to load: "+c.src))};d.head.appendChild(s)})})(window,document,${serialized});`;
+  return `!(function(w,d,c){var s=d.createElement("script");w.microsoftOpenTelemetry=new Promise(function(resolve,reject){s.src=c.src;s.crossOrigin=c.crossOrigin;if(c.integrity)s.integrity=c.integrity;s.onload=function(){var sdk=w.Microsoft&&w.Microsoft.OpenTelemetry;if(!sdk||typeof sdk.useMicrosoftOpenTelemetry!=="function"){reject(new Error("OpenTelemetry browser bundle did not expose Microsoft.OpenTelemetry"));return}Promise.resolve().then(function(){return typeof sdk.getInstrumentations==="function"?sdk.getInstrumentations():[]}).then(function(instrumentations){return sdk.useMicrosoftOpenTelemetry({azureMonitor:{connectionString:c.connectionString},instrumentations:instrumentations})}).then(resolve,reject)};s.onerror=function(){reject(new Error("OpenTelemetry browser bundle failed to load: "+c.src))};d.head.appendChild(s)})})(window,document,${serialized});`;
 }

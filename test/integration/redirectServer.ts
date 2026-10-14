@@ -50,6 +50,15 @@ export default async function setup(project: TestProject): Promise<() => Promise
           ...(ingestedReferrers.get(runId) ?? []),
           request.headers.referer ?? "",
         ]);
+        if (
+          envelopes.some(
+            (envelope) =>
+              (envelope as { data?: { baseData?: { message?: string } } }).data?.baseData
+                ?.message === "pending-before-navigation",
+          )
+        ) {
+          await new Promise((resolve) => setTimeout(resolve, 2_000));
+        }
         response.writeHead(200, { "content-type": "application/json" });
         response.end(
           JSON.stringify({

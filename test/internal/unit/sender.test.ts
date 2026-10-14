@@ -49,7 +49,7 @@ describe("Sender", () => {
     });
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response);
     const sender = new Sender({
-      endpoint: "https://example.test/v2.1/track",
+      endpoint: "https://dc.services.visualstudio.com/v2.1/track",
       fetch,
     });
     const body = new TextEncoder().encode("telemetry");
@@ -62,13 +62,79 @@ describe("Sender", () => {
     });
     expect(fetch).toHaveBeenCalledOnce();
     const [endpoint, init] = fetch.mock.calls[0];
-    expect(endpoint).toBe("https://example.test/v2.1/track");
+    expect(endpoint).toBe("https://dc.services.visualstudio.com/v2.1/track");
     expect(init).toMatchObject({
       method: "POST",
       headers: { "content-type": "application/json", "content-encoding": "gzip" },
       keepalive: false,
     });
     await expect(decompress(init?.body as Uint8Array<ArrayBuffer>)).resolves.toEqual(body);
+  });
+
+  it.each([
+    "https://dc.services.visualstudio.com/v2/track",
+    "https://eastus-8.in.applicationinsights.azure.com/v2/track",
+    "https://dc.applicationinsights.microsoft.com/v2/track",
+    "https://WestUS.Monitor.Azure.com./v2/track",
+    "https://usgovvirginia.in.applicationinsights.azure.us/v2/track",
+    "https://dc.applicationinsights.us/v2/track",
+    "https://chinaeast2.in.applicationinsights.azure.cn/v2/track",
+    "https://dc.services.visualstudio.com:443/v2/track",
+  ])("compresses payloads for Azure Monitor ingestion endpoint %s", async (endpoint) => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(new Response(null, { status: 200 }));
+    const sender = new Sender({ endpoint, fetch });
+
+    await sender.send({ body: new TextEncoder().encode("telemetry"), contentType: "text/plain" });
+
+    expect(fetch.mock.calls[0][1]?.headers).toEqual({
+      "content-type": "text/plain",
+      "content-encoding": "gzip",
+    });
+  });
+
+  it.each([
+    "https://example.test/v2/track",
+    "https://proxy.contoso.com/v2/track",
+    "http://dc.services.visualstudio.com/v2/track",
+    "https://dc.services.visualstudio.com:8443/v2/track",
+    "https://applicationinsights.azure.com.example.test/v2/track",
+    "https://evilapplicationinsights.azure.com/v2/track",
+    "https://dc.services.visualstudio.com@proxy.contoso.com/v2/track",
+    "http://localhost:3000/v2/track",
+  ])("sends uncompressed JSON to custom endpoint %s", async (endpoint) => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(new Response(null, { status: 200 }));
+    const sender = new Sender({ endpoint, fetch });
+    const body = new TextEncoder().encode("telemetry");
+
+    await sender.send({ body, contentType: "application/json" });
+
+    expect(fetch.mock.calls[0][1]).toMatchObject({
+      headers: { "content-type": "application/json" },
+      body,
+    });
+  });
+
+  it("keeps compressing after a trusted redirect", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(
+        redirectedResponse("https://eastus-8.in.applicationinsights.azure.com/v2/track"),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+    const sender = new Sender({ endpoint: "https://dc.services.visualstudio.com/v2/track", fetch });
+    const request = { body: new TextEncoder().encode("telemetry"), contentType: "text/plain" };
+
+    await sender.send(request);
+    await sender.send(request);
+
+    expect(fetch.mock.calls[1][1]?.headers).toEqual({
+      "content-type": "text/plain",
+      "content-encoding": "gzip",
+    });
   });
 
   it.each([
@@ -83,6 +149,18 @@ describe("Sender", () => {
     [
       "https://usgovvirginia.monitor.azure.us/v2.1/track",
       "https://usgovvirginia.dc.applicationinsights.azure.us/v2.1/track",
+    ],
+    [
+      "https://dc.applicationinsights.microsoft.com/v2.1/track",
+      "https://eastus-8.in.applicationinsights.azure.com/v2.1/track",
+    ],
+    [
+      "https://dc.applicationinsights.us/v2.1/track",
+      "https://usgovvirginia.in.applicationinsights.azure.us/v2.1/track",
+    ],
+    [
+      "https://usgovvirginia.in.applicationinsights.azure.us/v2.1/track",
+      "https://dc.applicationinsights.us/v2.1/track",
     ],
     [
       "https://chinaeast2.monitor.azure.cn/v2.1/track",
@@ -215,14 +293,14 @@ describe("Sender", () => {
         .fn<typeof globalThis.fetch>()
         .mockResolvedValue(new Response(null, { status: 200 }));
       const sender = new Sender({
-        endpoint: "https://example.test/v2.1/track",
+        endpoint: "https://dc.services.visualstudio.com/v2.1/track",
         fetch,
       });
       const body = new TextEncoder().encode("telemetry");
 
       await sender.send({ body, contentType: "application/json" });
 
-      expect(fetch).toHaveBeenCalledWith("https://example.test/v2.1/track", {
+      expect(fetch).toHaveBeenCalledWith("https://dc.services.visualstudio.com/v2.1/track", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body,
@@ -1058,7 +1136,7 @@ describe("Sender", () => {
       )
       .mockResolvedValueOnce(new Response(null, { status: 200 }));
     const sender = new Sender({
-      endpoint: "https://example.test/v2.1/track",
+      endpoint: "https://dc.services.visualstudio.com/v2.1/track",
       fetch,
       delay: () => Promise.resolve(),
       random: () => 0,

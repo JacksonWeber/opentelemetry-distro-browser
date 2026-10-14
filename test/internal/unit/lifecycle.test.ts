@@ -25,7 +25,6 @@ it.each(["spans", "logs"] as const)(
   "stops SDK stats timers after a %s export fails during shutdown",
   async (signal) => {
     const clock = installFakeClock();
-    const diagnostic = vi.spyOn(diag, "error");
     const fetch = vi.fn<typeof globalThis.fetch>(async (url) => {
       if (String(url).startsWith("https://customer.example.test")) {
         return new Response(null, { status: 400 });
@@ -48,12 +47,7 @@ it.each(["spans", "logs"] as const)(
     handles.delete(handle);
     if (signal === "spans") trace.getTracer("stats-shutdown").startSpan("rejected").end();
     else logs.getLogger("stats-shutdown").emit({ body: "rejected" });
-    if (signal === "spans") await expect(handle.shutdown()).rejects.toThrow();
-    else {
-      // The upstream log processor reports export failures through diagnostics instead of rejection.
-      await expect(handle.shutdown()).resolves.toBeUndefined();
-      expect(diagnostic).toHaveBeenCalled();
-    }
+    await expect(handle.shutdown()).rejects.toThrow();
     expect(
       fetch.mock.calls.filter(([url]) => url === "https://stats.example.test/v2/track"),
     ).toHaveLength(1);
@@ -75,7 +69,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.useRealTimers();
-  history.replaceState(null, "", originalUrl);
+  if (location.href !== originalUrl) history.replaceState(null, "", originalUrl);
   for (const result of results) {
     if (result.status === "rejected") throw result.reason;
   }

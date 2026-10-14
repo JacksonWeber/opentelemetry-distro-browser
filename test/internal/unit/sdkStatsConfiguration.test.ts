@@ -38,6 +38,7 @@ it.each([
 it.each([
   "https://usgovvirginia-0.in.applicationinsights.azure.us",
   "https://usgovarizona.monitor.azure.us",
+  "https://dc.applicationinsights.us",
   "https://dc.applicationinsights.usgovcloudapi.net",
   "https://usnateast.dc.applicationinsights.azure.eaglex.ic.gov",
   "https://usseceast.dc.applicationinsights.azure.microsoft.scloud",

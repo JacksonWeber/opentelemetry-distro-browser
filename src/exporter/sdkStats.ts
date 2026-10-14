@@ -4,7 +4,7 @@
 import { diag } from "@opentelemetry/api";
 import { callWithTimeout } from "@opentelemetry/core";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../shared/constants.js";
-import { createEnvelope, isUnloading } from "./common.js";
+import { createEnvelope, getSdkVersion, isUnloading } from "./common.js";
 import { isSupportedEndpoint, isValidInstrumentationKey } from "./connectionStringParser.js";
 import { Sender } from "./sender.js";
 import { getInternalSdkStatsConfiguration } from "./sdkStatsConfiguration.js";
@@ -186,7 +186,7 @@ export function createInternalSdkStats(
           currentRoute.instrumentationKey,
           "Microsoft.ApplicationInsights.Metric",
           time,
-          { "ai.internal.sdkVersion": properties.version },
+          { "ai.internal.sdkVersion": getSdkVersion() },
           "MetricData",
           {
             ver: 2,

@@ -23,6 +23,19 @@ export async function runLifecycleTasks(
   if (errors.length > 1) throw new AggregateError(errors, message);
 }
 
+/** Waits for every already-bounded operation without imposing a second deadline. */
+export async function waitForAll(
+  operations: readonly Promise<void>[],
+  message: string,
+): Promise<void> {
+  const results = await Promise.allSettled(operations);
+  const errors = results.flatMap((result) =>
+    result.status === "rejected" ? [result.reason as unknown] : [],
+  );
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, message);
+}
+
 /** Installs one pair of unload listeners for all active instances in this realm. */
 export function subscribeToUnload(flush: () => void): () => void {
   const registry = getSharedRegistry();

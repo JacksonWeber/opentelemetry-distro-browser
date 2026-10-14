@@ -16,26 +16,47 @@ const openSnippetPage = async (scenario: "valid" | "tampered" | "missing") => {
   return { ...result, runId, captureUrl };
 };
 
-async function waitForEnvelopes(captureUrl: string, names: string[]): Promise<unknown[]> {
+interface CapturedEnvelope {
+  name?: string;
+}
+
+async function waitForEnvelopes(
+  captureUrl: string,
+  isComplete: (envelopes: CapturedEnvelope[]) => boolean,
+): Promise<unknown[]> {
   const deadline = Date.now() + 5_000;
-  let envelopes: { name?: string }[] = [];
+  let envelopes: CapturedEnvelope[] = [];
   do {
     envelopes = (await fetch(captureUrl).then((response) => response.json())) as typeof envelopes;
-    if (names.every((name) => envelopes.some((envelope) => envelope.name === name))) break;
+    if (isComplete(envelopes)) break;
     await new Promise((resolve) => setTimeout(resolve, 50));
   } while (Date.now() < deadline);
   return envelopes;
 }
 
-it("loads the CDN bundle into a plain HTML page under CSP and sends Azure Monitor telemetry", async () => {
+it("loads the CDN bundle into a plain HTML page under CSP and sends page view, span, fetch and XHR telemetry", async () => {
   const { state, diagnostics, runId, captureUrl } = await openSnippetPage("valid");
 
   expect(state, diagnostics.join("\n")).toBe("ready");
   expect(diagnostics.filter((line) => /Content Security Policy|CSP/i.test(line))).toEqual([]);
-  const envelopes = await waitForEnvelopes(captureUrl, [
-    "Microsoft.ApplicationInsights.PageView",
-    "Microsoft.ApplicationInsights.RemoteDependency",
-  ]);
+  const envelopes = await waitForEnvelopes(
+    captureUrl,
+    (captured) =>
+      captured.some(({ name }) => name === "Microsoft.ApplicationInsights.PageView") &&
+      captured.filter(({ name }) => name === "Microsoft.ApplicationInsights.RemoteDependency")
+        .length >= 3,
+  );
+  const httpDependency = (runIdQuery: string) =>
+    expect.objectContaining({
+      name: "Microsoft.ApplicationInsights.RemoteDependency",
+      data: expect.objectContaining({
+        baseData: expect.objectContaining({
+          name: "GET /captured",
+          type: "Http",
+          data: expect.stringContaining(`/captured?runId=${runIdQuery}`),
+        }),
+      }),
+    });
   expect(envelopes).toEqual(
     expect.arrayContaining([
       expect.objectContaining({
@@ -51,6 +72,8 @@ it("loads the CDN bundle into a plain HTML page under CSP and sends Azure Monito
           }),
         }),
       }),
+      httpDependency("snippet-fetch"),
+      httpDependency("snippet-xhr"),
     ]),
   );
 });

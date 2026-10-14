@@ -14,7 +14,7 @@ import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { resourceFromAttributes } from "@opentelemetry/resources";
-import { BatchLogRecordProcessor } from "@opentelemetry/sdk-logs";
+import { BrowserBatchLogRecordProcessor } from "../../../src/browserBatchLogRecordProcessor.js";
 import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
@@ -136,7 +136,7 @@ it("adds Azure Monitor batch exporters after context enrichment and before calle
   expect(sdkOptions.logRecordProcessors[0]).toEqual(
     expect.objectContaining({ onEmit: expect.any(Function) }),
   );
-  expect(sdkOptions.logRecordProcessors[1]).toBeInstanceOf(BatchLogRecordProcessor);
+  expect(sdkOptions.logRecordProcessors[1]).toBeInstanceOf(BrowserBatchLogRecordProcessor);
   expect(sdkOptions.logRecordProcessors[1]).not.toBeInstanceOf(
     AzureMonitorSamplingLogRecordProcessor,
   );
@@ -350,7 +350,7 @@ it("owns and force flushes default OTLP processors without per-processor hide fl
   const spanExport = vi.spyOn(OTLPTraceExporter.prototype, "export").mockImplementation(succeed);
   const logExport = vi.spyOn(OTLPLogExporter.prototype, "export").mockImplementation(succeed);
   const spanFlush = vi.spyOn(BatchSpanProcessor.prototype, "forceFlush");
-  const logFlush = vi.spyOn(BatchLogRecordProcessor.prototype, "forceFlush");
+  const logFlush = vi.spyOn(BrowserBatchLogRecordProcessor.prototype, "forceFlush");
   const handle = await useMicrosoftOpenTelemetry({ pageView: { enabled: false } });
   handles.add(handle);
 
@@ -361,7 +361,7 @@ it("owns and force flushes default OTLP processors without per-processor hide fl
   ]);
   expect(config?.logRecordProcessors).toEqual([
     expect.objectContaining({ onEmit: expect.any(Function) }),
-    expect.any(BatchLogRecordProcessor),
+    expect.any(BrowserBatchLogRecordProcessor),
   ]);
 
   trace.getTracer("default-otlp").startSpan("operation").end();

@@ -4,13 +4,15 @@
 import { context, diag, propagation, trace, type TracerProvider } from "@opentelemetry/api";
 import { logs, type LoggerProvider as ApiLoggerProvider } from "@opentelemetry/api-logs";
 import { W3CTraceContextPropagator } from "@opentelemetry/core";
-import { BatchLogRecordProcessor, LoggerProvider } from "@opentelemetry/sdk-logs";
+import { LoggerProvider } from "@opentelemetry/sdk-logs";
+import { BrowserBatchLogRecordProcessor } from "../../../src/browserBatchLogRecordProcessor.js";
 import { BasicTracerProvider, BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { StackContextManager } from "@opentelemetry/sdk-trace-web";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useMicrosoftOpenTelemetry, type BrowserInstrumentation } from "../../../src/index.js";
 import { getRegisteredGlobal, getSharedRegistry } from "../../../src/shared/globalOwnership.js";
 import { startTelemetryInstance } from "../../../src/routing/telemetryInstance.js";
+import { USER_STORAGE_KEY } from "../../../src/user/constants.js";
 import { createInMemoryPipeline } from "../../fixtures/telemetry.js";
 
 const apiKey = Symbol.for("opentelemetry.js.api.1");
@@ -18,9 +20,12 @@ const distroKey = Symbol.for("@microsoft/opentelemetry-browser");
 const realm = globalThis as typeof globalThis & { [key: symbol]: unknown };
 const cleanup: Array<() => Promise<void>> = [];
 let previousSession: string | null;
+let previousUser: string | null;
 
 beforeEach(() => {
   previousSession = localStorage.getItem("opentelemetry-session");
+  previousUser = localStorage.getItem(USER_STORAGE_KEY);
+  localStorage.removeItem(USER_STORAGE_KEY);
 });
 
 afterEach(async () => {
@@ -38,6 +43,8 @@ afterEach(async () => {
     vi.useRealTimers();
     if (previousSession === null) localStorage.removeItem("opentelemetry-session");
     else localStorage.setItem("opentelemetry-session", previousSession);
+    if (previousUser === null) localStorage.removeItem(USER_STORAGE_KEY);
+    else localStorage.setItem(USER_STORAGE_KEY, previousUser);
   }
 });
 
@@ -195,12 +202,58 @@ it("allows concurrent initialization without replacing routers or mixing instrum
   await Promise.all(handles.map((handle) => handle.forceFlush()));
   expect(first.spanExporter.getFinishedSpans().map((span) => span.name)).toEqual(["a"]);
   expect(second.spanExporter.getFinishedSpans().map((span) => span.name)).toEqual(["b"]);
+  const anonymousId = first.spanExporter.getFinishedSpans()[0].attributes["enduser.pseudo.id"];
+  expect(anonymousId).toMatch(/^[0-9a-f]{32}$/);
+  for (const pipeline of [first, second]) {
+    expect(pipeline.spanExporter.getFinishedSpans()[0].attributes["enduser.pseudo.id"]).toBe(
+      anonymousId,
+    );
+    expect(pipeline.logExporter.getFinishedLogRecords()[0].attributes["enduser.pseudo.id"]).toBe(
+      anonymousId,
+    );
+  }
   const router = trace.getTracerProvider();
   await handles[0].shutdown();
   trace.getTracer("same-scope").startSpan("next").end();
   await handles[1].forceFlush();
   expect(trace.getTracerProvider()).toBe(router);
   expect(second.spanExporter.getFinishedSpans().map((span) => span.name)).toEqual(["b", "next"]);
+});
+
+it("shares persisted anonymous identity across concurrent instances", async () => {
+  const first = createInMemoryPipeline();
+  const second = createInMemoryPipeline();
+  const a = probe();
+  const b = probe();
+  const handles = await Promise.all([
+    useMicrosoftOpenTelemetry({
+      ...first.options,
+      userContext: { enabled: true },
+      pageView: { enabled: false },
+      instrumentations: [a],
+    }),
+    useMicrosoftOpenTelemetry({
+      ...second.options,
+      userContext: { enabled: true },
+      pageView: { enabled: false },
+      instrumentations: [b],
+    }),
+  ]);
+  cleanup.push(...handles.map((handle) => () => handle.shutdown()));
+  a.emit("a");
+  b.emit("b");
+  await Promise.all(handles.map((handle) => handle.forceFlush()));
+
+  const firstId = first.spanExporter.getFinishedSpans()[0].attributes["enduser.pseudo.id"];
+  const secondId = second.spanExporter.getFinishedSpans()[0].attributes["enduser.pseudo.id"];
+  expect(firstId).toMatch(/^[0-9a-f]{32}$/);
+  expect(secondId).toBe(firstId);
+  expect(first.logExporter.getFinishedLogRecords()[0].attributes["enduser.pseudo.id"]).toBe(
+    firstId,
+  );
+  expect(second.logExporter.getFinishedLogRecords()[0].attributes["enduser.pseudo.id"]).toBe(
+    firstId,
+  );
 });
 
 it.each(
@@ -427,7 +480,7 @@ it("removes only new page registrations when propagation registration fails", as
 
 it("cleans up partially created owned processors before handing them to a pipeline", async () => {
   const spanShutdown = vi.spyOn(BatchSpanProcessor.prototype, "shutdown");
-  const logShutdown = vi.spyOn(BatchLogRecordProcessor.prototype, "shutdown");
+  const logShutdown = vi.spyOn(BrowserBatchLogRecordProcessor.prototype, "shutdown");
   const failure = new Error("session storage failed");
   vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
     throw failure;
@@ -435,6 +488,7 @@ it("cleans up partially created owned processors before handing them to a pipeli
   await expect(
     useMicrosoftOpenTelemetry({
       session: { enabled: true },
+      userContext: { enabled: false },
       pageView: { enabled: false },
     }),
   ).rejects.toBe(failure);
@@ -457,7 +511,7 @@ it.each(["OTLP", "Azure Monitor"])(
     };
     diag.setLogger(logger);
     const spanShutdown = vi.spyOn(BatchSpanProcessor.prototype, "shutdown");
-    const logShutdown = vi.spyOn(BatchLogRecordProcessor.prototype, "shutdown");
+    const logShutdown = vi.spyOn(BrowserBatchLogRecordProcessor.prototype, "shutdown");
     const instrumentation = probe();
     const bind = vi.spyOn(instrumentation, "setTracerProvider");
 

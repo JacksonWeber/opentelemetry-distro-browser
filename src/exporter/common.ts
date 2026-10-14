@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 
 import type { Attributes, HrTime, SpanContext } from "@opentelemetry/api";
+import { SDK_INFO } from "@opentelemetry/core";
+import { ATTR_TELEMETRY_SDK_VERSION } from "@opentelemetry/semantic-conventions";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../shared/constants.js";
 import { isNonEmptyString, selectNonEmptyString } from "../shared/isNonEmptyString.js";
 import { isPageContext } from "../shared/pageOperationContext.js";
@@ -13,8 +15,11 @@ import {
   ATTR_USER_ID,
 } from "../user/constants.js";
 import { AZURE_MONITOR_SAMPLE_RATE } from "../sampling.js";
+import { MaxPropertyLengths } from "./constants.js";
 
 let unloadingCount = 0;
+let textDecoder: TextDecoder | undefined;
+let textEncoder: TextEncoder | undefined;
 
 export function isUnloading(): boolean {
   return unloadingCount > 0;
@@ -68,6 +73,42 @@ export function serializeAttribute(value: unknown): string {
   }
 }
 
+export function truncateToLength(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  const truncated = value.substring(0, maxLength);
+  return /[\uD800-\uDBFF]$/.test(truncated)
+    ? truncated.substring(0, truncated.length - 1)
+    : truncated;
+}
+
+export function getSdkVersion(): string {
+  const sdkVersion = SDK_INFO[ATTR_TELEMETRY_SDK_VERSION];
+  return `browser:otel${sdkVersion}:mot${OPENTELEMETRY_BROWSER_VERSION}`;
+}
+
+export function truncateCustomDimensions(
+  properties: Record<string, unknown>,
+): Record<string, string> {
+  const result: Record<string, string> = {};
+  textEncoder ??= new TextEncoder();
+
+  for (const key of Object.keys(properties)) {
+    let value =
+      typeof properties[key] === "string" ? properties[key] : serializeAttribute(properties[key]);
+    const maxSize: number = MaxPropertyLengths.THIRTEEN_BIT;
+    const valueBytes = textEncoder.encode(value);
+    if (valueBytes.byteLength > maxSize) {
+      let end = maxSize;
+      while ((valueBytes[end] & 0xc0) === 0x80) end--;
+      textDecoder ??= new TextDecoder();
+      value = textDecoder.decode(valueBytes.subarray(0, end));
+    }
+    result[key] = value;
+  }
+
+  return result;
+}
+
 export function mapAttributes(
   attributes: Attributes,
   promotedAttributes: ReadonlySet<string>,
@@ -91,7 +132,8 @@ export function mapAttributes(
   }
 
   return {
-    properties: Object.keys(properties).length > 0 ? properties : undefined,
+    properties:
+      Object.keys(properties).length > 0 ? truncateCustomDimensions(properties) : undefined,
     measurements: Object.keys(measurements).length > 0 ? measurements : undefined,
   };
 }
@@ -104,7 +146,9 @@ export function createTags(
   resourceAttributes: Attributes,
 ): Record<string, string> {
   const tags: Record<string, string> = {
-    "ai.internal.sdkVersion": `mot${OPENTELEMETRY_BROWSER_VERSION}`,
+    "ai.internal.sdkVersion": getSdkVersion(),
+    "ai.device.type": "Browser",
+    "ai.device.id": "browser",
   };
   if (traceId) tags["ai.operation.id"] = traceId;
   if (parentContext?.spanId && !isPageContext(parentContext)) {
@@ -132,8 +176,12 @@ export function createTags(
   if (isNonEmptyString(accountId)) {
     tags["ai.user.accountId"] = accountId;
   }
-  if (isNonEmptyString(attributes["session.id"])) {
-    tags["ai.session.id"] = attributes["session.id"];
+  const sessionId = selectNonEmptyString(
+    attributes["session.id"],
+    resourceAttributes["session.id"],
+  );
+  if (sessionId !== undefined) {
+    tags["ai.session.id"] = sessionId;
   }
   return tags;
 }
@@ -151,9 +199,8 @@ export function createEnvelope<T extends AzureMonitorBaseData>(
     name,
     time,
     iKey: instrumentationKey,
-    sampleRate,
+    sampleRate: sampleRate === 100 ? undefined : sampleRate,
     tags,
-    ver: 1,
     data: { baseType, baseData },
   };
 }
