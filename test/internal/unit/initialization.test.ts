@@ -11,7 +11,7 @@ import {
 } from "@opentelemetry/api";
 import { logs, SeverityNumber } from "@opentelemetry/api-logs";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
-import { resourceFromAttributes } from "@opentelemetry/resources";
+import { detectResources, resourceFromAttributes } from "@opentelemetry/resources";
 import { BrowserBatchLogRecordProcessor } from "../../../src/browserBatchLogRecordProcessor.js";
 import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -323,6 +323,31 @@ it("lets a service.name attribute replace the unknown_service placeholder", asyn
     "service.version": "4.2.1",
     "deployment.environment.name": "production",
   });
+});
+
+it("resolves asynchronous resource detector attributes before SDK startup", async () => {
+  let resolveOsVersion: ((value: string) => void) | undefined;
+  const osVersion = new Promise<string>((resolve) => {
+    resolveOsVersion = resolve;
+  });
+  const resource = detectResources({
+    detectors: [{ detect: () => ({ attributes: { "user_agent.os.version": osVersion } }) }],
+  });
+  vi.mocked(startTelemetryInstance).mockResolvedValueOnce(fakeInstance());
+
+  const initialization = useMicrosoftOpenTelemetry({ resource });
+  await Promise.resolve();
+  expect(startTelemetryInstance).not.toHaveBeenCalled();
+
+  resolveOsVersion?.("11");
+  const handle = await initialization;
+  handles.add(handle);
+
+  expect(startTelemetryInstance).toHaveBeenCalledWith(
+    expect.objectContaining({
+      resourceAttributes: expect.objectContaining({ "user_agent.os.version": "11" }),
+    }),
+  );
 });
 
 it("does not share one attributes object across initializations", async () => {

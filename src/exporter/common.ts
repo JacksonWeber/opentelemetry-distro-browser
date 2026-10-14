@@ -4,6 +4,10 @@
 import type { Attributes, HrTime, SpanContext } from "@opentelemetry/api";
 import { SDK_INFO } from "@opentelemetry/core";
 import { ATTR_TELEMETRY_SDK_VERSION } from "@opentelemetry/semantic-conventions";
+import {
+  ATTR_USER_AGENT_OS_NAME,
+  ATTR_USER_AGENT_OS_VERSION,
+} from "@opentelemetry/semantic-conventions/incubating";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../shared/constants.js";
 import { isNonEmptyString, selectNonEmptyString } from "../shared/isNonEmptyString.js";
 import { isPageContext } from "../shared/pageOperationContext.js";
@@ -112,14 +116,20 @@ export function truncateCustomDimensions(
 export function mapAttributes(
   attributes: Attributes,
   promotedAttributes: ReadonlySet<string>,
+  omitPromotedOsAttributes = false,
 ): Pick<AzureMonitorBaseData, "properties" | "measurements"> {
   const properties: Record<string, string> = {};
   const measurements: Record<string, number> = {};
+  const hasPromotedOs =
+    omitPromotedOsAttributes &&
+    isNonEmptyString(attributes[ATTR_USER_AGENT_OS_NAME]) &&
+    isNonEmptyString(attributes[ATTR_USER_AGENT_OS_VERSION]);
 
   for (const [key, value] of Object.entries(attributes)) {
     if (
       value === undefined ||
       promotedAttributes.has(key) ||
+      (hasPromotedOs && (key === ATTR_USER_AGENT_OS_NAME || key === ATTR_USER_AGENT_OS_VERSION)) ||
       (key === "session.id" && isNonEmptyString(value))
     ) {
       continue;
@@ -155,6 +165,15 @@ export function createTags(
     tags["ai.operation.parentId"] = parentContext.spanId;
   }
   if (serviceName) tags["ai.cloud.role"] = serializeAttribute(serviceName);
+  const attributeOsName = attributes[ATTR_USER_AGENT_OS_NAME];
+  const attributeOsVersion = attributes[ATTR_USER_AGENT_OS_VERSION];
+  const resourceOsName = resourceAttributes[ATTR_USER_AGENT_OS_NAME];
+  const resourceOsVersion = resourceAttributes[ATTR_USER_AGENT_OS_VERSION];
+  if (isNonEmptyString(attributeOsName) && isNonEmptyString(attributeOsVersion)) {
+    tags["ai.device.osVersion"] = `${attributeOsName}${attributeOsVersion}`;
+  } else if (isNonEmptyString(resourceOsName) && isNonEmptyString(resourceOsVersion)) {
+    tags["ai.device.osVersion"] = `${resourceOsName}${resourceOsVersion}`;
+  }
   const anonymousUserId = selectNonEmptyString(
     attributes[ATTR_ENDUSER_PSEUDO_ID],
     resourceAttributes[ATTR_ENDUSER_PSEUDO_ID],

@@ -34,6 +34,24 @@ describe("detectBrowserResource", () => {
     expect(typeof resource.attributes["user_agent.original"]).toBe("string");
   });
 
+  it("resolves the high-entropy Windows version when the caller opts in", async () => {
+    vi.stubGlobal("navigator", {
+      userAgent:
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
+      userAgentData: {
+        getHighEntropyValues: vi.fn().mockResolvedValue({ platformVersion: "15.0.0" }),
+      },
+    });
+    try {
+      const resource = detectResources({ detectors: [userAgentDetector] });
+      await resource.waitForAsyncAttributes?.();
+
+      expect(resource.attributes["user_agent.os.version"]).toBe("11");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("includes both sets of attributes when the caller opts into both detectors", () => {
     const resource = detectBrowserResource(
       detectResources({ detectors: [browserDetector, userAgentDetector] }),

@@ -84,7 +84,7 @@ export function spanToEnvelope(
   const method = span.attributes[HTTP_METHOD];
   const url = span.attributes[URL_FULL];
   const duration = millisecondsToTimeSpan(hrTimeToMilliseconds(span.duration));
-  const customFields = mapAttributes(span.attributes, promotedSpanAttributes);
+  const customFields = mapAttributes(span.attributes, promotedSpanAttributes, true);
   const sampleRate = getSampleRate(span.attributes);
   const tags = createTags(
     spanContext.traceId,

@@ -277,6 +277,7 @@ export async function useMicrosoftOpenTelemetry(
     ) {
       diag.warn("Trace context options ignored; page context already registered");
     }
+    await options.resource?.waitForAsyncAttributes?.();
     const instanceOptions = {
       // Spread last: the caller's attributes win.
       resourceAttributes: {
