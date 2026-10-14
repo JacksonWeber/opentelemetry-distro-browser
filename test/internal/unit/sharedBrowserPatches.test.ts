@@ -332,6 +332,7 @@ it.each([
 ] as const)("rejects active %s Navigation API listeners (adapted=%s)", async (kind, adapted) => {
   const navigation = new EventTarget();
   vi.stubGlobal("navigation", navigation);
+  const add = vi.spyOn(navigation, "addEventListener");
   const remove = vi.spyOn(navigation, "removeEventListener");
   const options = { enabled: false, useNavigationApiIfAvailable: true };
   const instrumentation =
@@ -352,7 +353,15 @@ it.each([
   } finally {
     instrumentation.disable();
   }
-  expect(remove).toHaveBeenCalledWith("currententrychange", expect.any(Function));
+  const [, listener, listenerOptions] = add.mock.calls
+    .filter(([type]) => type === "currententrychange")
+    .at(-1)!;
+  // Removed explicitly or through an aborted signal.
+  expect(
+    remove.mock.calls.some(
+      ([type, removed]) => type === "currententrychange" && removed === listener,
+    ) || (listenerOptions as AddEventListenerOptions | undefined)?.signal?.aborted === true,
+  ).toBe(true);
 });
 
 const consoleMethods = ["log", "warn", "error", "info", "debug"] as const;

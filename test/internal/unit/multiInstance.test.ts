@@ -380,7 +380,7 @@ it("keeps the first instance's page context and reports unused context options",
   expect(first).toHaveBeenCalled();
   expect(second).not.toHaveBeenCalled();
   expect(warn).toHaveBeenCalledExactlyOnceWith(
-    "Trace context options are unused because an earlier instance registered the page context",
+    "Trace context options ignored; page context already registered",
   );
 });
 

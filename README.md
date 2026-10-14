@@ -141,8 +141,8 @@ Policy requirements, and generating the snippet with `getSdkLoaderScript()`.
 | `resource`            | `Resource`                             | OpenTelemetry default resource     | Resource attributes attached to every span and log record                   |
 | `session`             | `{ enabled?: boolean }`                | Disabled                           | Adds a persisted `session.id` with a 30-minute inactivity timeout           |
 | `traces`              | `MicrosoftOpenTelemetryBrowserTraceOptions` | Browser SDK defaults          | Replaces the browser context manager or trace propagators                    |
-| `spanProcessors`      | `SpanProcessor[]`                      | Upstream default when applicable   | Registers custom trace processors; `[]` skips trace initialization          |
-| `logRecordProcessors` | `LogRecordProcessor[]`                 | Upstream default when applicable   | Registers custom log processors; `[]` skips log initialization              |
+| `spanProcessors`      | `SpanProcessor[]`                      | Azure Monitor only, if configured  | Registers custom trace processors; `[]` skips trace initialization          |
+| `logRecordProcessors` | `LogRecordProcessor[]`                 | Azure Monitor only, if configured  | Registers custom log processors; `[]` skips log initialization              |
 | `instrumentations`    | `BrowserInstrumentation[]`             | `[]`                               | Instrumentation instances owned and registered by this SDK                  |
 | `pageView`            | `PageViewInstrumentationConfig`        | Enabled                            | Configures built-in `browser.page_view` log collection                      |
 
@@ -180,7 +180,9 @@ compatible upstream instrumentation instances yourself and pass them directly.
 
 ### OTLP and custom exporters
 
-Use standard OpenTelemetry processors to export to OTLP or another backend. For OTLP/HTTP:
+The distribution exports to Azure Monitor when `azureMonitor` is set. It does not bundle an OTLP
+exporter: without `azureMonitor`, `spanProcessors` or `logRecordProcessors`, no telemetry is
+exported. Use standard OpenTelemetry processors to export to OTLP or another backend. For OTLP/HTTP:
 
 ```typescript
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
@@ -227,14 +229,17 @@ await useMicrosoftOpenTelemetry({
 });
 ```
 
+The detectors are available from the npm package only. The CDN bundles and the loader snippet do
+not include them, so pages that load the SDK from the CDN do not download code they cannot use.
+
 ## Bundle size
 
 The size depends on how the package is loaded. Sizes in KiB, measured from the current source:
 
 | Loaded from | Includes                                          | Minified |  gzip | Brotli |
 | ----------- | ------------------------------------------------- | -------: | ----: | -----: |
-| npm         | Distribution, page views and Azure Monitor export |    131.6 |  40.3 |   35.3 |
-| CDN         | Everything, including all nine instrumentations   |    176.9 |  53.0 |   46.1 |
+| npm         | Distribution, page views and Azure Monitor export |    115.2 |  36.0 |   31.8 |
+| CDN         | Everything except the npm-only resource detectors |    156.4 |  47.6 |   41.6 |
 
 **npm.** The application's bundler removes code the application does not use. Instrumentations are
 loaded through dynamic imports only when enabled, so each one adds only its own code. Gzip added
@@ -251,7 +256,8 @@ by each instrumentation, measured on its own:
 **CDN.** A page that loads a script file cannot remove unused code, and the file cannot know which
 features the page will enable, so `opentelemetry-browser.<version>.min.js` includes every
 instrumentation. The loader snippet enables `fetch` and `xhr`; the others are included but stay off
-unless enabled.
+unless enabled. The browser and user-agent resource detectors are npm-only; see
+[Browser resource attributes](#browser-resource-attributes).
 
 Run `npm run build && npm run size` to reproduce these measurements.
 

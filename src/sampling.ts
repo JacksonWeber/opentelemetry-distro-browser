@@ -63,7 +63,7 @@ export function getEffectiveSampleRate(
 
 /** Applies SDK-default sampling without inheriting another provider's synthetic page decision. */
 export class PageOperationSampler implements Sampler {
-  private readonly delegate = new ParentBasedSampler({ root: new AlwaysOnSampler() });
+  readonly #delegate = new ParentBasedSampler({ root: new AlwaysOnSampler() });
 
   public shouldSample(
     parentContext: Context,
@@ -74,11 +74,11 @@ export class PageOperationSampler implements Sampler {
     const parent = trace.getSpanContext(parentContext);
     const samplingContext =
       parent && isPageContext(parent) ? trace.deleteSpan(parentContext) : parentContext;
-    return this.delegate.shouldSample(samplingContext, ...parameters);
+    return this.#delegate.shouldSample(samplingContext, ...parameters);
   }
 
   public toString(): string {
-    return `PageOperationSampler{${this.delegate.toString()}}`;
+    return `PageOperationSampler{${this.#delegate.toString()}}`;
   }
 }
 

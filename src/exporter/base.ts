@@ -35,21 +35,19 @@ export interface AzureMonitorOptions {
 }
 
 export class AzureMonitorExportClient {
-  private readonly sender: Sender;
-  private readonly pending = new Set<Promise<void>>();
-  private stopped = false;
+  readonly #sender: Sender;
+  readonly #pending = new Set<Promise<void>>();
+  #stopped = false;
 
   public constructor(options: AzureMonitorOptions) {
     const { instrumentationKey, ingestionEndpoint } = parseConnectionString(
       options.connectionString,
     );
     if (!instrumentationKey || !isValidInstrumentationKey(instrumentationKey)) {
-      throw new Error(
-        "The Azure Monitor connection string must contain a valid InstrumentationKey UUID.",
-      );
+      throw new Error("Connection string needs a valid InstrumentationKey UUID.");
     }
     this.instrumentationKey = instrumentationKey;
-    this.sender = new Sender({
+    this.#sender = new Sender({
       endpoint: `${ingestionEndpoint}/v2/track`,
       disableBeacon: options.disableBeacon,
     });
@@ -61,7 +59,7 @@ export class AzureMonitorExportClient {
     envelopes: readonly AzureMonitorEnvelope[],
     callback: (result: ExportResult) => void,
   ): void {
-    if (this.stopped) {
+    if (this.#stopped) {
       callback({ code: ExportResultCode.FAILED, error: new Error("Exporter has been shut down.") });
       return;
     }
@@ -83,7 +81,7 @@ export class AzureMonitorExportClient {
     }
     const operation = Promise.allSettled(
       batchResult.requests.map(({ body, envelopes: batchEnvelopes }) =>
-        this.sender.send({
+        this.#sender.send({
           body,
           contentType: CONTENT_TYPE,
           envelopes: batchEnvelopes,
@@ -107,7 +105,7 @@ export class AzureMonitorExportClient {
         return {
           code: ExportResultCode.FAILED,
           error: new Error(
-            `Unload payload exceeded the aggregate beacon limit; delivered ${envelopes.length - batchResult.droppedEnvelopeCount} of ${envelopes.length} envelopes.`,
+            `Unload beacon limit exceeded; sent ${envelopes.length - batchResult.droppedEnvelopeCount} of ${envelopes.length} envelopes.`,
           ),
         };
       })
@@ -117,17 +115,17 @@ export class AzureMonitorExportClient {
       }))
       // Callback errors must not be reported back to the same callback as export failures.
       .then(callback)
-      .finally(() => this.pending.delete(operation));
-    this.pending.add(operation);
+      .finally(() => this.#pending.delete(operation));
+    this.#pending.add(operation);
   }
 
   public async forceFlush(): Promise<void> {
-    await Promise.all([...this.pending]);
+    await Promise.all([...this.#pending]);
   }
 
   public async shutdown(): Promise<void> {
-    if (this.stopped) return;
-    this.stopped = true;
+    if (this.#stopped) return;
+    this.#stopped = true;
     await this.forceFlush();
   }
 }
@@ -345,7 +343,7 @@ function toSingleExportResult(result: SenderResultType): ExportResult {
     return {
       code: ExportResultCode.FAILED,
       error: new Error(
-        `Azure Monitor ingestion permanently rejected ${result.permanentErrors.length} item(s).`,
+        `Azure Monitor permanently rejected ${result.permanentErrors.length} item(s).`,
       ),
     };
   }
@@ -360,6 +358,6 @@ function toSingleExportResult(result: SenderResultType): ExportResult {
   }
   return {
     code: ExportResultCode.FAILED,
-    error: new Error(`Azure Monitor ingestion failed with HTTP status ${result.statusCode}.`),
+    error: new Error(`Azure Monitor export failed with HTTP ${result.statusCode}.`),
   };
 }

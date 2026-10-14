@@ -86,6 +86,15 @@ function captureAmdDefine<T>(): { define: AmdDefine; getRegistration: (file: str
 }
 
 async function exercise(bundle: BrowserBundle): Promise<void> {
+  // The opt-in resource detectors are npm-only.
+  for (const name of [
+    "BrowserDetector",
+    "browserDetector",
+    "UserAgentDetector",
+    "userAgentDetector",
+  ]) {
+    expect(name in bundle).toBe(false);
+  }
   // Every instrumentation is inlined, so constructing them all loads nothing else.
   const instrumentations = await bundle.getInstrumentations({
     console: { enabled: true },

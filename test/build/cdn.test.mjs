@@ -16,6 +16,7 @@ import {
   getCdnChannel,
   getCdnUrl,
   getSizeBadgeMessage,
+  modules,
   renderBadge,
   root,
 } from "../../scripts/cdn.mjs";
@@ -148,24 +149,34 @@ function loadInWorkerRealm(code, file) {
 const runtimeKeys = async (entry) =>
   Object.keys(await import(pathToFileURL(resolve(root, "dist", "esm", entry)).href));
 
-test("every CDN bundle loads without window and exposes the full npm API", async () => {
+test("every CDN bundle loads without window and exposes its documented npm API", async () => {
   const otelApi = ["context", "diag", "logs", "metrics", "propagation", "trace"];
-  const sdkKeys = [
+  const resourceDetectors = [
+    "BrowserDetector",
+    "browserDetector",
+    "UserAgentDetector",
+    "userAgentDetector",
+  ];
+  const npmKeys = [
     ...new Set([
       ...(await runtimeKeys("index.js")),
       ...(await runtimeKeys("instrumentations.js")),
       ...otelApi,
     ]),
-  ].sort();
+  ];
+  // The opt-in resource detectors are npm-only; no CDN bundle carries them.
+  const sdkKeys = npmKeys.filter((key) => !resourceDetectors.includes(key)).sort();
   const instrumentationKeys = (await runtimeKeys("instrumentations.js")).sort();
   assert.ok(sdkKeys.includes("useMicrosoftOpenTelemetry"));
   assert.ok(sdkKeys.includes("getInstrumentations"));
+  assert.ok(resourceDetectors.every((key) => npmKeys.includes(key)));
 
   for (const artifact of getCdnArtifacts(version)) {
     const code = await readFile(resolve(cdnDirectory, artifact.file), "utf8");
     const microsoft = loadInWorkerRealm(code, artifact.file);
     if (artifact.module === "opentelemetry-browser") {
       assert.deepEqual(Object.keys(microsoft.OpenTelemetry).sort(), sdkKeys, artifact.file);
+      assert.doesNotMatch(code, /user_agent\.original/, artifact.file);
     } else {
       assert.deepEqual(
         Object.keys(microsoft.OpenTelemetryInstrumentations).sort(),
@@ -205,12 +216,13 @@ test("the default CDN bundle carries every instrumentation without loading other
 
 test("publishes immutable files without overwriting and uploads integrity files last", async () => {
   const uploads = getCdnUploads(version);
-  assert.equal(uploads.length, getCdnArtifacts(version).length * 2 + 2 + 2);
-  assert.match(uploads.at(-1).file, /\.integrity\.json$/);
-  assert.match(uploads.at(-2).file, /\.integrity\.json$/);
+  assert.equal(uploads.length, getCdnArtifacts(version).length * 2 + modules.length * 2);
+  for (const upload of uploads.slice(-modules.length)) {
+    assert.match(upload.file, /\.integrity\.json$/);
+  }
   assert.deepEqual(
     uploads.filter(({ file }) => file.endsWith(".svg")).map(({ contentType }) => contentType),
-    ["image/svg+xml; charset=utf-8", "image/svg+xml; charset=utf-8"],
+    modules.map(() => "image/svg+xml; charset=utf-8"),
   );
   assert.ok(
     uploads.every(({ blob }) => blob.startsWith(`scripts/otel/${getCdnChannel(version)}/`)),

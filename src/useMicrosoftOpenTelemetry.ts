@@ -2,8 +2,6 @@
 // Licensed under the MIT License.
 
 import { context, diag, type SpanContext } from "@opentelemetry/api";
-import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
-import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import {
   BrowserContextLogRecordProcessor,
   BrowserContextSpanProcessor,
@@ -248,31 +246,27 @@ export async function useMicrosoftOpenTelemetry(
   const handle = { forceFlush, shutdown, userContext: userContext.context };
 
   try {
-    if (spanProcessors?.length !== 0 && (azureMonitor || spanProcessors === undefined)) {
-      const spanProcessor = new BatchSpanProcessor(
-        azureMonitor ? new AzureMonitorSpanExporter(azureMonitor) : new OTLPTraceExporter(),
-        // The handle flushes on page hide; avoid a second per-processor hide flush.
-        { disableAutoFlushOnDocumentHide: true },
-      );
-      ownedProcessors.push(spanProcessor);
-      spanProcessors = [spanProcessor, ...(spanProcessors ?? [])];
+    if (azureMonitor) {
+      if (spanProcessors?.length !== 0) {
+        const spanProcessor = new BatchSpanProcessor(
+          new AzureMonitorSpanExporter(azureMonitor),
+          // The handle flushes on page hide; avoid a second per-processor hide flush.
+          { disableAutoFlushOnDocumentHide: true },
+        );
+        ownedProcessors.push(spanProcessor);
+        spanProcessors = [spanProcessor, ...(spanProcessors ?? [])];
+      }
+      if (logRecordProcessors?.length !== 0) {
+        const exporter = new AzureMonitorLogRecordExporter(azureMonitor);
+        const logProcessor =
+          options.samplingPercentage === undefined
+            ? new BrowserBatchLogRecordProcessor({ exporter })
+            : new AzureMonitorSamplingLogRecordProcessor({ exporter, samplingPercentage });
+        ownedProcessors.push(logProcessor);
+        logRecordProcessors = [logProcessor, ...(logRecordProcessors ?? [])];
+      }
     }
-    if (logRecordProcessors?.length !== 0 && (azureMonitor || logRecordProcessors === undefined)) {
-      const logProcessor = azureMonitor
-        ? options.samplingPercentage === undefined
-          ? new BrowserBatchLogRecordProcessor({
-              exporter: new AzureMonitorLogRecordExporter(azureMonitor),
-            })
-          : new AzureMonitorSamplingLogRecordProcessor({
-              exporter: new AzureMonitorLogRecordExporter(azureMonitor),
-              samplingPercentage,
-            })
-        : new BrowserBatchLogRecordProcessor({
-            exporter: new OTLPLogExporter(),
-          });
-      ownedProcessors.push(logProcessor);
-      logRecordProcessors = [logProcessor, ...(logRecordProcessors ?? [])];
-    }
+    const noDestination = !azureMonitor && !spanProcessors && !logRecordProcessors;
     await session?.start();
     spanProcessors ??= [];
     logRecordProcessors ??= [];
@@ -281,9 +275,7 @@ export async function useMicrosoftOpenTelemetry(
       spanProcessors.length !== 0 &&
       isPageContextRegistered()
     ) {
-      diag.warn(
-        "Trace context options are unused because an earlier instance registered the page context",
-      );
+      diag.warn("Trace context options ignored; page context already registered");
     }
     const instanceOptions = {
       // Spread last: the caller's attributes win.
@@ -305,6 +297,12 @@ export async function useMicrosoftOpenTelemetry(
     // Ownership transfers on call, including failed startup.
     processorsTransferred = true;
     instance = await startTelemetryInstance(instanceOptions);
+    // Warn only once the instance has installed the console diagnostic logger.
+    if (noDestination) {
+      diag.warn(
+        "No telemetry destination: set azureMonitor, spanProcessors or logRecordProcessors",
+      );
+    }
     releaseInstrumentations = claimInstrumentations(instrumentations);
     removeUnloadSubscription = subscribeToUnload(flushForUnload);
 

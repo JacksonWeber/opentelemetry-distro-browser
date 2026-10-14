@@ -72,9 +72,7 @@ function parseFields(connectionString: string): ParsedConnectionString | undefin
 
     const separatorIndex = field.indexOf("=");
     if (separatorIndex <= 0) {
-      diag.error(
-        "Connection string key-value pair is invalid: Entire connection string will be discarded",
-      );
+      diag.error("Invalid connection string pair; connection string ignored");
       return undefined;
     }
 
@@ -90,7 +88,7 @@ function parseFields(connectionString: string): ParsedConnectionString | undefin
 export function parseConnectionString(connectionString: string): ResolvedConnectionString {
   const fields = parseFields(connectionString);
   if (!fields || Object.keys(fields).length === 0) {
-    diag.error("An invalid connection string was passed in. There may be telemetry loss");
+    diag.error("Invalid connection string; telemetry may be lost");
     return {
       ingestionEndpoint: DEFAULT_INGESTION_ENDPOINT,
       liveEndpoint: DEFAULT_LIVE_ENDPOINT,
@@ -106,9 +104,7 @@ export function parseConnectionString(connectionString: string): ResolvedConnect
   }
 
   if (fields.authorization && fields.authorization.toLowerCase() !== "ikey") {
-    diag.warn(
-      "Connection String contains an unsupported 'Authorization' value. Defaulting to 'Authorization=ikey'",
-    );
+    diag.warn("Unsupported connection string Authorization; using ikey");
   }
 
   return {
