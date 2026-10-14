@@ -24,6 +24,9 @@ All notable changes to this package are documented in this file.
 
 ### Fixed
 
+- Only gzip Azure Monitor request bodies for recognized first-party ingestion endpoints in the
+  public, US Government, and China clouds. Custom ingestion endpoints, such as proxies that parse
+  request bodies as JSON, now receive uncompressed JSON.
 - Set Azure Monitor browser device tags on all envelopes, omit default envelope version and
   full-sampling fields, and exclude built-in page-view diagnostics and ordinals from custom
   properties and measurements while retaining application custom fields and OpenTelemetry records.

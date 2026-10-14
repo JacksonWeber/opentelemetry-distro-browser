@@ -193,7 +193,11 @@ it.each([
 ])("suppresses $name sends without suppressing application context", async (options) => {
   const { pipeline, transport } = await startInstrumentedPipeline();
   if (!options.compression) vi.stubGlobal("CompressionStream", undefined);
-  const sender = new Sender({ endpoint: ENDPOINT, fetch: globalThis.fetch });
+  // Compression only applies to first-party ingestion; fetch is stubbed so nothing leaves the test.
+  const sender = new Sender({
+    endpoint: "https://dc.services.visualstudio.com/v2/track",
+    fetch: globalThis.fetch,
+  });
   const parent = trace.getTracer("sender-test").startSpan("parent");
   const parentContext = trace.setSpan(context.active(), parent);
   const sending = context.with(parentContext, () => {

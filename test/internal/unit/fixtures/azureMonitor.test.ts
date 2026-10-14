@@ -285,9 +285,8 @@ describe("in-memory Azure Monitor endpoint", () => {
       expect(ingestion.requests).toHaveLength(1);
       expect(ingestion.requests[0].envelopes).toEqual(JSON.parse(JSON.stringify(envelopes)));
       expect(ingestion.requests[0].request.keepalive).toBe(unloading);
-      expect(ingestion.requests[0].request.headers.get("content-encoding")).toBe(
-        unloading ? null : "gzip",
-      );
+      // The fixture uses a custom endpoint, which must receive uncompressed JSON.
+      expect(ingestion.requests[0].request.headers.get("content-encoding")).toBeNull();
       expect(networkFetch).not.toHaveBeenCalled();
       expect(networkBeacon).not.toHaveBeenCalled();
     },

@@ -30,8 +30,9 @@ const trustedIngestionHostSuffixGroups = [
     ".monitor.azure.com",
     ".services.visualstudio.com",
     ".applicationinsights.azure.com",
+    ".applicationinsights.microsoft.com",
   ],
-  [".monitor.azure.us", ".applicationinsights.azure.us"],
+  [".monitor.azure.us", ".applicationinsights.azure.us", ".applicationinsights.us"],
   [".monitor.azure.cn", ".applicationinsights.azure.cn"],
 ];
 
@@ -68,6 +69,7 @@ export type SenderResultType = SenderResult | BeaconSenderResult;
 
 export class Sender {
   private endpoint: string;
+  private compress: boolean;
   private readonly fetch: typeof globalThis.fetch;
   private readonly sendBeacon: typeof globalThis.navigator.sendBeacon | undefined;
   private readonly disableBeacon: boolean;
@@ -78,6 +80,7 @@ export class Sender {
 
   public constructor(options: SenderOptions) {
     this.endpoint = options.endpoint;
+    this.compress = isTrustedIngestionEndpoint(options.endpoint);
     this.fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.sendBeacon =
       options.sendBeacon ?? globalThis.navigator?.sendBeacon?.bind(globalThis.navigator);
@@ -212,7 +215,7 @@ export class Sender {
     try {
       let response: Response;
       try {
-        const payload = unloading ? undefined : await gzipPayload(request.body);
+        const payload = unloading || !this.compress ? undefined : await gzipPayload(request.body);
         try {
           // Browser context may not survive compression or retry awaits, so suppress at the call.
           response = await context.with(suppressTracing(context.active()), () =>
@@ -281,6 +284,7 @@ export class Sender {
     const redirectedEndpoint = getTrustedIngestionEndpoint(this.endpoint, response.url);
     if (redirectedEndpoint !== undefined) {
       this.endpoint = redirectedEndpoint;
+      this.compress = isTrustedIngestionEndpoint(redirectedEndpoint);
     }
   }
 
@@ -318,26 +322,42 @@ function getTrustedIngestionEndpoint(
       return undefined;
     }
 
-    const currentHostname = normalizeHostname(currentUrl.hostname);
-    const redirectedHostname = normalizeHostname(redirectedUrl.hostname);
-    const currentPort = currentUrl.port || "443";
-    const redirectedPort = redirectedUrl.port || "443";
-    if (currentHostname === redirectedHostname) {
-      return currentPort === redirectedPort ? redirectedUrl.toString() : undefined;
-    }
-    if (currentPort !== "443" || redirectedPort !== "443") {
-      return undefined;
+    if (normalizeHostname(currentUrl.hostname) === normalizeHostname(redirectedUrl.hostname)) {
+      return (currentUrl.port || "443") === (redirectedUrl.port || "443")
+        ? redirectedUrl.toString()
+        : undefined;
     }
 
-    const sameCloud = trustedIngestionHostSuffixGroups.some(
-      (suffixGroup) =>
-        suffixGroup.some((suffix) => currentHostname.endsWith(suffix)) &&
-        suffixGroup.some((suffix) => redirectedHostname.endsWith(suffix)),
-    );
-    return sameCloud ? redirectedUrl.toString() : undefined;
+    const cloud = getIngestionCloud(currentUrl);
+    return cloud >= 0 && cloud === getIngestionCloud(redirectedUrl)
+      ? redirectedUrl.toString()
+      : undefined;
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Only first-party Azure Monitor ingestion is known to accept gzip request bodies; custom
+ * endpoints such as proxies may parse the body as JSON and reject it.
+ */
+function isTrustedIngestionEndpoint(endpoint: string): boolean {
+  try {
+    return getIngestionCloud(new URL(endpoint)) >= 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Returns the trusted cloud index for an HTTPS port-443 ingestion URL, or -1. */
+function getIngestionCloud(url: URL): number {
+  if (url.protocol !== "https:" || (url.port || "443") !== "443") {
+    return -1;
+  }
+  const hostname = normalizeHostname(url.hostname);
+  return trustedIngestionHostSuffixGroups.findIndex((suffixGroup) =>
+    suffixGroup.some((suffix) => hostname.endsWith(suffix)),
+  );
 }
 
 function normalizeHostname(hostname: string): string {
