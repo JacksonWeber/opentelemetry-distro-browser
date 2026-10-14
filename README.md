@@ -109,15 +109,44 @@ page's `<head>`, replacing `CHANNEL`, `VERSION`, `YOUR_CONNECTION_STRING`, and `
 <!-- prettier-ignore -->
 ```html
 <script>
-!(function(w,d,c){var s=d.createElement("script");w.microsoftOpenTelemetry=new Promise(function(resolve,reject){s.src=c.src;s.crossOrigin=c.crossOrigin;if(c.integrity)s.integrity=c.integrity;s.onload=function(){var sdk=w.Microsoft&&w.Microsoft.OpenTelemetry;if(!sdk||typeof sdk.useMicrosoftOpenTelemetry!=="function"){reject(new Error("OpenTelemetry browser bundle did not expose Microsoft.OpenTelemetry"));return}Promise.resolve().then(function(){return typeof sdk.getInstrumentations==="function"?sdk.getInstrumentations():[]}).then(function(instrumentations){return sdk.useMicrosoftOpenTelemetry({azureMonitor:{connectionString:c.connectionString},instrumentations:instrumentations})}).then(resolve,reject)};s.onerror=function(){reject(new Error("OpenTelemetry browser bundle failed to load: "+c.src))};d.head.appendChild(s)})})(window,document,{"src":"https://js.monitor.azure.com/scripts/otel/CHANNEL/opentelemetry-browser.VERSION.min.js","connectionString":"YOUR_CONNECTION_STRING","crossOrigin":"anonymous","integrity":"YOUR_INTEGRITY"});
+!(function(w,d,c){w.microsoftOpenTelemetry=new Promise(function(resolve,reject){function l(u){var s=d.createElement("script");s.src=u;s.crossOrigin=c.crossOrigin;if(c.integrity)s.integrity=c.integrity;s.onload=function(){var sdk=w.Microsoft&&w.Microsoft.OpenTelemetry;if(!sdk||typeof sdk.useMicrosoftOpenTelemetry!=="function"){reject(new Error("OpenTelemetry browser bundle did not expose Microsoft.OpenTelemetry"));return}Promise.resolve().then(function(){return typeof sdk.getInstrumentations==="function"?sdk.getInstrumentations(c.instrumentationOptions):[]}).then(function(i){var o=c.cfg;o.instrumentations=i;if(c.resourceAttributes)o.resource=sdk.resourceFromAttributes(c.resourceAttributes);return sdk.useMicrosoftOpenTelemetry(o)}).then(resolve,reject)};s.onerror=function(){reject(new Error("OpenTelemetry browser bundle failed to load: "+u))};d.head.appendChild(s)}l(c.src)})})(window,document,{"src":"https://js.monitor.azure.com/scripts/otel/CHANNEL/opentelemetry-browser.VERSION.min.js","crossOrigin":"anonymous","integrity":"YOUR_INTEGRITY","cfg":{"azureMonitor":{"connectionString":"YOUR_CONNECTION_STRING"}}});
 </script>
 ```
 
 For example, `0.1.0-alpha.3` uses channel `alpha`, and its `YOUR_INTEGRITY` is the
 `ext["@min.js"].integrity` value in
 [`opentelemetry-browser.0.1.0-alpha.3.integrity.json`](https://js.monitor.azure.com/scripts/otel/alpha/opentelemetry-browser.0.1.0-alpha.3.integrity.json).
-The snippet enables Azure Monitor export, page views, and `fetch` and XHR dependency collection; use
-the npm package for other options.
+The snippet enables Azure Monitor export, page views, and `fetch` and XHR dependency collection.
+To change that, add JSON settings to the configuration object at the end of the snippet. Settings in
+`cfg` use the same names as the npm options and are passed to `useMicrosoftOpenTelemetry` as is;
+`instrumentationOptions` is passed to `getInstrumentations()`, and `resourceAttributes` becomes the
+resource:
+
+```json
+{
+  "src": "...",
+  "crossOrigin": "anonymous",
+  "integrity": "YOUR_INTEGRITY",
+  "cfg": {
+    "azureMonitor": { "connectionString": "YOUR_CONNECTION_STRING", "disableBeacon": false },
+    "samplingPercentage": 50,
+    "session": { "enabled": true },
+    "userContext": { "enabled": true },
+    "pageView": { "redactedQueryParams": ["token"] }
+  },
+  "instrumentationOptions": { "errors": { "enabled": true }, "webVitals": { "enabled": true } },
+  "resourceAttributes": { "service.name": "my-web-app", "service.version": "1.2.3" }
+}
+```
+
+Options that take functions, such as page-view hooks, processors, and context managers, require the
+npm package.
+
+Like the Application Insights loader, `getSdkLoaderScript()` can also delay loading the bundle
+(`loadDelay`, Application Insights `ld`), retry it from backup Azure Monitor CDN hosts
+(`cdnFallback`, `cr`), and report a bundle that fails to load to Azure Monitor as an
+`SDKLoadFailed` exception (`reportLoadFailure`). These add code to the snippet only when enabled, so
+generate the snippet with them rather than editing the configuration object.
 
 `window.microsoftOpenTelemetry` is a promise that resolves to the telemetry handle, or rejects when
 the bundle fails to load, fails its integrity check, or fails to initialize:
@@ -256,8 +285,8 @@ by each instrumentation, measured on its own:
 **CDN.** A page that loads a script file cannot remove unused code, and the file cannot know which
 features the page will enable, so `opentelemetry-browser.<version>.min.js` includes every
 instrumentation. The loader snippet enables `fetch` and `xhr`; the others are included but stay off
-unless enabled. The browser and user-agent resource detectors are npm-only; see
-[Browser resource attributes](#browser-resource-attributes).
+unless enabled through the snippet's `instrumentationOptions`. The browser and user-agent resource
+detectors are npm-only; see [Browser resource attributes](#browser-resource-attributes).
 
 Run `npm run build && npm run size` to reproduce these measurements.
 

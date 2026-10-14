@@ -4,7 +4,9 @@
 import { commands } from "vitest/browser";
 import { expect, inject, it } from "vitest";
 
-const openSnippetPage = async (scenario: "valid" | "tampered" | "missing") => {
+const openSnippetPage = async (
+  scenario: "valid" | "configured" | "tampered" | "missing" | "reported",
+) => {
   const runId = crypto.randomUUID();
   const ingestionEndpoint = `${inject("ingestionEndpoint")}${encodeURIComponent(runId)}`;
   const pageUrl = new URL("/snippet.html", inject("cdnPageOrigin"));
@@ -18,6 +20,7 @@ const openSnippetPage = async (scenario: "valid" | "tampered" | "missing") => {
 
 interface CapturedEnvelope {
   name?: string;
+  tags?: Record<string, string>;
 }
 
 async function waitForEnvelopes(
@@ -78,6 +81,34 @@ it("loads the CDN bundle into a plain HTML page under CSP and sends page view, s
   );
 });
 
+it("applies snippet configuration: opt-in instrumentations and resource attributes", async () => {
+  const { state, diagnostics, captureUrl } = await openSnippetPage("configured");
+
+  expect(state, diagnostics.join("\n")).toBe("ready");
+  const envelopes = (await waitForEnvelopes(
+    captureUrl,
+    (captured) =>
+      captured.some(({ name }) => name === "Microsoft.ApplicationInsights.Exception") &&
+      captured.some(({ name }) => name === "Microsoft.ApplicationInsights.PageView"),
+  )) as CapturedEnvelope[];
+  expect(envelopes).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        name: "Microsoft.ApplicationInsights.Exception",
+        data: expect.objectContaining({
+          baseData: expect.objectContaining({
+            exceptions: [expect.objectContaining({ message: "cdn snippet failure" })],
+          }),
+        }),
+      }),
+    ]),
+  );
+  expect(envelopes.length).toBeGreaterThan(0);
+  for (const envelope of envelopes) {
+    expect(envelope.tags?.["ai.cloud.role"], envelope.name).toBe("cdn-snippet-service");
+  }
+});
+
 it.each([
   ["an integrity mismatch", "tampered"],
   ["a missing bundle", "missing"],
@@ -86,4 +117,27 @@ it.each([
 
   expect(state).toMatch(/^failed: OpenTelemetry browser bundle failed to load: /);
   await expect(fetch(captureUrl).then((response) => response.json())).resolves.toEqual([]);
+});
+
+it("reports a missing bundle to Azure Monitor when reportLoadFailure is set", async () => {
+  const { state, captureUrl } = await openSnippetPage("reported");
+
+  expect(state).toMatch(/^failed: OpenTelemetry browser bundle failed to load: /);
+  const envelopes = await waitForEnvelopes(captureUrl, (captured) => captured.length > 0);
+  expect(envelopes).toEqual([
+    expect.objectContaining({
+      name: "Microsoft.ApplicationInsights.Exception",
+      iKey: "00000000-0000-0000-0000-000000000000",
+      data: expect.objectContaining({
+        baseData: expect.objectContaining({
+          exceptions: [
+            expect.objectContaining({
+              typeName: "SDKLoadFailed",
+              message: expect.stringMatching(/failed to load: http:\/\/127\.0\.0\.1:\d+\/missing-/),
+            }),
+          ],
+        }),
+      }),
+    }),
+  ]);
 });

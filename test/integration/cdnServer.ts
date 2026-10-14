@@ -88,13 +88,23 @@ async function writeSnippetPage(
   )) as typeof import("../../src/snippet.js");
 
   const snippet = getSdkLoaderScript({
-    src: `${cdnOrigin}/${scenario === "missing" ? `missing-${bundle.file}` : bundle.file}`,
+    src: `${cdnOrigin}/${scenario === "missing" || scenario === "reported" ? `missing-${bundle.file}` : bundle.file}`,
     connectionString:
       "InstrumentationKey=00000000-0000-0000-0000-000000000000;" +
       `IngestionEndpoint=${ingestionEndpoint}`,
     integrity:
       scenario === "tampered" ? `sha384-${"A".repeat(64)}` : `sha384-${bundle.hashes.sha384}`,
+    ...(scenario === "reported" && { loadDelay: 10, reportLoadFailure: true }),
+    ...(scenario === "configured" && {
+      instrumentationOptions: { errors: { enabled: true } },
+      resourceAttributes: { "service.name": "cdn-snippet-service", "service.version": "1.2.3" },
+    }),
   });
+  // Reported only when the snippet enabled the opt-in errors instrumentation.
+  const reportError =
+    scenario === "configured"
+      ? `window.dispatchEvent(new ErrorEvent("error", { error: new Error("cdn snippet failure"), message: "cdn snippet failure" }));\n  `
+      : "";
   // Application requests the snippet's default fetch and XHR instrumentations must report.
   const dependencyUrl = (runId: string) =>
     `${new URL(ingestionEndpoint).origin}/captured?runId=${runId}`;
@@ -103,7 +113,7 @@ async function writeSnippetPage(
     .getTracer("cdn-snippet-test")
     .startSpan("cdn-snippet-span", { attributes: { "test.run_id": ${JSON.stringify(runId)} } })
     .end();
-  return fetch(${JSON.stringify(dependencyUrl("snippet-fetch"))}).then(function () {
+  ${reportError}return fetch(${JSON.stringify(dependencyUrl("snippet-fetch"))}).then(function () {
     return new Promise(function (resolve) {
       var xhr = new XMLHttpRequest();
       xhr.addEventListener("loadend", function () { resolve(handle); });

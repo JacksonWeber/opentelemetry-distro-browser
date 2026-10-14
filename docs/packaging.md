@@ -58,11 +58,11 @@ in each Node job's check summary and uploads all three files as build artifacts.
 
 Every executable published entry point has absolute minified, gzip and Brotli budgets:
 
-| Entry point          | Minified |  Gzip | Brotli |
-| -------------------- | -------: | ----: | -----: |
-| `.`                  |   115 kB | 34 kB |  30 kB |
-| `./instrumentations` |    64 kB | 24 kB |  22 kB |
-| `./snippet`          |     2 kB |  1 kB |   1 kB |
+| Entry point          | Minified |    Gzip | Brotli |
+| -------------------- | -------: | ------: | -----: |
+| `.`                  |   115 kB |   34 kB |  30 kB |
+| `./instrumentations` |    64 kB |   24 kB |  22 kB |
+| `./snippet`          |     6 kB | 2.75 kB | 2.5 kB |
 
 The generated JSON and Markdown reports show the measured values, ceilings and result for each
 entry point. During alpha releases, violations are report-only so the baselines can stabilize.
@@ -117,7 +117,7 @@ present. Add the generated script to the page `<head>` and replace `CHANNEL`, `V
 <!-- prettier-ignore -->
 ```html
 <script>
-!(function(w,d,c){var s=d.createElement("script");w.microsoftOpenTelemetry=new Promise(function(resolve,reject){s.src=c.src;s.crossOrigin=c.crossOrigin;if(c.integrity)s.integrity=c.integrity;s.onload=function(){var sdk=w.Microsoft&&w.Microsoft.OpenTelemetry;if(!sdk||typeof sdk.useMicrosoftOpenTelemetry!=="function"){reject(new Error("OpenTelemetry browser bundle did not expose Microsoft.OpenTelemetry"));return}Promise.resolve().then(function(){return typeof sdk.getInstrumentations==="function"?sdk.getInstrumentations():[]}).then(function(instrumentations){return sdk.useMicrosoftOpenTelemetry({azureMonitor:{connectionString:c.connectionString},instrumentations:instrumentations})}).then(resolve,reject)};s.onerror=function(){reject(new Error("OpenTelemetry browser bundle failed to load: "+c.src))};d.head.appendChild(s)})})(window,document,{"src":"https://js.monitor.azure.com/scripts/otel/CHANNEL/opentelemetry-browser.VERSION.min.js","connectionString":"YOUR_CONNECTION_STRING","crossOrigin":"anonymous","integrity":"YOUR_INTEGRITY"});
+!(function(w,d,c){w.microsoftOpenTelemetry=new Promise(function(resolve,reject){function l(u){var s=d.createElement("script");s.src=u;s.crossOrigin=c.crossOrigin;if(c.integrity)s.integrity=c.integrity;s.onload=function(){var sdk=w.Microsoft&&w.Microsoft.OpenTelemetry;if(!sdk||typeof sdk.useMicrosoftOpenTelemetry!=="function"){reject(new Error("OpenTelemetry browser bundle did not expose Microsoft.OpenTelemetry"));return}Promise.resolve().then(function(){return typeof sdk.getInstrumentations==="function"?sdk.getInstrumentations(c.instrumentationOptions):[]}).then(function(i){var o=c.cfg;o.instrumentations=i;if(c.resourceAttributes)o.resource=sdk.resourceFromAttributes(c.resourceAttributes);return sdk.useMicrosoftOpenTelemetry(o)}).then(resolve,reject)};s.onerror=function(){reject(new Error("OpenTelemetry browser bundle failed to load: "+u))};d.head.appendChild(s)}l(c.src)})})(window,document,{"src":"https://js.monitor.azure.com/scripts/otel/CHANNEL/opentelemetry-browser.VERSION.min.js","crossOrigin":"anonymous","integrity":"YOUR_INTEGRITY","cfg":{"azureMonitor":{"connectionString":"YOUR_CONNECTION_STRING"}}});
 </script>
 ```
 
@@ -127,10 +127,39 @@ or rejects when the bundle fails to load, fails its integrity check or fails to 
 Content Security Policy, allow the snippet's hash or nonce and the CDN origin in `script-src`, and
 the Azure Monitor ingestion origin in `connect-src`.
 
+`getSdkLoaderScript()` also accepts the JSON-serializable distribution options: `samplingPercentage`,
+`azureMonitor.disableBeacon`, `session`, `userContext`, and the data-only `pageView` settings
+(`enabled`, `redactedQueryParams`, `softNavigationSettleTimeoutMs`, `useNavigationApiIfAvailable`).
+They are inlined into the configuration object's `cfg`, which the loader passes to
+`useMicrosoftOpenTelemetry` unchanged with the connection string in `cfg.azureMonitor`. Two settings
+are applied by the bundle instead: `instrumentationOptions`, the `getInstrumentations()` options,
+such as `{ errors: { enabled: true } }`, which default to `fetch` and XHR; and `resourceAttributes`,
+string, number or boolean attributes such as `service.name` that the bundle's
+`Microsoft.OpenTelemetry.resourceFromAttributes` turns into the `resource` option. Optional settings
+that are not configured are omitted from the generated script. The helper throws a `TypeError` for a
+value of the wrong type or one that JSON cannot represent, such as a function or regular expression.
+Hooks, processors, exporters, context managers, propagators and resource detectors require the npm
+package.
+
+Three loader options mirror the Application Insights loader and add code to the generated script
+only when set, so the default snippet stays small:
+
+| Option              | Application Insights | Behavior                                                                                                                                                                                                           |
+| ------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `loadDelay`         | `ld`                 | Milliseconds to wait before adding the bundle's script element. Negative values are rejected; the loader never blocks page load.                                                                                   |
+| `cdnFallback`       | `cr`                 | When the bundle fails to load, retries it from each backup host: `js.cdn.applicationinsights.io`, `js.cdn.monitor.azure.com`, `js0.` and `js2.` variants. Requires `src` on one of them or `js.monitor.azure.com`. |
+| `reportLoadFailure` | Load failure report  | After the last attempt fails, posts an `SDKLoadFailed` exception to the ingestion endpoint resolved from the connection string at generation time.                                                                 |
+
+Unlike the Application Insights loader, fallback and failure reporting are off by default. With
+`cdnFallback`, allow the backup hosts in `script-src`; with `reportLoadFailure`, the ingestion
+origin must already be allowed in `connect-src`.
+
 `npm run test:integration` loads the prepared CDN bundle cross-origin into a plain HTML page
 through the built snippet, under such a policy, in Chromium, Firefox, and WebKit. It verifies that
 page-view, span, `fetch` and XHR dependency telemetry reaches an Azure Monitor ingestion endpoint,
-and that integrity mismatches and missing bundles reject initialization.
+that an instrumentation enabled through `instrumentationOptions` reports telemetry tagged with the
+configured `resourceAttributes`, that integrity mismatches and missing bundles reject
+initialization, and that `reportLoadFailure` reports a missing bundle.
 
 ## Performance measurements
 

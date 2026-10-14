@@ -12,6 +12,16 @@ All notable changes to this package are documented in this file.
 - Publish the minimum supported Chrome, Edge, Firefox, and Safari versions and gate the built
   browser bundle against those releases with real-browser acceptance tests.
 - Publish a `<module>.<version>.size.svg` size badge with each CDN release, generated at build time.
+- Configure the CDN loader snippet with JSON settings: `getSdkLoaderScript()` accepts
+  `samplingPercentage`, `azureMonitor.disableBeacon`, `session`, `userContext`, data-only `pageView`
+  settings, `instrumentationOptions` for `getInstrumentations()`, and `resourceAttributes`. The CDN
+  bundle exposes `Microsoft.OpenTelemetry.resourceFromAttributes` so the loader can build the
+  resource. Existing snippets keep working; regenerated snippets pass their settings in a `cfg`
+  object.
+- Add Application Insights-style loader options to `getSdkLoaderScript()`: `loadDelay` (`ld`),
+  `cdnFallback` to retry from backup Azure Monitor CDN hosts (`cr`), and `reportLoadFailure` to send
+  an `SDKLoadFailed` exception when the bundle cannot load. Each is off by default and adds code to
+  the generated snippet only when enabled.
 
 ### Changed
 

@@ -151,6 +151,8 @@ const runtimeKeys = async (entry) =>
 
 test("every CDN bundle loads without window and exposes its documented npm API", async () => {
   const otelApi = ["context", "diag", "logs", "metrics", "propagation", "trace"];
+  // The loader snippet builds its resource with this; npm consumers import it themselves.
+  const loaderApi = ["resourceFromAttributes"];
   const resourceDetectors = [
     "BrowserDetector",
     "browserDetector",
@@ -162,6 +164,7 @@ test("every CDN bundle loads without window and exposes its documented npm API",
       ...(await runtimeKeys("index.js")),
       ...(await runtimeKeys("instrumentations.js")),
       ...otelApi,
+      ...loaderApi,
     ]),
   ];
   // The opt-in resource detectors are npm-only; no CDN bundle carries them.
