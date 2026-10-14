@@ -185,16 +185,16 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
   /** Advanced trace context and propagation configuration. */
   traces?: MicrosoftOpenTelemetryBrowserTraceOptions;
   /**
-   * Span processors to register with the tracer provider. When omitted, spans export through
-   * default OTLP, or only to Azure Monitor when `azureMonitor` is set. An empty array skips trace
-   * initialization. Ownership transfers when provider startup begins, including failed startup.
+   * Span processors to register with the tracer provider. When omitted, spans export to Azure
+   * Monitor when `azureMonitor` is set; otherwise trace initialization is skipped. An empty array
+   * always skips trace initialization. Ownership transfers when provider startup begins, including failed startup.
    * Do not share processor instances between handles.
    */
   spanProcessors?: SpanProcessor[];
   /**
-   * Log record processors to register with the logger provider. When omitted, logs export through
-   * default OTLP, or only to Azure Monitor when `azureMonitor` is set. An empty array skips log
-   * initialization. Ownership transfers when provider startup begins, including failed startup.
+   * Log record processors to register with the logger provider. When omitted, logs export to Azure
+   * Monitor when `azureMonitor` is set; otherwise log initialization is skipped. An empty array
+   * always skips log initialization. Ownership transfers when provider startup begins, including failed startup.
    * Do not share processor instances between handles.
    */
   logRecordProcessors?: LogRecordProcessor[];

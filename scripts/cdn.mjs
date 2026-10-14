@@ -12,7 +12,7 @@ export const cdnOrigin = "https://js.monitor.azure.com";
 export const cdnDirectory = resolve(root, "cdn");
 export const cacheControl = "public, max-age=31536000, immutable, no-transform";
 
-const modules = ["opentelemetry-browser", "opentelemetry-browser-instrumentations"];
+export const modules = ["opentelemetry-browser", "opentelemetry-browser-instrumentations"];
 // Source format in dist/browser -> CDN format. The IIFE is the default because the loader snippet
 // requires the `Microsoft.OpenTelemetry` global, which UMD skips when an AMD loader is present.
 const formats = [

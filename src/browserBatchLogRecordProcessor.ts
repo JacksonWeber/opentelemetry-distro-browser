@@ -35,112 +35,112 @@ export type BrowserBatchLogRecordProcessorOptions = Pick<
  * for older exports. An older response must not hold queued telemetry in a dying document.
  */
 export class BrowserBatchLogRecordProcessor implements LogRecordProcessor {
-  private readonly exporter: LogRecordExporter;
-  private readonly maxQueueSize: number;
-  private readonly maxExportBatchSize: number;
-  private readonly scheduledDelayMillis: number;
-  private readonly exportTimeoutMillis: number;
-  private records: ReadableLogRecord[] = [];
-  private readonly pending = new Set<Promise<void>>();
-  private timer: ReturnType<typeof setTimeout> | undefined;
-  private stopped = false;
-  private queueFullReported = false;
-  private shutdownPromise: Promise<void> | undefined;
+  readonly #exporter: LogRecordExporter;
+  readonly #maxQueueSize: number;
+  readonly #maxExportBatchSize: number;
+  readonly #scheduledDelayMillis: number;
+  readonly #exportTimeoutMillis: number;
+  #records: ReadableLogRecord[] = [];
+  readonly #pending = new Set<Promise<void>>();
+  #timer: ReturnType<typeof setTimeout> | undefined;
+  #stopped = false;
+  #queueFullReported = false;
+  #shutdownPromise: Promise<void> | undefined;
 
   public constructor(options: BrowserBatchLogRecordProcessorOptions) {
-    this.exporter = options.exporter;
-    this.maxQueueSize = options.maxQueueSize ?? 2048;
+    this.#exporter = options.exporter;
+    this.#maxQueueSize = options.maxQueueSize ?? 2048;
     const batchSize = options.maxExportBatchSize ?? 512;
     if (
-      !Number.isSafeInteger(this.maxQueueSize) ||
-      this.maxQueueSize <= 0 ||
+      !Number.isSafeInteger(this.#maxQueueSize) ||
+      this.#maxQueueSize <= 0 ||
       !Number.isSafeInteger(batchSize) ||
       batchSize <= 0
     ) {
       throw new RangeError("Log queue and batch sizes must be positive integers");
     }
-    this.maxExportBatchSize = Math.min(batchSize, this.maxQueueSize);
-    this.scheduledDelayMillis = options.scheduledDelayMillis ?? 1000;
-    this.exportTimeoutMillis = options.exportTimeoutMillis ?? 30_000;
+    this.#maxExportBatchSize = Math.min(batchSize, this.#maxQueueSize);
+    this.#scheduledDelayMillis = options.scheduledDelayMillis ?? 1000;
+    this.#exportTimeoutMillis = options.exportTimeoutMillis ?? 30_000;
   }
 
   public onEmit(record: ReadWriteLogRecord): void {
-    if (this.stopped) return;
-    if (this.records.length >= this.maxQueueSize) {
-      if (!this.queueFullReported) {
-        this.queueFullReported = true;
+    if (this.#stopped) return;
+    if (this.#records.length >= this.#maxQueueSize) {
+      if (!this.#queueFullReported) {
+        this.#queueFullReported = true;
         diag.warn("Log queue full; dropping records");
       }
       return;
     }
-    this.queueFullReported = false;
-    this.records.push(record);
-    this.schedule();
+    this.#queueFullReported = false;
+    this.#records.push(record);
+    this.#schedule();
   }
 
   public forceFlush(): Promise<void> {
-    if (this.shutdownPromise) return this.shutdownPromise;
-    this.clearTimer();
-    const records = this.records;
-    this.records = [];
-    const operations = [...this.pending];
-    for (let offset = 0; offset < records.length; offset += this.maxExportBatchSize) {
-      operations.push(this.exportBatch(records.slice(offset, offset + this.maxExportBatchSize)));
+    if (this.#shutdownPromise) return this.#shutdownPromise;
+    this.#clearTimer();
+    const records = this.#records;
+    this.#records = [];
+    const operations = [...this.#pending];
+    for (let offset = 0; offset < records.length; offset += this.#maxExportBatchSize) {
+      operations.push(this.#exportBatch(records.slice(offset, offset + this.#maxExportBatchSize)));
     }
     return waitForAll(operations, "Log flush failed");
   }
 
   public shutdown(): Promise<void> {
-    if (!this.shutdownPromise) {
-      this.stopped = true;
+    if (!this.#shutdownPromise) {
+      this.#stopped = true;
       const flush = this.forceFlush();
       const cleanup = (): Promise<void> =>
-        runLifecycleTasks([() => this.exporter.shutdown()], "Log exporter shutdown failed");
+        runLifecycleTasks([() => this.#exporter.shutdown()], "Log exporter shutdown failed");
       // Cleanup follows flush even on failure; keep each rejection instead of replacing it.
-      this.shutdownPromise = waitForAll(
+      this.#shutdownPromise = waitForAll(
         [flush, flush.then(cleanup, cleanup)],
         "Log shutdown failed",
       );
     }
-    return this.shutdownPromise;
+    return this.#shutdownPromise;
   }
 
-  private schedule(): void {
-    if (this.stopped || this.pending.size || !this.records.length) return;
+  #schedule(): void {
+    if (this.#stopped || this.#pending.size || !this.#records.length) return;
     const flush = (): void => {
-      this.clearTimer();
-      const batch = this.records.splice(0, this.maxExportBatchSize);
-      void this.exportBatch(batch).catch(globalErrorHandler);
+      this.#clearTimer();
+      const batch = this.#records.splice(0, this.#maxExportBatchSize);
+      void this.#exportBatch(batch).catch(globalErrorHandler);
     };
-    if (this.records.length >= this.maxExportBatchSize) flush();
-    else if (this.timer === undefined) this.timer = setTimeout(flush, this.scheduledDelayMillis);
+    if (this.#records.length >= this.#maxExportBatchSize) flush();
+    else if (this.#timer === undefined) this.#timer = setTimeout(flush, this.#scheduledDelayMillis);
   }
 
-  private exportBatch(records: ReadableLogRecord[]): Promise<void> {
+  #exportBatch(records: ReadableLogRecord[]): Promise<void> {
     // Defer until onEmit has returned and every processor has finished enriching the record.
     const operation = Promise.resolve().then(
       () =>
         new Promise<void>((resolve, reject) =>
           context.with(suppressTracing(context.active()), () =>
-            this.exporter.export(records, (result) => {
+            this.#exporter.export(records, (result) => {
               if (result.code === ExportResultCode.SUCCESS) resolve();
               else reject(result.error ?? new Error("Log export failed"));
             }),
           ),
         ),
     );
-    const tracked = callWithTimeout(operation, this.exportTimeoutMillis).finally(() => {
-      this.pending.delete(tracked);
-      this.schedule();
+    const tracked = callWithTimeout(operation, this.#exportTimeoutMillis).finally(() => {
+      this.#pending.delete(tracked);
+      this.#schedule();
     });
-    this.pending.add(tracked);
+    this.#pending.add(tracked);
     return tracked;
   }
 
-  private clearTimer(): void {
-    if (this.timer !== undefined) {
-      clearTimeout(this.timer);
-      this.timer = undefined;
+  #clearTimer(): void {
+    if (this.#timer !== undefined) {
+      clearTimeout(this.#timer);
+      this.#timer = undefined;
     }
   }
 }

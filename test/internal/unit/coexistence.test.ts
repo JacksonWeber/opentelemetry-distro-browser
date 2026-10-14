@@ -487,6 +487,7 @@ it("cleans up partially created owned processors before handing them to a pipeli
   });
   await expect(
     useMicrosoftOpenTelemetry({
+      azureMonitor: { connectionString: "InstrumentationKey=00000000-0000-0000-0000-000000000000" },
       session: { enabled: true },
       userContext: { enabled: false },
       pageView: { enabled: false },
@@ -496,61 +497,54 @@ it("cleans up partially created owned processors before handing them to a pipeli
   expect(logShutdown).toHaveBeenCalledOnce();
 });
 
-it.each(["OTLP", "Azure Monitor"])(
-  "cleans up owned %s processors when the application's diagnostic logger throws during startup",
-  async (destination) => {
-    const failure = new Error("application diagnostic logger failed");
-    const logger = {
-      error: vi.fn(),
-      warn: vi.fn<() => void>(() => {
-        throw failure;
-      }),
-      info: vi.fn(),
-      debug: vi.fn(),
-      verbose: vi.fn(),
-    };
-    diag.setLogger(logger);
-    const spanShutdown = vi.spyOn(BatchSpanProcessor.prototype, "shutdown");
-    const logShutdown = vi.spyOn(BrowserBatchLogRecordProcessor.prototype, "shutdown");
-    const instrumentation = probe();
-    const bind = vi.spyOn(instrumentation, "setTracerProvider");
+it("cleans up owned Azure Monitor processors when the application's diagnostic logger throws during startup", async () => {
+  const failure = new Error("application diagnostic logger failed");
+  const logger = {
+    error: vi.fn(),
+    warn: vi.fn<() => void>(() => {
+      throw failure;
+    }),
+    info: vi.fn(),
+    debug: vi.fn(),
+    verbose: vi.fn(),
+  };
+  diag.setLogger(logger);
+  const spanShutdown = vi.spyOn(BatchSpanProcessor.prototype, "shutdown");
+  const logShutdown = vi.spyOn(BrowserBatchLogRecordProcessor.prototype, "shutdown");
+  const instrumentation = probe();
+  const bind = vi.spyOn(instrumentation, "setTracerProvider");
 
-    await expect(
-      useMicrosoftOpenTelemetry({
-        ...(destination === "Azure Monitor"
-          ? {
-              azureMonitor: {
-                connectionString: "InstrumentationKey=00000000-0000-0000-0000-000000000000",
-              },
-            }
-          : {}),
-        pageView: { enabled: false },
-        instrumentations: [instrumentation],
-      }),
-    ).rejects.toBe(failure);
-
-    expect(spanShutdown).toHaveBeenCalledOnce();
-    expect(logShutdown).toHaveBeenCalledOnce();
-    expect(getSharedRegistry().diagInitialized).not.toBe(true);
-    expect(bind).not.toHaveBeenCalled();
-    for (const signal of ["trace", "logs", "context", "propagation"] as const) {
-      expect(getRegisteredGlobal(signal)).toBeUndefined();
-    }
-
-    logger.warn.mockImplementation(() => {});
-    const pipeline = createInMemoryPipeline();
-    const handle = await useMicrosoftOpenTelemetry({
-      ...pipeline.options,
+  await expect(
+    useMicrosoftOpenTelemetry({
+      azureMonitor: {
+        connectionString: "InstrumentationKey=00000000-0000-0000-0000-000000000000",
+      },
       pageView: { enabled: false },
-    });
-    cleanup.push(() => handle.shutdown());
-    expect(logger.warn).toHaveBeenCalledTimes(2);
-    expect(getSharedRegistry().diagInitialized).toBe(true);
-    trace.getTracer("retry").startSpan("retry").end();
-    await handle.forceFlush();
-    expect(pipeline.spanExporter.getFinishedSpans()).toHaveLength(1);
-  },
-);
+      instrumentations: [instrumentation],
+    }),
+  ).rejects.toBe(failure);
+
+  expect(spanShutdown).toHaveBeenCalledOnce();
+  expect(logShutdown).toHaveBeenCalledOnce();
+  expect(getSharedRegistry().diagInitialized).not.toBe(true);
+  expect(bind).not.toHaveBeenCalled();
+  for (const signal of ["trace", "logs", "context", "propagation"] as const) {
+    expect(getRegisteredGlobal(signal)).toBeUndefined();
+  }
+
+  logger.warn.mockImplementation(() => {});
+  const pipeline = createInMemoryPipeline();
+  const handle = await useMicrosoftOpenTelemetry({
+    ...pipeline.options,
+    pageView: { enabled: false },
+  });
+  cleanup.push(() => handle.shutdown());
+  expect(logger.warn).toHaveBeenCalledTimes(2);
+  expect(getSharedRegistry().diagInitialized).toBe(true);
+  trace.getTracer("retry").startSpan("retry").end();
+  await handle.forceFlush();
+  expect(pipeline.spanExporter.getFinishedSpans()).toHaveLength(1);
+});
 
 it.each(["resource", "logger provider"] as const)(
   "shuts down caller processors exactly once after an early %s failure",

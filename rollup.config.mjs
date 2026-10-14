@@ -38,6 +38,22 @@ const bundleForBrowser = () => [
   compile(),
 ];
 
+/** Self-contained UMD and IIFE bundles, unminified and minified, exposing `name` as a global. */
+const globalBundle = (input, module, name) => ({
+  input,
+  plugins: bundleForBrowser(),
+  output: ["umd", "iife"].flatMap((format) =>
+    [false, true].map((minify) => ({
+      file: `dist/browser/${module}.${format}${minify ? ".min" : ""}.js`,
+      format,
+      name,
+      exports: "named",
+      inlineDynamicImports: true,
+      sourcemap: true,
+      ...(minify ? { plugins: [terser()] } : {}),
+    })),
+  ),
+});
 // The CommonJS runtime loads its ESM-only dependencies with `import()`, so its declarations must
 // resolve them as ESM too; otherwise TypeScript rejects them under Node16 module resolution.
 const commonJsDeclarationImports = {
@@ -115,86 +131,12 @@ export default [
       ],
     },
   },
-  {
-    input: "src/browser.ts",
-    plugins: bundleForBrowser(),
-    output: [
-      {
-        file: "dist/browser/opentelemetry-browser.umd.js",
-        format: "umd",
-        name: "Microsoft.OpenTelemetry",
-        exports: "named",
-        inlineDynamicImports: true,
-        sourcemap: true,
-      },
-      {
-        file: "dist/browser/opentelemetry-browser.umd.min.js",
-        format: "umd",
-        name: "Microsoft.OpenTelemetry",
-        exports: "named",
-        inlineDynamicImports: true,
-        sourcemap: true,
-        plugins: [terser()],
-      },
-      {
-        file: "dist/browser/opentelemetry-browser.iife.js",
-        format: "iife",
-        name: "Microsoft.OpenTelemetry",
-        exports: "named",
-        inlineDynamicImports: true,
-        sourcemap: true,
-      },
-      {
-        file: "dist/browser/opentelemetry-browser.iife.min.js",
-        format: "iife",
-        name: "Microsoft.OpenTelemetry",
-        exports: "named",
-        inlineDynamicImports: true,
-        sourcemap: true,
-        plugins: [terser()],
-      },
-    ],
-  },
-  {
-    input: "src/instrumentation/browserInstrumentation/index.ts",
-    plugins: bundleForBrowser(),
-    output: [
-      {
-        file: "dist/browser/opentelemetry-browser-instrumentations.umd.js",
-        format: "umd",
-        name: "Microsoft.OpenTelemetryInstrumentations",
-        exports: "named",
-        inlineDynamicImports: true,
-        sourcemap: true,
-      },
-      {
-        file: "dist/browser/opentelemetry-browser-instrumentations.umd.min.js",
-        format: "umd",
-        name: "Microsoft.OpenTelemetryInstrumentations",
-        exports: "named",
-        inlineDynamicImports: true,
-        sourcemap: true,
-        plugins: [terser()],
-      },
-      {
-        file: "dist/browser/opentelemetry-browser-instrumentations.iife.js",
-        format: "iife",
-        name: "Microsoft.OpenTelemetryInstrumentations",
-        exports: "named",
-        inlineDynamicImports: true,
-        sourcemap: true,
-      },
-      {
-        file: "dist/browser/opentelemetry-browser-instrumentations.iife.min.js",
-        format: "iife",
-        name: "Microsoft.OpenTelemetryInstrumentations",
-        exports: "named",
-        inlineDynamicImports: true,
-        sourcemap: true,
-        plugins: [terser()],
-      },
-    ],
-  },
+  globalBundle("src/browser.ts", "opentelemetry-browser", "Microsoft.OpenTelemetry"),
+  globalBundle(
+    "src/instrumentation/browserInstrumentation/index.ts",
+    "opentelemetry-browser-instrumentations",
+    "Microsoft.OpenTelemetryInstrumentations",
+  ),
   {
     input: "src/index.ts",
     plugins: [dts({ tsconfig: "./tsconfig.src.json" })],

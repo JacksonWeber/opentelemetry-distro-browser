@@ -82,7 +82,7 @@ export interface UserContextProvider {
 export function createUserContext(
   initialEnabled: boolean | undefined,
   storage: KeyValueStorage = createLocalStorageKeyValueStorage(
-    "User storage unavailable; managed anonymous identity is suppressed.",
+    "User storage unavailable; anonymous ID disabled.",
   ),
 ): {
   context: MicrosoftOpenTelemetryBrowserUserContext;
@@ -230,7 +230,7 @@ export function createUserContext(
       } else if (!persist()) {
         // Stale authentication is already removed; keep the anonymous identity in memory.
         anonymousIdentityEnabled = false;
-        diag.warn("User identity persistence failed; storage writes will be retried.");
+        diag.warn("User identity not saved; will retry.");
       } else {
         anonymousIdentityEnabled = true;
       }

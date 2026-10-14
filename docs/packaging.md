@@ -29,7 +29,9 @@ The `opentelemetry-browser.*` SDK bundles are self-contained and expose `Microso
 They also expose the standard OpenTelemetry APIs used by the bundled SDK, so direct-script
 consumers can emit manual telemetry without loading a second API copy. They inline every
 instrumentation and expose `getInstrumentations`, because a page loading them from the CDN has no
-bundler to add instrumentations later. The `opentelemetry-browser-instrumentations.*` bundles expose
+bundler to add instrumentations later. They omit the opt-in browser and user-agent resource
+detectors, which are available from the npm package only. The
+`opentelemetry-browser-instrumentations.*` bundles expose
 only `Microsoft.OpenTelemetryInstrumentations` and include their own API copy, which shares state
 with the SDK bundle through the OpenTelemetry global registry. Use IIFE when RequireJS may already be present; UMD deliberately registers with
 AMD loaders.
@@ -74,7 +76,7 @@ including alpha:
 
 | Artifact                                                   | Minified |  Gzip | Brotli |
 | ---------------------------------------------------------- | -------: | ----: | -----: |
-| `opentelemetry-browser.{iife,umd}.min.js`                  |   180 kB | 54 kB |  47 kB |
+| `opentelemetry-browser.{iife,umd}.min.js`                  |   157 kB | 48 kB |  42 kB |
 | `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |    63 kB | 19 kB |  17 kB |
 
 The browser bundles contain only ES2022 syntax. `npm run test:build` parses every emitted UMD and

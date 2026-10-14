@@ -281,9 +281,7 @@ it("suppresses anonymous identity when localStorage is unavailable", async () =>
 
   expect(emit().span.attributes["enduser.pseudo.id"]).toBeUndefined();
   expect(() => handle.userContext.setAuthenticatedUserContext("signed-in-user")).not.toThrow();
-  expect(warn).toHaveBeenCalledExactlyOnceWith(
-    "User storage unavailable; managed anonymous identity is suppressed.",
-  );
+  expect(warn).toHaveBeenCalledExactlyOnceWith("User storage unavailable; anonymous ID disabled.");
 });
 
 it("can enable persistence after localStorage becomes available", async () => {
@@ -308,9 +306,7 @@ it("reports a persistence failure when disabling cannot remove stored identity",
   expect(() => current.handle.userContext.setEnabled(false)).toThrow(
     "Unable to clear persisted user identity.",
   );
-  expect(warn).toHaveBeenCalledExactlyOnceWith(
-    "User storage unavailable; managed anonymous identity is suppressed.",
-  );
+  expect(warn).toHaveBeenCalledExactlyOnceWith("User storage unavailable; anonymous ID disabled.");
 });
 
 it("does not throw when disabling in-memory persistence with inaccessible storage", async () => {
@@ -589,9 +585,7 @@ it("can remove persisted identity after quota-limited writes", async () => {
 
   expect(remove).toHaveBeenCalledWith(storageKey);
   expect(localStorage.getItem(storageKey)).toBeNull();
-  expect(warn).toHaveBeenCalledExactlyOnceWith(
-    "User storage unavailable; managed anonymous identity is suppressed.",
-  );
+  expect(warn).toHaveBeenCalledExactlyOnceWith("User storage unavailable; anonymous ID disabled.");
 });
 
 it("removes invalid persisted state while clearing authentication", async () => {

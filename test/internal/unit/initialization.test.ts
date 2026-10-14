@@ -11,8 +11,6 @@ import {
 } from "@opentelemetry/api";
 import { logs, SeverityNumber } from "@opentelemetry/api-logs";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
-import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
-import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { BrowserBatchLogRecordProcessor } from "../../../src/browserBatchLogRecordProcessor.js";
 import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
@@ -26,8 +24,11 @@ import {
   type MicrosoftOpenTelemetryBrowserOptions,
 } from "../../../src/index.js";
 import { isUnloading } from "../../../src/exporter/common.js";
+import { AzureMonitorLogRecordExporter } from "../../../src/exporter/log.js";
+import { AzureMonitorSpanExporter } from "../../../src/exporter/trace.js";
 import { noopLoggerProvider, noopTracerProvider } from "../../../src/routing/instanceRouter.js";
 import { startTelemetryInstance } from "../../../src/routing/telemetryInstance.js";
+import { getSharedRegistry } from "../../../src/shared/globalOwnership.js";
 import { createInMemoryPipeline } from "../../fixtures/telemetry.js";
 import { ApplicationInsightsSampler, PageOperationSampler } from "../../../src/sampling.js";
 import { AzureMonitorSamplingLogRecordProcessor } from "../../../src/samplingLogRecordProcessor.js";
@@ -35,6 +36,9 @@ import { AzureMonitorSamplingLogRecordProcessor } from "../../../src/samplingLog
 vi.mock("../../../src/routing/telemetryInstance.js", { spy: true });
 
 const handles = new Set<MicrosoftOpenTelemetryBrowser>();
+const azureMonitor = {
+  connectionString: "InstrumentationKey=00000000-0000-0000-0000-000000000000",
+};
 
 /** Stands in for an instance's providers so a test controls their shutdown. */
 function fakeInstance() {
@@ -259,6 +263,7 @@ it.each([undefined, {}, { contextManager: undefined, propagators: undefined }])(
   async (traces) => {
     const handle = await useMicrosoftOpenTelemetry({
       traces,
+      azureMonitor,
       pageView: { enabled: false },
       logRecordProcessors: [],
     });
@@ -345,13 +350,17 @@ it("force flushes both signal processors", async () => {
   expect(logFlush).toHaveBeenCalledOnce();
 });
 
-it("owns and force flushes default OTLP processors without per-processor hide flushing", async () => {
+it("owns and force flushes default Azure Monitor processors without per-processor hide flushing", async () => {
   const succeed = (_items: unknown, done: (result: { code: number }) => void) => done({ code: 0 });
-  const spanExport = vi.spyOn(OTLPTraceExporter.prototype, "export").mockImplementation(succeed);
-  const logExport = vi.spyOn(OTLPLogExporter.prototype, "export").mockImplementation(succeed);
+  const spanExport = vi
+    .spyOn(AzureMonitorSpanExporter.prototype, "export")
+    .mockImplementation(succeed);
+  const logExport = vi
+    .spyOn(AzureMonitorLogRecordExporter.prototype, "export")
+    .mockImplementation(succeed);
   const spanFlush = vi.spyOn(BatchSpanProcessor.prototype, "forceFlush");
   const logFlush = vi.spyOn(BrowserBatchLogRecordProcessor.prototype, "forceFlush");
-  const handle = await useMicrosoftOpenTelemetry({ pageView: { enabled: false } });
+  const handle = await useMicrosoftOpenTelemetry({ azureMonitor, pageView: { enabled: false } });
   handles.add(handle);
 
   const config = vi.mocked(startTelemetryInstance).mock.calls[0]?.[0];
@@ -364,8 +373,8 @@ it("owns and force flushes default OTLP processors without per-processor hide fl
     expect.any(BrowserBatchLogRecordProcessor),
   ]);
 
-  trace.getTracer("default-otlp").startSpan("operation").end();
-  logs.getLogger("default-otlp").emit({ body: "record" });
+  trace.getTracer("default-export").startSpan("operation").end();
+  logs.getLogger("default-export").emit({ body: "record" });
   await handle.forceFlush();
   expect(spanExport).toHaveBeenCalledOnce();
   expect(logExport).toHaveBeenCalledOnce();
@@ -609,16 +618,23 @@ it("propagates initialization failures without returning a success-shaped handle
 });
 
 it.each([undefined, {}])(
-  "initializes both providers with default configuration %j",
+  "skips both providers without a telemetry destination %j",
   async (options) => {
+    getSharedRegistry().diagInitialized = false;
+    // Capture what reaches the logger the SDK installs, proving the warning follows installation.
+    const installed = { warn: vi.fn(), error() {}, info() {}, debug() {}, verbose() {} };
+    const setLogger = diag.setLogger.bind(diag);
+    vi.spyOn(diag, "setLogger").mockImplementation((_logger, level) => setLogger(installed, level));
+    const warn = installed.warn;
     const registerTrace = vi.spyOn(trace, "setGlobalTracerProvider");
     const registerLogs = vi.spyOn(logs, "setGlobalLoggerProvider");
     const detectBrowser = vi.spyOn(browserDetector, "detect");
     const detectUserAgent = vi.spyOn(userAgentDetector, "detect");
     const handle = await useMicrosoftOpenTelemetry(options);
     handles.add(handle);
-    expect(registerTrace).toHaveBeenCalledOnce();
-    expect(registerLogs).toHaveBeenCalledOnce();
+    expect(registerTrace).not.toHaveBeenCalled();
+    expect(registerLogs).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("No telemetry destination"));
     expect(detectBrowser).not.toHaveBeenCalled();
     expect(detectUserAgent).not.toHaveBeenCalled();
   },
@@ -669,13 +685,14 @@ it.each(
     const registerTrace = vi.spyOn(trace, "setGlobalTracerProvider");
     const registerLogs = vi.spyOn(logs, "setGlobalLoggerProvider");
     const spanExport = vi
-      .spyOn(OTLPTraceExporter.prototype, "export")
+      .spyOn(AzureMonitorSpanExporter.prototype, "export")
       .mockImplementation((_spans, callback) => callback({ code: 0 }));
     const logExport = vi
-      .spyOn(OTLPLogExporter.prototype, "export")
+      .spyOn(AzureMonitorLogRecordExporter.prototype, "export")
       .mockImplementation((_records, callback) => callback({ code: 0 }));
     const handle = await useMicrosoftOpenTelemetry({
       session: { enabled },
+      azureMonitor,
       pageView: { enabled: false },
       spanProcessors,
       logRecordProcessors,

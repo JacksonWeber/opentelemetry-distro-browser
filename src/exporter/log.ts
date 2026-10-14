@@ -18,24 +18,24 @@ import { logToEnvelopes } from "./logUtils.js";
  * @public
  */
 export class AzureMonitorLogRecordExporter implements LogRecordExporter {
-  private readonly client: AzureMonitorExportClient;
+  readonly #client: AzureMonitorExportClient;
 
   public constructor(options: AzureMonitorOptions) {
-    this.client = new AzureMonitorExportClient(options);
+    this.#client = new AzureMonitorExportClient(options);
   }
 
   public export(logs: ReadableLogRecord[], callback: (result: ExportResult) => void): void {
-    this.client.export(
-      logs.flatMap((log) => logToEnvelopes(log, this.client.instrumentationKey)),
+    this.#client.export(
+      logs.flatMap((log) => logToEnvelopes(log, this.#client.instrumentationKey)),
       callback,
     );
   }
 
   public forceFlush(): Promise<void> {
-    return this.client.forceFlush();
+    return this.#client.forceFlush();
   }
 
   public shutdown(): Promise<void> {
-    return this.client.shutdown();
+    return this.#client.shutdown();
   }
 }

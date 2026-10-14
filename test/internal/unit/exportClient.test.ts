@@ -47,7 +47,7 @@ describe.each(["forceFlush", "shutdown"] as const)(
                 error: expect.objectContaining({
                   message:
                     typeof response === "number"
-                      ? "Azure Monitor ingestion failed with HTTP status 400."
+                      ? "Azure Monitor export failed with HTTP 400."
                       : "offline",
                 }),
               },

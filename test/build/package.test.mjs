@@ -363,7 +363,7 @@ test("standard OTLP processors export alongside other processors", async (t) => 
   );
 });
 
-test("using the initializer includes both SDKs and their default exporters", async () => {
+test("using the initializer includes both SDKs but not the OTLP exporters", async () => {
   const chunk = await bundleConsumer('export { useMicrosoftOpenTelemetry } from "distro";');
   assert.doesNotMatch(chunk.code, /BrowserDetector|UserAgentDetector/);
   const modules = Object.entries(chunk.modules)
@@ -372,17 +372,16 @@ test("using the initializer includes both SDKs and their default exporters", asy
   // The initializer deliberately pulls in the instrumentations this distribution owns and turns
   // on by itself. They are selected by configuration, not by import, so they are part of the
   // initializer's cost by design rather than an accidental dependency.
-  for (const name of [
-    "sdk-trace",
-    "sdk-logs",
-    "exporter-trace-otlp-http",
-    "exporter-logs-otlp-http",
-  ]) {
+  for (const name of ["sdk-trace", "sdk-logs"]) {
     assert.ok(
       modules.some((id) => id.includes(`/@opentelemetry/${name}/`)),
       `${name} must be included by the combined initializer`,
     );
   }
+  assert.ok(
+    !modules.some((id) => /\/@opentelemetry\/(otlp-|exporter-.*-otlp-)/.test(id)),
+    "OTLP exporters are opt-in through caller processors",
+  );
 });
 
 test("individual upstream instrumentation imports do not retain other instrumentations", async () => {

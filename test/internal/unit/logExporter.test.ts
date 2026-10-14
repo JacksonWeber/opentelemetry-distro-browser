@@ -177,7 +177,7 @@ describe("AzureMonitorLogRecordExporter", () => {
         ]),
       ).resolves.toMatchObject({
         code: ExportResultCode.FAILED,
-        error: expect.objectContaining({ message: expect.stringContaining("delivered 2 of 3") }),
+        error: expect.objectContaining({ message: expect.stringContaining("sent 2 of 3") }),
       });
       expect(fetch).toHaveBeenCalledOnce();
       expect(sendBeacon).toHaveBeenCalledOnce();

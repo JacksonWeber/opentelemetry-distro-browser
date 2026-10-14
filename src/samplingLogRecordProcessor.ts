@@ -19,7 +19,7 @@ export interface AzureMonitorSamplingLogRecordProcessorOptions extends BrowserBa
 }
 
 export class AzureMonitorSamplingLogRecordProcessor extends BrowserBatchLogRecordProcessor {
-  private readonly samplingPercentage: number;
+  readonly #samplingPercentage: number;
 
   public constructor(
     options: AzureMonitorSamplingLogRecordProcessorOptions,
@@ -27,22 +27,22 @@ export class AzureMonitorSamplingLogRecordProcessor extends BrowserBatchLogRecor
   ) {
     const { samplingPercentage, ...batchOptions } = options;
     super(batchOptions);
-    this.samplingPercentage = validateSamplingPercentage(samplingPercentage);
+    this.#samplingPercentage = validateSamplingPercentage(samplingPercentage);
   }
 
   public override onEmit(record: ReadWriteLogRecord): void {
     const spanContext = record.spanContext;
     const correlated = !!spanContext && isSpanContextValid(spanContext);
     const sampled = correlated
-      ? isTraceSampled(spanContext.traceId, this.samplingPercentage)
-      : this.samplingPercentage === 100 ||
-        (this.samplingPercentage !== 0 && this.random() * 100 < this.samplingPercentage);
+      ? isTraceSampled(spanContext.traceId, this.#samplingPercentage)
+      : this.#samplingPercentage === 100 ||
+        (this.#samplingPercentage !== 0 && this.random() * 100 < this.#samplingPercentage);
     if (!sampled) return;
 
     const currentSampleRate = record.attributes[AZURE_MONITOR_SAMPLE_RATE];
     const effectiveSampleRate = getEffectiveSampleRate(
       currentSampleRate,
-      this.samplingPercentage,
+      this.#samplingPercentage,
       !correlated,
     );
     if (effectiveSampleRate < 100 && currentSampleRate !== effectiveSampleRate) {
