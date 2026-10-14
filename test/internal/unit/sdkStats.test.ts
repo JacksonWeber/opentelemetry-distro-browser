@@ -468,7 +468,7 @@ it("does not fall back to beacon because beacon cannot suppress private page ref
 it.each(["spans", "logs"] as const)(
   "flushes internal %s exporter stats without accepting caller-supplied stats configuration",
   async (signal) => {
-    vi.spyOn(statsConfiguration, "getInternalSdkStatsConfiguration").mockReturnValue(options);
+    vi.mocked(statsConfiguration.getInternalSdkStatsConfiguration).mockReturnValue(options);
     const normal = transport.getMockImplementation()!;
     transport.mockImplementation(async (url, init) =>
       url === `${CUSTOMER_ENDPOINT}/v2/track` ? new Response(null) : normal(url, init),
@@ -516,7 +516,7 @@ it.each(["spans", "logs"] as const)(
 it.each(["network", "HTTP"] as const)(
   "does not fail customer exports, forceFlush or shutdown after a stats %s failure",
   async (failure) => {
-    vi.spyOn(statsConfiguration, "getInternalSdkStatsConfiguration").mockReturnValue(options);
+    vi.mocked(statsConfiguration.getInternalSdkStatsConfiguration).mockReturnValue(options);
     transport.mockImplementation(async (url) => {
       if (url === `${CUSTOMER_ENDPOINT}/v2/track`) return new Response(null);
       if (failure === "network") throw new TypeError("Network failed");

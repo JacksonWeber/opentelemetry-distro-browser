@@ -1,4 +1,5 @@
 import { playwright } from "@vitest/browser-playwright";
+import { fileURLToPath } from "node:url";
 import { defineConfig, type TestUserConfig } from "vitest/config";
 
 export const browserInstances = [
@@ -8,6 +9,16 @@ export const browserInstances = [
 ] satisfies NonNullable<NonNullable<TestUserConfig["browser"]>["instances"]>;
 
 export default defineConfig({
+  resolve: {
+    alias: [
+      {
+        find: /^.*sdkStatsConfiguration\.js$/,
+        replacement: fileURLToPath(
+          new URL("./test/fixtures/sdkStatsConfigurationMock.ts", import.meta.url),
+        ),
+      },
+    ],
+  },
   optimizeDeps: {
     include: [
       "@opentelemetry/api",

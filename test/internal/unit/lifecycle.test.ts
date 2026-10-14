@@ -32,7 +32,7 @@ it.each(["spans", "logs"] as const)(
       return new Response(null);
     });
     vi.stubGlobal("fetch", fetch);
-    vi.spyOn(statsConfiguration, "getInternalSdkStatsConfiguration").mockReturnValue({
+    vi.mocked(statsConfiguration.getInternalSdkStatsConfiguration).mockReturnValue({
       instrumentationKey: "11111111-1111-1111-1111-111111111111",
       endpoint: "https://stats.example.test/v2/track",
     });

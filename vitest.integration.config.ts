@@ -5,9 +5,10 @@ import { verifyUnloadDelivery } from "./test/integration/unloadCommand.js";
 
 export default defineConfig({
   ...config,
+  resolve: { ...config.resolve, alias: [] },
   test: {
     ...config.test,
-    // Plain navigation fixtures must not inherit the unit suite's module-mocking routes.
+    // Integration tests and navigation fixtures use the real stats configuration.
     setupFiles: [],
     browser: {
       ...config.test?.browser,
