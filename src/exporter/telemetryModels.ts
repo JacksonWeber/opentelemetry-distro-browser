@@ -76,6 +76,14 @@ export interface CustomEventData extends EnvelopeData {
   readonly name: string;
 }
 
+export interface MetricData extends EnvelopeData {
+  readonly metrics: readonly {
+    readonly name: string;
+    readonly kind: 0;
+    readonly value: number;
+  }[];
+}
+
 export type AzureMonitorBaseData =
   | RequestData
   | RemoteDependencyData
@@ -83,7 +91,8 @@ export type AzureMonitorBaseData =
   | ExceptionData
   | PageViewData
   | PageViewPerformanceData
-  | CustomEventData;
+  | CustomEventData
+  | MetricData;
 
 export interface AzureMonitorEnvelope<T extends AzureMonitorBaseData = AzureMonitorBaseData> {
   readonly name: string;
@@ -100,7 +109,8 @@ export interface AzureMonitorEnvelope<T extends AzureMonitorBaseData = AzureMoni
       | "ExceptionData"
       | "PageViewData"
       | "PageviewPerformanceData"
-      | "EventData";
+      | "EventData"
+      | "MetricData";
     readonly baseData: T;
   };
 }

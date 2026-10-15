@@ -3,11 +3,17 @@
 
 import { ROOT_CONTEXT, context, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
+import { afterEach, beforeEach, expect, inject, it, vi } from "vitest";
 import { resourceFromAttributes } from "@opentelemetry/resources";
-import { afterEach, expect, inject, it, vi } from "vitest";
 import { version } from "../../package.json";
 import type { AzureMonitorEnvelope } from "../../src/exporter/telemetryModels.js";
 import { createInMemoryPipeline } from "../fixtures/telemetry.js";
+import { withoutSdkStats } from "../fixtures/sdkStats.js";
+
+beforeEach(() => {
+  const fetch = globalThis.fetch.bind(globalThis);
+  vi.spyOn(globalThis, "fetch").mockImplementation(withoutSdkStats(fetch));
+});
 
 afterEach(() => {
   trace.disable();

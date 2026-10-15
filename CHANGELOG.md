@@ -6,6 +6,11 @@ All notable changes to this package are documented in this file.
 
 ### Added
 
+- Send internal Azure Monitor network SDK stats directly to the production stats collector without
+  public configuration or remote configuration requests. Keep counters isolated per exporter,
+  follow accepted customer redirects, exclude requests ending at disabled EU or government-cloud
+  hosts even through untrusted redirects, and suppress request referrers. Stats use bounded
+  best-effort fetch delivery, including keepalive on unload.
 - Document CDN loader snippet setup and failure handling in the README.
 - Classify named browser log events as Azure Monitor custom events regardless of severity, while
   preserving browser console records as trace messages with their severity.

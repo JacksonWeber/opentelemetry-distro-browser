@@ -3,7 +3,7 @@
 
 import { context, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
-import { afterEach, expect, inject, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, inject, it, vi } from "vitest";
 import type { AzureMonitorEnvelope } from "../../src/exporter/telemetryModels.js";
 import {
   useMicrosoftOpenTelemetry,
@@ -13,6 +13,12 @@ import {
 import { createInMemoryPipeline } from "../fixtures/telemetry.js";
 import { loadBrowserScript } from "../fixtures/browserBundle.js";
 import realmSource from "../fixtures/coexistenceRealm.js?raw";
+import { withoutSdkStats } from "../fixtures/sdkStats.js";
+
+beforeEach(() => {
+  const fetch = globalThis.fetch.bind(globalThis);
+  vi.spyOn(globalThis, "fetch").mockImplementation(withoutSdkStats(fetch));
+});
 
 interface Installation {
   trace: typeof trace;

@@ -85,7 +85,7 @@ export function truncateToLength(value: string, maxLength: number): string {
     : truncated;
 }
 
-function getSdkVersion(): string {
+export function getSdkVersion(): string {
   const sdkVersion = SDK_INFO[ATTR_TELEMETRY_SDK_VERSION];
   return `browser:otel${sdkVersion}:mot${OPENTELEMETRY_BROWSER_VERSION}`;
 }

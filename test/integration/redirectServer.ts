@@ -14,6 +14,7 @@ declare module "vitest" {
 
 export default async function setup(project: TestProject): Promise<() => Promise<void>> {
   const ingestedEnvelopes = new Map<string, unknown[]>();
+  const ingestedReferrers = new Map<string, string[]>();
   let redirectRequests = 0;
   let finalRequests = 0;
 
@@ -45,6 +46,10 @@ export default async function setup(project: TestProject): Promise<() => Promise
         const runId = decodeURIComponent(ingestionMatch[1]);
         const envelopes = JSON.parse(await readRequestBody(request)) as unknown[];
         ingestedEnvelopes.set(runId, [...(ingestedEnvelopes.get(runId) ?? []), ...envelopes]);
+        ingestedReferrers.set(runId, [
+          ...(ingestedReferrers.get(runId) ?? []),
+          request.headers.referer ?? "",
+        ]);
         if (
           envelopes.some(
             (envelope) =>
@@ -70,7 +75,13 @@ export default async function setup(project: TestProject): Promise<() => Promise
     if (request.method === "GET" && request.url?.startsWith("/captured")) {
       const runId = new URL(request.url, "http://localhost").searchParams.get("runId") ?? "";
       response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify(ingestedEnvelopes.get(runId) ?? []));
+      response.end(
+        JSON.stringify(
+          request.url.startsWith("/captured-referrers")
+            ? (ingestedReferrers.get(runId) ?? [])
+            : (ingestedEnvelopes.get(runId) ?? []),
+        ),
+      );
       return;
     }
     response.writeHead(404).end();

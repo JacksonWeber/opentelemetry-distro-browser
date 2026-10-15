@@ -12,6 +12,8 @@ import {
   MAX_PENDING_KEEPALIVE_BODY_SIZE,
 } from "./constants.js";
 import { Sender, type SenderResultType } from "./sender.js";
+import { createInternalSdkStats, type InternalSdkStats } from "./sdkStats.js";
+import { getInternalSdkStatsConfiguration } from "./sdkStatsConfiguration.js";
 import type { AzureMonitorBaseData, AzureMonitorEnvelope } from "./telemetryModels.js";
 
 const CONTENT_TYPE = "application/json";
@@ -38,6 +40,7 @@ export class AzureMonitorExportClient {
   readonly #sender: Sender;
   readonly #pending = new Set<Promise<void>>();
   #stopped = false;
+  readonly #stats: InternalSdkStats;
 
   public constructor(options: AzureMonitorOptions) {
     const { instrumentationKey, ingestionEndpoint } = parseConnectionString(
@@ -47,9 +50,12 @@ export class AzureMonitorExportClient {
       throw new Error("Connection string needs a valid InstrumentationKey UUID.");
     }
     this.instrumentationKey = instrumentationKey;
+    const statsConfiguration = getInternalSdkStatsConfiguration(ingestionEndpoint);
+    this.#stats = createInternalSdkStats(statsConfiguration, instrumentationKey, ingestionEndpoint);
     this.#sender = new Sender({
       endpoint: `${ingestionEndpoint}/v2/track`,
       disableBeacon: options.disableBeacon,
+      stats: this.#stats,
     });
   }
 
@@ -120,13 +126,16 @@ export class AzureMonitorExportClient {
   }
 
   public async forceFlush(): Promise<void> {
+    // Customer exports get keepalive capacity before stats.
     await Promise.all([...this.#pending]);
+    await this.#stats.forceFlush();
   }
 
   public async shutdown(): Promise<void> {
     if (this.#stopped) return;
     this.#stopped = true;
-    await this.forceFlush();
+    const pending = Promise.all([...this.#pending]);
+    await this.#stats.shutdown(pending);
   }
 }
 

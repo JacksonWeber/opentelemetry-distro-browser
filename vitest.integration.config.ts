@@ -5,8 +5,11 @@ import { verifyUnloadDelivery } from "./test/integration/unloadCommand.js";
 
 export default defineConfig({
   ...config,
+  resolve: { ...config.resolve, alias: [] },
   test: {
     ...config.test,
+    // Keep unit mocks out of integration tests.
+    setupFiles: [],
     browser: {
       ...config.test?.browser,
       commands: { loadSnippetPage, verifyUnloadDelivery },

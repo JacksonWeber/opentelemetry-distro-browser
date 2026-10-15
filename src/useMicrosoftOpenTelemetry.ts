@@ -104,6 +104,7 @@ export async function useMicrosoftOpenTelemetry(
   let spanProcessors: SpanProcessor[] | undefined = options.spanProcessors?.slice();
   let logRecordProcessors: LogRecordProcessor[] | undefined = options.logRecordProcessors?.slice();
   const ownedProcessors: (SpanProcessor | LogRecordProcessor)[] = [];
+  const azureMonitorExporters: (AzureMonitorSpanExporter | AzureMonitorLogRecordExporter)[] = [];
   const traceOptions = options.traces && {
     ...options.traces,
     propagators: options.traces.propagators?.slice(),
@@ -158,9 +159,11 @@ export async function useMicrosoftOpenTelemetry(
   };
   function flushProcessors(): Promise<void> {
     const processors = [...(spanProcessors ?? []), ...(logRecordProcessors ?? [])];
+    const exporterTasks = azureMonitorExporters.map((exporter) => () => exporter.forceFlush());
     return runLifecycleTasks(
       processors.map((processor) => () => processor.forceFlush()),
       "Telemetry flush failed",
+      exporterTasks,
     );
   }
 
@@ -237,6 +240,15 @@ export async function useMicrosoftOpenTelemetry(
           errors.push(error);
         }
       }
+      try {
+        // Also clean up exporters after processor failures.
+        await runLifecycleTasks(
+          azureMonitorExporters.map((exporter) => () => exporter.shutdown()),
+          "SDK stats shutdown failed",
+        );
+      } catch (error) {
+        errors.push(error);
+      }
       if (errors.length === 1) throw errors[0];
       if (errors.length > 1) throw new AggregateError(errors, "Telemetry shutdown failed");
     })().then(resolve, reject);
@@ -248,8 +260,10 @@ export async function useMicrosoftOpenTelemetry(
   try {
     if (azureMonitor) {
       if (spanProcessors?.length !== 0) {
+        const exporter = new AzureMonitorSpanExporter(azureMonitor);
+        azureMonitorExporters.push(exporter);
         const spanProcessor = new BatchSpanProcessor(
-          new AzureMonitorSpanExporter(azureMonitor),
+          exporter,
           // The handle flushes on page hide; avoid a second per-processor hide flush.
           { disableAutoFlushOnDocumentHide: true },
         );
@@ -258,6 +272,7 @@ export async function useMicrosoftOpenTelemetry(
       }
       if (logRecordProcessors?.length !== 0) {
         const exporter = new AzureMonitorLogRecordExporter(azureMonitor);
+        azureMonitorExporters.push(exporter);
         const logProcessor =
           options.samplingPercentage === undefined
             ? new BrowserBatchLogRecordProcessor({ exporter })

@@ -12,6 +12,7 @@ import type { AzureMonitorEnvelope } from "../../src/exporter/telemetryModels.js
 import type { MicrosoftOpenTelemetryBrowser } from "../../src/types.js";
 import { TEST_INSTRUMENTATION_KEY } from "../fixtures/azureMonitor.js";
 import { createInMemoryPipeline } from "../fixtures/telemetry.js";
+import { withoutSdkStats } from "../fixtures/sdkStats.js";
 
 const ENDPOINT = "https://ingestion.example.test/v2/track";
 const REQUEST = {
@@ -46,7 +47,7 @@ describe.each(["index.js", "index.min.js"])("export instrumentation through %s",
       const distro: typeof import("../../src/index.js") = await import(/* @vite-ignore */ url.href);
       const nativeFetch = globalThis.fetch.bind(globalThis);
       const transport = vi.fn(nativeFetch);
-      vi.stubGlobal("fetch", transport);
+      vi.stubGlobal("fetch", withoutSdkStats(transport));
       instrumentation = new FetchInstrumentation({ enabled: false });
       const runId = crypto.randomUUID();
       const ingestionEndpoint = `${inject("ingestionEndpoint")}${runId}`;
@@ -112,7 +113,7 @@ describe.each(["index.js", "index.min.js"])("export instrumentation through %s",
       const url = new URL(path, import.meta.url);
       const distro: typeof import("../../src/index.js") = await import(/* @vite-ignore */ url.href);
       const transport = vi.fn<typeof fetch>().mockImplementation(async () => new Response(null));
-      vi.stubGlobal("fetch", transport);
+      vi.stubGlobal("fetch", withoutSdkStats(transport));
       instrumentation = new FetchInstrumentation({
         enabled: alreadyEnabled,
         propagateTraceHeaderCorsUrls: [ENDPOINT],

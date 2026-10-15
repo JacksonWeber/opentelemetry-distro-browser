@@ -1,7 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { trace } from "@opentelemetry/api";
+import { loadBrowserScript } from "../fixtures/browserBundle.js";
+import { SDK_STATS_ENDPOINT, withoutSdkStats } from "../fixtures/sdkStats.js";
+import { trace as sourceTrace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { ConsoleInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/console";
 import { useMicrosoftOpenTelemetry as initializeSource } from "../../src/index.js";
@@ -12,6 +14,7 @@ const parameters = new URLSearchParams(location.search);
 const ingestionEndpoint = parameters.get("ingestionEndpoint");
 const runId = parameters.get("runId");
 const pageView = parameters.get("pageView") === "true";
+const statsIngestionEndpoint = parameters.get("statsIngestionEndpoint");
 const inFlight = parameters.get("inFlight") === "true";
 const artifact = parameters.get("artifact");
 const largeBatch = parameters.get("largeBatch") === "true";
@@ -19,12 +22,41 @@ if (!ingestionEndpoint || !runId) {
   throw new Error("Unload fixture requires ingestionEndpoint and runId parameters.");
 }
 
-const useMicrosoftOpenTelemetry =
+let statsReady: Promise<void> | undefined;
+if (statsIngestionEndpoint) {
+  const fetch = globalThis.fetch.bind(globalThis);
+  statsReady = new Promise<void>((resolve) => {
+    globalThis.fetch = async (url, init) => {
+      const response = await fetch(url === SDK_STATS_ENDPOINT ? statsIngestionEndpoint : url, init);
+      if (url === `${ingestionEndpoint}/v2/track`) {
+        const text = response.text.bind(response);
+        response.text = async () => {
+          const body = await text();
+          resolve();
+          return body;
+        };
+      }
+      return response;
+    };
+  });
+} else {
+  const fetch = globalThis.fetch.bind(globalThis);
+  globalThis.fetch = withoutSdkStats(fetch);
+}
+let useMicrosoftOpenTelemetry =
   artifact === "index.js"
     ? initializeEsm
     : artifact === "index.min.js"
       ? initializeMinifiedEsm
       : initializeSource;
+let trace = sourceTrace;
+if (statsIngestionEndpoint) {
+  await loadBrowserScript("opentelemetry-browser.iife.js");
+  const bundle = window.Microsoft?.OpenTelemetry;
+  if (!bundle) throw new Error("The browser bundle did not initialize.");
+  useMicrosoftOpenTelemetry = bundle.useMicrosoftOpenTelemetry;
+  trace = bundle.trace;
+}
 
 await useMicrosoftOpenTelemetry({
   azureMonitor: {
@@ -83,4 +115,6 @@ for (let index = 0; index < spanCount; index++) {
     })
     .end();
 }
+// Wait for customer delivery without flushing stats.
+await statsReady;
 document.body.dataset.ready = "true";

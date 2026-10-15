@@ -4,15 +4,23 @@
 import { callWithTimeout } from "@opentelemetry/core";
 import { getSharedRegistry, reportError } from "./globalOwnership.js";
 
-/** Runs every cleanup task, including when a sibling throws or never settles. */
+/** Runs bounded task groups in order, collecting all failures. */
 export async function runLifecycleTasks(
   tasks: readonly (() => Promise<void>)[],
   message: string,
+  followingTasks?: readonly (() => Promise<void>)[],
 ): Promise<void> {
-  return waitForAll(
-    tasks.map((task) => callWithTimeout(Promise.resolve().then(task), 30_000)),
-    message,
-  );
+  const errors: unknown[] = [];
+  for (const group of followingTasks ? [tasks, followingTasks] : [tasks]) {
+    const results = await Promise.allSettled(
+      group.map((task) => callWithTimeout(Promise.resolve().then(task), 30_000)),
+    );
+    for (const result of results) {
+      if (result.status === "rejected") errors.push(result.reason);
+    }
+  }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, message);
 }
 
 /** Waits for every already-bounded operation without imposing a second deadline. */

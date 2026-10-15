@@ -7,6 +7,7 @@ import { createServer, type Server, type ServerResponse } from "node:http";
 import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { TestProject } from "vitest/node";
+import { SDK_STATS_ENDPOINT } from "../fixtures/sdkStats.js";
 
 declare module "vitest" {
   export interface ProvidedContext {
@@ -143,7 +144,7 @@ async function writeSnippetPage(
     "content-security-policy": [
       "default-src 'none'",
       `script-src ${hash(snippet)} ${hash(application)} ${cdnOrigin}`,
-      `connect-src ${new URL(ingestionEndpoint).origin}`,
+      `connect-src ${new URL(ingestionEndpoint).origin} ${new URL(SDK_STATS_ENDPOINT).origin}`,
     ].join("; "),
   });
   response.end(`<!doctype html>
