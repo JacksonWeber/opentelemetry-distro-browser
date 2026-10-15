@@ -284,6 +284,59 @@ it.each([undefined, {}, { contextManager: undefined, propagators: undefined }])(
   },
 );
 
+it("warns when another initialization claims page context during resource detection", async () => {
+  const pendingPipeline = createInMemoryPipeline();
+  let resolveAttribute!: (value: string) => void;
+  const resource = detectResources({
+    detectors: [
+      {
+        detect: () => ({
+          attributes: {
+            "service.name": new Promise<string>((resolve) => {
+              resolveAttribute = resolve;
+            }),
+          },
+        }),
+      },
+    ],
+  });
+  let markWaiting!: () => void;
+  const waiting = new Promise<void>((resolve) => {
+    markWaiting = resolve;
+  });
+  const waitForAttributes = resource.waitForAsyncAttributes!.bind(resource);
+  vi.spyOn(resource, "waitForAsyncAttributes").mockImplementation(() => {
+    markWaiting();
+    return waitForAttributes();
+  });
+  const createPropagator = (field: string) => ({
+    fields: () => [field],
+    inject: vi.fn(),
+    extract: vi.fn((ctx) => ctx),
+  });
+  const warn = vi.spyOn(diag, "warn");
+  const pending = useMicrosoftOpenTelemetry({
+    ...pendingPipeline.options,
+    resource,
+    traces: { propagators: [createPropagator("x-pending")] },
+  });
+  await waiting;
+  const ownerPipeline = createInMemoryPipeline();
+  handles.add(
+    await useMicrosoftOpenTelemetry({
+      ...ownerPipeline.options,
+      traces: { propagators: [createPropagator("x-owner")] },
+    }),
+  );
+  resolveAttribute("checkout-web");
+  handles.add(await pending);
+
+  expect(propagation.fields()).toEqual(["x-owner"]);
+  expect(warn).toHaveBeenCalledWith(
+    "Trace context options ignored; page context already registered",
+  );
+});
+
 it("identifies the distribution without displacing the upstream SDK defaults", async () => {
   const pipeline = createInMemoryPipeline();
   const spanExport = vi.spyOn(pipeline.spanExporter, "export");
@@ -347,6 +400,39 @@ it("resolves asynchronous resource detector attributes before SDK startup", asyn
     expect.objectContaining({
       resourceAttributes: expect.objectContaining({ "user_agent.os.version": "11" }),
     }),
+  );
+});
+
+it("preserves asynchronously detected resource attributes in spans and logs", async () => {
+  const pipeline = createInMemoryPipeline();
+  const resource = detectResources({
+    detectors: [
+      {
+        detect: () => ({
+          attributes: {
+            "service.name": new Promise<string>((resolve) => {
+              setTimeout(() => resolve("checkout-web"), 0);
+            }),
+            "service.version": "4.2.1",
+          },
+        }),
+      },
+    ],
+  });
+  const handle = await useMicrosoftOpenTelemetry({ ...pipeline.options, resource });
+  handles.add(handle);
+  await resource.waitForAsyncAttributes?.();
+
+  trace.getTracer("manual").startSpan("checkout").end();
+  logs.getLogger("manual").emit({ body: "checkout completed" });
+  await handle.forceFlush();
+
+  const expected = { "service.name": "checkout-web", "service.version": "4.2.1" };
+  expect(pipeline.spanExporter.getFinishedSpans()).toHaveLength(1);
+  expect(pipeline.logExporter.getFinishedLogRecords()).toHaveLength(1);
+  expect(pipeline.spanExporter.getFinishedSpans()[0].resource.attributes).toMatchObject(expected);
+  expect(pipeline.logExporter.getFinishedLogRecords()[0].resource.attributes).toMatchObject(
+    expected,
   );
 });
 

@@ -270,6 +270,7 @@ export async function useMicrosoftOpenTelemetry(
     await session?.start();
     spanProcessors ??= [];
     logRecordProcessors ??= [];
+    await options.resource?.waitForAsyncAttributes?.();
     if (
       (traceOptions?.contextManager || traceOptions?.propagators) &&
       spanProcessors.length !== 0 &&
@@ -277,7 +278,6 @@ export async function useMicrosoftOpenTelemetry(
     ) {
       diag.warn("Trace context options ignored; page context already registered");
     }
-    await options.resource?.waitForAsyncAttributes?.();
     const instanceOptions = {
       // Spread last: the caller's attributes win.
       resourceAttributes: {
