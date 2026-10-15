@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/@microsoft/opentelemetry-browser?label=npm&color=cb3837)](https://www.npmjs.com/package/@microsoft/opentelemetry-browser)
 [![Build](https://github.com/microsoft/opentelemetry-distro-browser/actions/workflows/pr-validation.yml/badge.svg)](https://github.com/microsoft/opentelemetry-distro-browser/actions/workflows/pr-validation.yml)
-[![Status: alpha](https://img.shields.io/badge/status-alpha-orange)](CHANGELOG.md)
+[![Status: beta](https://img.shields.io/badge/status-beta-yellow)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Microsoft's OpenTelemetry distribution for browser applications. It provides one initialization
@@ -15,7 +15,7 @@ This package is the browser sibling of the Microsoft OpenTelemetry distributions
 [Python](https://github.com/microsoft/opentelemetry-distro-python).
 
 > [!IMPORTANT]
-> The package is currently an alpha release. APIs may change before the first stable release.
+> The package is currently a beta release. APIs may change before the first stable release.
 
 ## Getting started
 
@@ -28,7 +28,7 @@ This package is the browser sibling of the Microsoft OpenTelemetry distributions
 ### Install the package
 
 ```bash
-npm install @microsoft/opentelemetry-browser@alpha
+npm install @microsoft/opentelemetry-browser@beta
 ```
 
 ### Quick start
@@ -113,9 +113,9 @@ page's `<head>`, replacing `CHANNEL`, `VERSION`, `YOUR_CONNECTION_STRING`, and `
 </script>
 ```
 
-For example, `0.1.0-alpha.3` uses channel `alpha`, and its `YOUR_INTEGRITY` is the
+For example, `0.1.0-beta.1` uses channel `beta`, and its `YOUR_INTEGRITY` is the
 `ext["@min.js"].integrity` value in
-[`opentelemetry-browser.0.1.0-alpha.3.integrity.json`](https://js.monitor.azure.com/scripts/otel/alpha/opentelemetry-browser.0.1.0-alpha.3.integrity.json).
+[`opentelemetry-browser.0.1.0-beta.1.integrity.json`](https://js.monitor.azure.com/scripts/otel/beta/opentelemetry-browser.0.1.0-beta.1.integrity.json).
 The snippet enables Azure Monitor export, page views, and `fetch` and XHR dependency collection.
 To change that, add JSON settings to the configuration object at the end of the snippet. Settings in
 `cfg` use the same names as the npm options and are passed to `useMicrosoftOpenTelemetry` as is;

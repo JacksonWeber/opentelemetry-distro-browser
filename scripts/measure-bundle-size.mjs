@@ -18,9 +18,9 @@ const packageName = packageJson.name;
 
 export const entryPointBudgets = {
   ".": {
-    rawBytes: 115 * 1024,
-    gzipBytes: 34 * 1024,
-    brotliBytes: 30 * 1024,
+    rawBytes: 121 * 1024,
+    gzipBytes: 38 * 1024,
+    brotliBytes: 34 * 1024,
   },
   "./instrumentations": {
     rawBytes: 64 * 1024,

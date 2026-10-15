@@ -79,13 +79,13 @@ function findUndeclaredRequireCalls(code) {
   return [...undeclared].sort();
 }
 
-test("the package is configured for a public alpha release", () => {
+test("the package is configured for a public beta release", () => {
   assert.equal(pkg.name, "@microsoft/opentelemetry-browser");
-  assert.equal(pkg.version, "0.1.0-alpha.3");
+  assert.equal(pkg.version, "0.1.0-beta.1");
   assert.equal(Object.hasOwn(pkg, "private"), false);
   assert.deepEqual(pkg.publishConfig, {
     access: "public",
-    tag: "alpha",
+    tag: "beta",
   });
 });
 
