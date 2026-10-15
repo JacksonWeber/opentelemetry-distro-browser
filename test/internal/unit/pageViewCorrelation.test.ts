@@ -144,10 +144,16 @@ it.each([false, true])(
       expect(headers.traceparent?.split("-")[1]).toBe(id);
       expect(log.spanContext?.traceId).toBe(id);
       const anonymousUserId = log.attributes["enduser.pseudo.id"];
+      const sessionId = log.attributes["session.id"];
       expect(anonymousUserId).toMatch(/^[0-9a-f]{32}$/);
-      expect(log.attributes).toEqual({ "enduser.pseudo.id": anonymousUserId });
+      expect(sessionId).toMatch(/^[0-9a-f]{32}$/);
+      expect(log.attributes).toEqual({
+        "enduser.pseudo.id": anonymousUserId,
+        "session.id": sessionId,
+      });
       expect(pipeline.onSpan.mock.calls.at(-1)![0].attributes).toEqual({
         "enduser.pseudo.id": anonymousUserId,
+        "session.id": sessionId,
       });
       const routeLog = pipeline.onLog.mock.calls.find(
         ([record]) =>

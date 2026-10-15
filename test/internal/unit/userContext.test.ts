@@ -43,6 +43,7 @@ async function initialize(
   const records: ReadWriteLogRecord[] = [];
   const handle = await useMicrosoftOpenTelemetry({
     ...(persistence === "default" ? {} : { userContext: { enabled: persistence } }),
+    session: { enabled: false },
     pageView: { enabled: false },
     ...(resourceAttributes && { resource: resourceFromAttributes(resourceAttributes) }),
     spanProcessors: [
@@ -81,7 +82,7 @@ it("does not apply anonymous identity or access storage before persistence is en
   expect(access).not.toHaveBeenCalled();
 });
 
-it("persists anonymous identity by default without persisting authenticated identity", async () => {
+it("persists and restores anonymous and authenticated identity by default", async () => {
   const first = await initialize("default");
   const anonymousId = first.emit().span.attributes["enduser.pseudo.id"];
   expect(anonymousId).toMatch(/^[0-9a-f]{32}$/);
@@ -93,7 +94,11 @@ it("persists anonymous identity by default without persisting authenticated iden
     "user.id": "signed-in-user",
     "user.account.id": "tenant-42",
   });
-  expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual({ anonymousId });
+  expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual({
+    anonymousId,
+    authenticatedUserId: "signed-in-user",
+    accountId: "tenant-42",
+  });
 
   await first.handle.shutdown();
   handles.delete(first.handle);
@@ -101,14 +106,15 @@ it("persists anonymous identity by default without persisting authenticated iden
   logs.disable();
 
   const restored = await initialize("default");
-  expect(restored.emit().span.attributes).toMatchObject({
-    "enduser.pseudo.id": anonymousId,
-  });
-  expect(restored.emit().span.attributes["user.id"]).toBeUndefined();
-  expect(restored.emit().span.attributes["user.account.id"]).toBeUndefined();
+  const emitted = restored.emit();
+  for (const record of [emitted.span, emitted.log]) {
+    expect(record.attributes["enduser.pseudo.id"]).toBe(anonymousId);
+    expect(record.attributes["user.id"]).toBe("signed-in-user");
+    expect(record.attributes["user.account.id"]).toBe("tenant-42");
+  }
 });
 
-it("does not erase persisted authentication when a default handle restores anonymous identity", async () => {
+it("restores persisted authentication by default without changing storage", async () => {
   const optedIn = await initialize(true);
   optedIn.handle.userContext.setAuthenticatedUserContext("signed-in-user", "tenant-42");
   const stored = JSON.parse(localStorage.getItem(storageKey)!);
@@ -121,8 +127,8 @@ it("does not erase persisted authentication when a default handle restores anony
   expect(defaultHandle.emit().span.attributes).toMatchObject({
     "enduser.pseudo.id": stored.anonymousId,
   });
-  expect(defaultHandle.emit().span.attributes["user.id"]).toBeUndefined();
-  expect(defaultHandle.emit().span.attributes["user.account.id"]).toBeUndefined();
+  expect(defaultHandle.emit().span.attributes["user.id"]).toBe("signed-in-user");
+  expect(defaultHandle.emit().span.attributes["user.account.id"]).toBe("tenant-42");
   expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual(stored);
   await defaultHandle.handle.shutdown();
   handles.delete(defaultHandle.handle);
@@ -474,7 +480,7 @@ it("retries authenticated identity persistence after storage recovers", async ()
   });
 });
 
-it("retries anonymous-only persistence after a default-mode clear failure", async () => {
+it("retries authenticated persistence after a default-mode clear failure", async () => {
   const current = await initialize("default");
   vi.spyOn(Storage.prototype, "setItem")
     .mockImplementationOnce(() => {
@@ -492,7 +498,11 @@ it("retries anonymous-only persistence after a default-mode clear failure", asyn
     current.handle.userContext.setAuthenticatedUserContext("in-memory-user", "in-memory-account"),
   ).not.toThrow();
   const stored = JSON.parse(localStorage.getItem(storageKey)!);
-  expect(stored).toEqual({ anonymousId: expect.any(String) });
+  expect(stored).toEqual({
+    anonymousId: expect.any(String),
+    authenticatedUserId: "in-memory-user",
+    accountId: "in-memory-account",
+  });
   expect(current.emit().span.attributes).toMatchObject({
     "enduser.pseudo.id": stored.anonymousId,
     "user.id": "in-memory-user",

@@ -34,7 +34,7 @@ export function createSession(
     30 * 60,
     "inactivityTimeout",
   );
-  const maxDuration = lifetimeSeconds(options.maxDuration, 0, "maxDuration");
+  const maxDuration = lifetimeSeconds(options.maxDuration, 24 * 60 * 60, "maxDuration");
   const persist = options.persist === undefined ? true : options.persist;
   if (typeof persist !== "boolean") throw new TypeError("session.persist must be a boolean.");
   let lastActivityTimestamp = Date.now();

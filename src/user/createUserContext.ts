@@ -90,7 +90,7 @@ export function createUserContext(
 } {
   let persistenceEnabled = initialEnabled !== false;
   let anonymousIdentityEnabled = persistenceEnabled;
-  let authenticatedPersistenceEnabled = initialEnabled === true;
+  let authenticatedPersistenceEnabled = persistenceEnabled;
   let persistedIdentityMayExist = false;
   let anonymousId = generateAnonymousId();
   let authenticatedUserId: string | undefined;

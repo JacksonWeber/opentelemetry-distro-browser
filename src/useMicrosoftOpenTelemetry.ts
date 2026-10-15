@@ -92,7 +92,8 @@ function createOwnedInstrumentations(
 export async function useMicrosoftOpenTelemetry(
   options: MicrosoftOpenTelemetryBrowserOptions = {},
 ): Promise<MicrosoftOpenTelemetryBrowser> {
-  const session = options.session?.enabled === true ? createSession(options.session) : undefined;
+  const session =
+    options.session?.enabled !== false ? createSession(options.session ?? {}) : undefined;
   getSharedRegistry();
   const samplingPercentage = options.samplingPercentage ?? 100;
   const sampler =

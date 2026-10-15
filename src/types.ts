@@ -125,7 +125,7 @@ export interface MicrosoftOpenTelemetryBrowserTraceOptions {
  * @public
  */
 export interface MicrosoftOpenTelemetryBrowserSessionOptions {
-  /** Enables session tracking. Defaults to false. */
+  /** Enables session tracking. Defaults to true. False disables it without accessing storage. */
   enabled?: boolean;
   /**
    * Persist in localStorage (default true). False uses memory without accessing or clearing storage.
@@ -135,7 +135,9 @@ export interface MicrosoftOpenTelemetryBrowserSessionOptions {
    * Seconds without managed-session telemetry. Defaults to 1800. Zero disables inactivity expiry.
    */
   inactivityTimeout?: number;
-  /** Maximum lifetime in seconds, including across reloads. Defaults to 0 (unlimited). */
+  /**
+   * Maximum lifetime in seconds, including across reloads. Defaults to 86400 (24 hours). Zero means unlimited.
+   */
   maxDuration?: number;
 }
 
@@ -162,17 +164,17 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
    * page belong here. Only its attributes are used; the schema URL is not carried through.
    */
   resource?: Resource;
-  /** Opt-in session tracking. Disabled sessions do not access storage. */
+  /** Session tracking, enabled by default. Disabled sessions do not access storage. */
   session?: MicrosoftOpenTelemetryBrowserSessionOptions;
   /**
-   * User identity persistence configuration.
+   * User identity persistence configuration. `enabled` defaults to true.
    *
    * @remarks
    * By default, spans and logs receive a stable managed `enduser.pseudo.id` unless the record or
    * resource already has one. The anonymous ID is persisted in same-origin `localStorage` so user
    * metrics remain stable across page loads and SDK instances. Authenticated user and account IDs
-   * set through the returned user context remain in memory by default; set `enabled` to `true` only
-   * when those values may also be persisted. Set `enabled` to `false` to disable all managed
+   * set through the returned user context are also persisted by default. Set `enabled` to `false`
+   * to keep authenticated values in memory and disable all managed
    * identity persistence and anonymous-ID enrichment without accessing storage.
    *
    * The storage record is shared by every handle in the origin and remains across browser sessions

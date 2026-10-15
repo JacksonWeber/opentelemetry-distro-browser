@@ -56,9 +56,7 @@ afterEach(async () => {
 
 async function initialize(
   shutdown: () => Promise<void> = async () => {},
-  options: Pick<MicrosoftOpenTelemetryBrowserOptions, "session" | "resource"> = {
-    session: { enabled: true },
-  },
+  options: Pick<MicrosoftOpenTelemetryBrowserOptions, "session" | "resource"> = {},
 ) {
   const spans: Span[] = [];
   const records: ReadWriteLogRecord[] = [];
@@ -97,7 +95,7 @@ async function initialize(
   return { handle, emit, spans, records };
 }
 
-it("generates and persists the same session ID when explicitly enabled", async () => {
+it("generates and persists the same session ID by default", async () => {
   const { emit } = await initialize();
   const id = emit();
   expect(id).toMatch(/^[0-9a-f]{32}$/);
@@ -114,7 +112,7 @@ it("uses fresh memory-only sessions without touching storage when persistence co
   localStorage.setItem(storageKey, stored);
   const access = vi.spyOn(window, "localStorage", "get");
   const warn = vi.spyOn(diag, "warn").mockImplementation(() => {});
-  const options = { session: { enabled: true, persist: false, inactivityTimeout: 1 } };
+  const options = { session: { persist: false, inactivityTimeout: 1 } };
   const first = await initialize(undefined, options);
   const id = first.emit();
   expect(id).toMatch(/^[0-9a-f]{32}$/);
@@ -218,6 +216,68 @@ it.each([false, true])(
   },
 );
 
+it.each([false, true])(
+  "enforces the default 24-hour lifetime at the exact boundary (reload=%s)",
+  async (reload) => {
+    const start = Date.now();
+    const first = await initialize();
+    const id = first.emit();
+    // Keep the session active so the default inactivity timeout cannot expire it first.
+    for (let minute = 1; minute < 24 * 60; minute++) {
+      vi.setSystemTime(start + minute * 60_000);
+      expect(first.emit()).toBe(id);
+    }
+    vi.setSystemTime(start + 24 * 60 * 60_000 - 1);
+    expect(first.emit()).toBe(id);
+    let current = first;
+    if (reload) {
+      await first.handle.shutdown();
+      handles.delete(first.handle);
+      resetApis();
+      current = await initialize();
+      expect(current.emit()).toBe(id);
+    }
+    vi.setSystemTime(start + 24 * 60 * 60_000);
+    const renewed = current.emit();
+    expect(renewed).not.toBe(id);
+    expect(renewed).toMatch(/^[0-9a-f]{32}$/);
+    expect(JSON.parse(localStorage.getItem(storageKey)!)).toMatchObject({ id: renewed });
+  },
+);
+
+it.each([30 * 60_000 - 1, 30 * 60_000, 30 * 60_000 + 1])(
+  "enforces the default 30-minute inactivity timeout across reloads (%i ms)",
+  async (idleMs) => {
+    const first = await initialize();
+    const id = first.emit();
+    await first.handle.shutdown();
+    handles.delete(first.handle);
+    resetApis();
+    vi.setSystemTime(Date.now() + idleMs);
+    const restored = await initialize();
+    if (idleMs < 30 * 60_000) expect(restored.emit()).toBe(id);
+    else expect(restored.emit()).not.toBe(id);
+  },
+);
+
+it.each([24 * 60 * 60_000 - 1, 24 * 60 * 60_000, 24 * 60 * 60_000 + 1])(
+  "enforces the default maximum lifetime when restoring recent activity (%i ms)",
+  async (age) => {
+    vi.setSystemTime(age + 1_000_000);
+    localStorage.setItem(
+      storageKey,
+      JSON.stringify({
+        id: "restored",
+        startTimestamp: Date.now() - age,
+        lastActivityTimestamp: Date.now() - 1,
+      }),
+    );
+    const { emit } = await initialize();
+    if (age < 24 * 60 * 60_000) expect(emit()).toBe("restored");
+    else expect(emit()).not.toBe("restored");
+  },
+);
+
 it.each([1999, 2000, 2001])(
   "enforces configured maximum lifetime across reloads (%i ms)",
   async (age) => {
@@ -309,8 +369,24 @@ it("renews the session when the clock moves backwards", async () => {
   expect(emit()).not.toBe(id);
 });
 
-it.each([undefined, {}, { enabled: false }])(
-  "does not access storage, create timers, or enrich telemetry without opt-in (%j)",
+it.each([undefined, {}, { enabled: true }])(
+  "tracks and restores sessions unless explicitly disabled (%j)",
+  async (session) => {
+    const first = await initialize(undefined, { session });
+    const id = first.emit();
+    expect(id).toMatch(/^[0-9a-f]{32}$/);
+    expect(JSON.parse(localStorage.getItem(storageKey)!)).toMatchObject({ id });
+    await first.handle.shutdown();
+    handles.delete(first.handle);
+    resetApis();
+
+    const restored = await initialize(undefined, { session });
+    expect(restored.emit()).toBe(id);
+  },
+);
+
+it.each([{ enabled: false }])(
+  "does not access storage, create timers, or enrich telemetry when disabled (%j)",
   async (session) => {
     localStorage.setItem(
       storageKey,
@@ -712,8 +788,8 @@ it("preserves a span's start ID when the session renews after inactivity", async
   expect(spans[1].attributes["session.id"]).toBe(id);
 });
 
-it("keeps an active session beyond 24 hours without a maximum lifetime", async () => {
-  const { emit } = await initialize();
+it("keeps an active session beyond 24 hours with maxDuration explicitly set to zero", async () => {
+  const { emit } = await initialize(undefined, { session: { maxDuration: 0 } });
   const id = emit();
   for (let interval = 0; interval < 75; interval++) {
     await vi.advanceTimersByTimeAsync(20 * 60_000);
