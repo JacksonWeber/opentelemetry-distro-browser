@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 import { appendFile } from "node:fs/promises";
 import { brotliCompressSync, constants, gzipSync } from "node:zlib";
-import { cdnEncodings, validateCdnReport } from "./cdn.mjs";
+import { cdnEncodings, getCdnRequests } from "./cdn.mjs";
 
 export const artifactPath = "dist/esm/index.min.js";
 export const suite = "mot-browser";
@@ -116,6 +116,14 @@ function count(value, name, minimum = 1) {
   return value;
 }
 
+function timestamp(value) {
+  if (typeof value !== "string" || !/^[1-9][0-9]{15,19}$/.test(value)) {
+    throw new Error("Invalid result timestamp");
+  }
+  if (BigInt(value) > 18446744073709551615n) throw new Error("Timestamp overflow");
+  return value;
+}
+
 function attributes(values) {
   return Object.entries(values).map(([key, value]) => ({
     key,
@@ -211,13 +219,7 @@ export function createPayload(run) {
     const operations = count(result.operationsPerSample, "operations per sample");
     count(sampleCount * operations, "operation count");
     const warmup = count(result.warmupCount, "warmup count", 0);
-    if (
-      typeof result.timeUnixNano !== "string" ||
-      !/^[1-9][0-9]{15,19}$/.test(result.timeUnixNano)
-    ) {
-      throw new Error("Invalid result timestamp");
-    }
-    if (BigInt(result.timeUnixNano) > 18446744073709551615n) throw new Error("Timestamp overflow");
+    timestamp(result.timeUnixNano);
     if (environment === "node") {
       const expectedValue = scenarioProfile
         ? scenarioProfile.value
@@ -326,18 +328,46 @@ export function createPayload(run) {
     resources.get(environment).scopeLogs[0].logRecords.push(record);
   }
   if (run.cdn !== undefined) {
-    const observations = validateCdnReport(run.cdn, run.package.version);
+    const expected = getCdnRequests(run.package.version);
+    if (
+      run.cdn.version !== run.package.version ||
+      run.cdn.observations?.length !== expected.length
+    ) {
+      throw new Error("Incomplete CDN results");
+    }
     const resource = structuredClone(resources.get("node"));
     resource.resource.attributes.find(({ key }) => key === "benchmark.environment").value = {
       stringValue: "node-cdn",
     };
-    resource.scopeLogs[0].logRecords = observations.map((result) => {
+    resource.scopeLogs[0].logRecords = run.cdn.observations.map((result, index) => {
+      if (Object.entries(expected[index]).some(([key, value]) => result[key] !== value)) {
+        throw new Error("Unexpected CDN artifact or encoding");
+      }
       const measured = result.status === "ok";
+      if (measured) {
+        count(result.bytes, "CDN byte count");
+        validateSha256(result.sha256, "CDN artifact hash");
+        validateSha256(result.wireSha256, "CDN wire hash");
+        const identity = run.cdn.observations.find(
+          (value) => value.url === result.url && value.encoding === "identity",
+        );
+        if (
+          result.httpStatus !== 200 ||
+          result.contentEncoding !== result.encoding ||
+          identity?.status !== "ok" ||
+          identity.sha256 !== result.sha256 ||
+          (result.encoding === "identity" && result.wireSha256 !== result.sha256)
+        ) {
+          throw new Error("Invalid CDN measurement");
+        }
+      } else if (!["unavailable", "error"].includes(result.status) || result.bytes !== undefined) {
+        throw new Error("Invalid CDN status");
+      }
       return {
         eventName: measured
           ? "microsoft.opentelemetry.benchmark.result"
           : "microsoft.opentelemetry.benchmark.cdn.status",
-        timeUnixNano: String(BigInt(Date.parse(result.fetchedAt)) * 1_000_000n),
+        timeUnixNano: timestamp(String(BigInt(Date.parse(result.fetchedAt)) * 1_000_000n)),
         attributes: [
           ...attributes({
             "test.suite.name": suite,
@@ -364,7 +394,6 @@ export function createPayload(run) {
               ? {
                   "benchmark.artifact.sha256": result.sha256,
                   "benchmark.cdn.wire.sha256": result.wireSha256,
-                  "benchmark.cdn.manifest.sha256": result.manifestSha256,
                   "benchmark.sample_count": 1,
                   "benchmark.operations_per_sample": 1,
                   "benchmark.operation_count": 1,

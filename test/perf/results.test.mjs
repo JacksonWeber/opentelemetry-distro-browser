@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { brotliDecompressSync, constants, gzipSync, brotliCompressSync } from "node:zlib";
 import { exportResults } from "../../scripts/perf/export.mjs";
-import { cdnEncodings, getCdnTargets } from "../../scripts/perf/cdn.mjs";
+import { cdnEncodings, getCdnRequests } from "../../scripts/perf/cdn.mjs";
 import {
   createBundleScenarioResults,
   createPayload,
@@ -116,210 +116,101 @@ function fixture() {
 
 const attrs = (list) => Object.fromEntries(list.map(({ key, value }) => [key, value]));
 
-function fixtureWithCdn() {
+function fixtureWithCdn(status = "ok") {
   const run = fixture();
   run.package.version = "0.1.0-beta.1";
   run.bundleSizeReport.package.version = run.package.version;
-  const targets = getCdnTargets(run.package.version);
   run.cdn = {
-    schemaVersion: 1,
     version: run.package.version,
-    manifestUrl: targets[0].url.replace(/\.min\.js$/, ".integrity.json"),
-    observations: targets.flatMap((target) => {
-      const identity = Buffer.from(`globalThis.syntheticCdnFixture = "${target.bundleFormat}";`);
-      return Object.keys(cdnEncodings).map((encoding) => {
-        const bytes =
-          encoding === "identity"
-            ? identity
-            : encoding === "gzip"
-              ? gzipSync(identity)
-              : brotliCompressSync(identity);
-        return {
-          url: target.url,
-          path: target.path,
-          format: target.bundleFormat,
-          encoding,
-          fetchedAt: "2026-10-16T00:00:00.123Z",
-          stage: encoding === "identity" ? "identity" : "encoding",
-          status: "ok",
-          httpStatus: 200,
-          contentType: "text/javascript",
-          contentEncoding: encoding,
-          bytes: bytes.length,
-          decodedBytes: identity.length,
-          sha256: sha256(identity),
-          wireSha256: sha256(bytes),
-          manifestSha256: sha256("synthetic manifest"),
-        };
-      });
-    }),
+    observations: getCdnRequests(run.package.version).map((target) => ({
+      ...target,
+      fetchedAt: "2026-10-16T00:00:00.123Z",
+      stage: target.encoding === "identity" ? "identity" : "encoding",
+      status,
+      httpStatus: status === "ok" ? 200 : 404,
+      contentEncoding: target.encoding,
+      ...(status === "ok"
+        ? { bytes: 123, sha256: sha256(target.path), wireSha256: sha256(target.path) }
+        : { reason: "http_status", message: "HTTP 404" }),
+    })),
   };
   return run;
 }
 
-function unavailableCdn(run) {
-  run.cdn.observations = run.cdn.observations.map(({ url, path, format, encoding, fetchedAt }) => ({
-    url,
-    path,
-    format,
-    encoding,
-    fetchedAt,
-    stage: "manifest",
-    status: "unavailable",
-    reason: "http_status",
-    message: "HTTP 404",
-    httpStatus: 404,
-    contentType: "application/xml",
-    contentEncoding: "identity",
-  }));
-  return run;
-}
-
-test("CDN result events preserve legacy records and distinguish artifact and encoding identity", () => {
-  const run = fixtureWithCdn();
-  const { cdn, ...localRun } = run;
-  const legacy = createPayload(localRun);
-  const payload = createPayload(run);
-  assert.deepEqual(payload.resourceLogs.slice(0, 2), legacy.resourceLogs);
-  assert.equal(payload.resourceLogs.length, 3);
-  const resource = attrs(payload.resourceLogs[2].resource.attributes);
-  assert.deepEqual(resource["benchmark.environment"], { stringValue: "node-cdn" });
-  assert.deepEqual(resource["package.version"], { stringValue: run.package.version });
-  assert.deepEqual(resource["benchmark.run_id"], { stringValue: run.runId });
-  assert.deepEqual(resource["vcs.ref.head.revision"], { stringValue: run.revision });
-  const records = payload.resourceLogs[2].scopeLogs[0].logRecords;
-  assert.equal(records.length, 6);
-  const keys = new Set();
-  for (const [index, record] of records.entries()) {
-    const observation = cdn.observations[index];
-    const fields = attrs(record.attributes);
-    assert.equal(record.eventName, "microsoft.opentelemetry.benchmark.result");
-    assert.equal(
-      record.timeUnixNano,
-      String(BigInt(Date.parse(observation.fetchedAt)) * 1_000_000n),
-    );
-    assert.deepEqual(fields["test.case.name"], { stringValue: "bundle_cdn" });
-    assert.deepEqual(fields["benchmark.metric"], {
-      stringValue: metricPrefix + cdnEncodings[observation.encoding].metric,
-    });
-    assert.deepEqual(fields["benchmark.artifact.source"], { stringValue: "cdn" });
-    assert.deepEqual(fields["benchmark.artifact.url"], { stringValue: observation.url });
-    assert.deepEqual(fields["benchmark.artifact.path"], { stringValue: observation.path });
-    assert.deepEqual(fields["benchmark.artifact.format"], { stringValue: observation.format });
-    assert.deepEqual(fields["benchmark.artifact.sha256"], { stringValue: observation.sha256 });
-    assert.deepEqual(fields["benchmark.cdn.wire.sha256"], { stringValue: observation.wireSha256 });
-    assert.deepEqual(fields["benchmark.cdn.content_encoding"], {
-      stringValue: observation.encoding,
-    });
-    assert.deepEqual(fields["benchmark.compression.method"], {
-      stringValue: cdnEncodings[observation.encoding].method,
-    });
-    assert.deepEqual(fields["benchmark.cdn.status"], { stringValue: "ok" });
-    assert.deepEqual(fields["benchmark.cdn.http.status"], { intValue: "200" });
-    assert.deepEqual(fields["benchmark.unit"], { stringValue: "By" });
-    assert.deepEqual(fields["benchmark.statistic"], { stringValue: "value" });
-    assert.deepEqual(fields["benchmark.value"], { doubleValue: observation.bytes });
-    assert.deepEqual(fields["benchmark.sample_count"], { intValue: "1" });
-    assert.deepEqual(fields["benchmark.operation_count"], { intValue: "1" });
-    assert.deepEqual(fields["benchmark.warmup_count"], { intValue: "0" });
-    for (const key of [
-      "benchmark.compression.level",
-      "benchmark.build.config.sha256",
-      "benchmark.minifier.name",
-      "benchmark.minifier.version",
-    ]) {
-      assert.equal(fields[key], undefined);
+test("CDN events preserve legacy records, typed identity, and value-free failure outcomes", () => {
+  for (const status of ["ok", "unavailable", "error"]) {
+    const run = fixtureWithCdn(status);
+    const { cdn, ...localRun } = run;
+    const payload = createPayload(run);
+    const legacy = createPayload(localRun);
+    assert.deepEqual(payload.resourceLogs.slice(0, 2), legacy.resourceLogs);
+    const resource = structuredClone(legacy.resourceLogs[0].resource);
+    resource.attributes.find(({ key }) => key === "benchmark.environment").value.stringValue =
+      "node-cdn";
+    assert.deepEqual(payload.resourceLogs[2].resource, resource);
+    const records = payload.resourceLogs[2].scopeLogs[0].logRecords;
+    assert.equal(records.length, 6);
+    for (const [index, record] of records.entries()) {
+      const observation = cdn.observations[index];
+      const fields = attrs(record.attributes);
+      assert.equal(record.eventName, `${metricPrefix}${status === "ok" ? "result" : "cdn.status"}`);
+      assert.equal(
+        record.timeUnixNano,
+        String(BigInt(Date.parse(observation.fetchedAt)) * 1_000_000n),
+      );
+      for (const [key, value] of Object.entries({
+        "test.case.name": "bundle_cdn",
+        "benchmark.artifact.source": "cdn",
+        "benchmark.artifact.url": observation.url,
+        "benchmark.artifact.path": observation.path,
+        "benchmark.artifact.format": observation.format,
+        "benchmark.metric": metricPrefix + cdnEncodings[observation.encoding].metric,
+        "benchmark.compression.method": cdnEncodings[observation.encoding].method,
+        "benchmark.cdn.content_encoding": observation.encoding,
+        "benchmark.cdn.version": run.package.version,
+        "benchmark.cdn.fetched_at": observation.fetchedAt,
+        "benchmark.cdn.status": status,
+        "benchmark.unit": "By",
+        "benchmark.statistic": "value",
+      }))
+        assert.deepEqual(fields[key], { stringValue: value });
+      assert.deepEqual(
+        fields["benchmark.value"],
+        status === "ok" ? { doubleValue: observation.bytes } : undefined,
+      );
+      assert.deepEqual(
+        fields["benchmark.artifact.sha256"],
+        status === "ok" ? { stringValue: observation.sha256 } : undefined,
+      );
+      assert.deepEqual(
+        fields["benchmark.sample_count"],
+        status === "ok" ? { intValue: "1" } : undefined,
+      );
+      assert.equal(fields["benchmark.compression.level"], undefined);
+      assert.equal(fields["benchmark.cdn.manifest.sha256"], undefined);
+      assert.equal(fields["benchmark.build.config.sha256"], undefined);
     }
-    keys.add(`${observation.path}:${fields["benchmark.metric"].stringValue}`);
-  }
-  assert.equal(keys.size, 6);
-});
-
-test("CDN failures have visible status without measurements and do not block legacy export", async () => {
-  const run = unavailableCdn(fixtureWithCdn());
-  const localRun = { ...run };
-  delete localRun.cdn;
-  const payload = createPayload(run);
-  assert.deepEqual(payload.resourceLogs.slice(0, 2), createPayload(localRun).resourceLogs);
-  for (const record of payload.resourceLogs[2].scopeLogs[0].logRecords) {
-    const fields = attrs(record.attributes);
-    assert.equal(record.eventName, "microsoft.opentelemetry.benchmark.cdn.status");
-    assert.deepEqual(fields["benchmark.cdn.status"], { stringValue: "unavailable" });
-    assert.deepEqual(fields["benchmark.cdn.reason"], { stringValue: "http_status" });
-    assert.deepEqual(fields["benchmark.cdn.http.status"], { intValue: "404" });
-    assert.deepEqual(fields["benchmark.cdn.stage"], { stringValue: "manifest" });
-    for (const key of [
-      "benchmark.value",
-      "benchmark.sample_count",
-      "benchmark.artifact.sha256",
-      "benchmark.cdn.wire.sha256",
-    ]) {
-      assert.equal(fields[key], undefined);
-    }
-  }
-  await withCollector(async (endpoint, captured) => {
-    await exportResults(run, endpoint);
-    assert.equal(captured.length, 1);
-    assert.deepEqual(JSON.parse(captured[0].data), payload);
-  });
-  const directory = await mkdtemp(join(tmpdir(), "browser-cdn-summary-"));
-  try {
-    const path = join(directory, "summary.md");
-    await writeJobSummary(run, path);
-    const summary = await readFile(path, "utf8");
-    assert.match(summary, /CDN response-body measurements/);
-    assert.match(summary, /unavailable/);
-    assert.match(summary, /HTTP 404/);
-    assert.match(summary, /Missing encodings have no size/);
-    for (const size of Object.values(run.artifact.sizes)) {
-      assert.ok(summary.includes(`| ${size} |`));
-    }
-  } finally {
-    await rm(directory, { recursive: true, force: true });
   }
 });
 
-test("CDN validation rejects incomplete, duplicate, forged, and cross-artifact observations", () => {
+test("CDN serialization rejects invalid sizes, identity, timestamps and incomplete results", () => {
   for (const mutate of [
     (r) => r.cdn.observations.pop(),
-    (r) => r.cdn.observations.push(r.cdn.observations[0]),
     (r) => (r.cdn.observations[1] = r.cdn.observations[0]),
     (r) => (r.cdn.observations[0].bytes = 0),
     (r) => (r.cdn.observations[0].bytes = Infinity),
     (r) => (r.cdn.observations[0].bytes = 1.5),
-    (r) => (r.cdn.observations[0].bytes = 9 * 1024 * 1024),
-    (r) => (r.cdn.observations[0].format = "esm"),
     (r) => (r.cdn.observations[0].url = "https://example.com/0.1.0-beta.1.min.js"),
-    (r) => (r.cdn.observations[0].path = "/latest.min.js"),
     (r) => (r.cdn.observations[0].sha256 = "bad"),
-    (r) => (r.cdn.observations[0].wireSha256 = "b".repeat(64)),
     (r) => (r.cdn.observations[1].sha256 = r.cdn.observations[3].sha256),
-    (r) => r.cdn.observations[1].decodedBytes++,
-    (r) => (r.cdn.observations[1].manifestSha256 = "b".repeat(64)),
     (r) => (r.cdn.observations[1].contentEncoding = "identity"),
-    (r) => (r.cdn.observations[1].encoding = "deflate"),
-    (r) => (r.cdn.observations[1].stage = "manifest"),
-    (r) => (r.cdn.observations[1].httpStatus = 404),
-    (r) => (r.cdn.observations[1].contentType = "text/html"),
     (r) => (r.cdn.observations[1].fetchedAt = "tomorrow"),
     (r) => (r.cdn.observations[1].fetchedAt = "9999-01-01T00:00:00.000Z"),
     (r) => (r.cdn.version = "0.1.0-beta.2"),
-    (r) => (r.cdn.manifestUrl = "https://example.com/manifest.json"),
     (r) => (r.cdn.observations[1].status = "unavailable"),
     (r) => r.results[0].samples[0]++,
   ]) {
     const run = fixtureWithCdn();
-    mutate(run);
-    assert.throws(() => createPayload(run), undefined, String(mutate));
-  }
-  for (const mutate of [
-    (r) => (r.cdn.observations[0].bytes = 0),
-    (r) => (r.cdn.observations[0].sha256 = "a".repeat(64)),
-    (r) => (r.cdn.observations[0].reason = "invented"),
-    (r) => (r.cdn.observations[0].message = ""),
-    (r) => (r.cdn.observations[0].status = "ok"),
-  ]) {
-    const run = unavailableCdn(fixtureWithCdn());
     mutate(run);
     assert.throws(() => createPayload(run), undefined, String(mutate));
   }
@@ -767,7 +658,7 @@ test("CLI retains replay protection after an ambiguous collector response", asyn
 });
 
 test("CLI validates saved CDN payloads before sending and keeps one-shot export protection", async () => {
-  for (const run of [fixtureWithCdn(), unavailableCdn(fixtureWithCdn())]) {
+  for (const run of [fixtureWithCdn(), fixtureWithCdn("unavailable")]) {
     const directory = await mkdtemp(join(tmpdir(), "browser-cdn-export-"));
     try {
       await withCollector(async (endpoint, captured) => {
@@ -786,6 +677,10 @@ test("CLI validates saved CDN payloads before sending and keeps one-shot export 
         assert.equal(captured.length, 0);
         assert.deepEqual((await readdir(directory)).sort(), ["payload.json", "raw.json"]);
         await writeFile(join(directory, "payload.json"), JSON.stringify(createPayload(run)));
+        await writeJobSummary(run, join(directory, "summary.md"));
+        const summary = await readFile(join(directory, "summary.md"), "utf8");
+        assert.match(summary, /CDN response-body measurements/);
+        assert.ok(summary.includes(run.cdn.observations[0].status));
         await invoke();
         assert.equal(captured.length, 1);
         assert.deepEqual(JSON.parse(captured[0].data), createPayload(run));

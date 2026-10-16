@@ -7,7 +7,7 @@ All notable changes to this package are documented in this file.
 ### Added
 
 - Measure actual CDN response-body sizes with `npm run perf -- --cdn` and in merged-PR performance
-  runs. Preserve existing build and browser measurements, validate artifact integrity, and report
+  runs. Preserve existing build and browser measurements, compare encoded responses with identity bytes, and report
   missing artifacts or unsupported encodings without fabricated sizes.
 
 ## 0.1.0-beta.1 - 2026-10-15
