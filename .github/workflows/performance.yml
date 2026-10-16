@@ -56,9 +56,9 @@ jobs:
       - name: Build exact production artifacts
         run: npm run build && npm run size
 
-      - name: Measure bundle and browser performance without exporting workload telemetry
+      - name: Measure build, CDN, and browser performance without exporting workload telemetry
         id: measure
-        run: npm run perf
+        run: npm run perf -- --cdn
 
       - name: Publish measured performance results
         env:
