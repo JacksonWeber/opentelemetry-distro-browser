@@ -41,6 +41,9 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
         `InstrumentationKey=00000000-0000-0000-0000-000000000000;` +
         `IngestionEndpoint=${ingestionEndpoint}`,
     },
+    resource: resourceFromAttributes({
+      "service.version": "synthetic-release-42",
+    }),
     pageView: { applyCustomLogRecordData: () => pageReady() },
     session: { enabled: true, persist: false, inactivityTimeout: 60, maxDuration: 3600 },
   });
@@ -109,6 +112,7 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
       expect(envelope.tags).toMatchObject({
         "ai.device.type": "Browser",
         "ai.device.id": "browser",
+        "ai.application.ver": "synthetic-release-42",
       });
       expect(envelope).not.toHaveProperty("ver");
       expect(envelope).not.toHaveProperty("sampleRate");

@@ -691,6 +691,21 @@ describe("Azure Monitor log envelope mapping", () => {
     });
   });
 
+  it("maps resource service.version to the Application Insights application version tag", () => {
+    const envelope = logToEnvelope(
+      makeLog({
+        resource: resourceFromAttributes({
+          "service.version": "synthetic-release-42",
+          "custom.resource.marker": "not-exported-per-record",
+        }),
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.tags["ai.application.ver"]).toBe("synthetic-release-42");
+    expect(envelope.data.baseData.properties).toBeUndefined();
+  });
+
   it.each([undefined, "browser.page_view"])(
     "maps log user attributes to tags instead of properties for event %s",
     (eventName) => {

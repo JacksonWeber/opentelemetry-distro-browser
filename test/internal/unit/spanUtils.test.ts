@@ -80,6 +80,32 @@ describe("Azure Monitor span envelope mapping", () => {
     expect(envelope.data.baseData.properties).toEqual({ "user_agent.os.name": "Linux" });
   });
 
+  it("maps resource service.version to the Application Insights application version tag", () => {
+    const envelope = spanToEnvelope(
+      makeSpan({
+        resource: resourceFromAttributes({
+          "service.version": "synthetic-release-42",
+          "custom.resource.marker": "not-exported-per-record",
+        }),
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.tags["ai.application.ver"]).toBe("synthetic-release-42");
+    expect(envelope.data.baseData.properties).toBeUndefined();
+  });
+
+  it("bounds the Application Insights application version tag", () => {
+    const envelope = spanToEnvelope(
+      makeSpan({
+        resource: resourceFromAttributes({ "service.version": "v".repeat(1_025) }),
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.tags["ai.application.ver"]).toBe("v".repeat(1_024));
+  });
+
   it.each([SpanKind.CLIENT, SpanKind.SERVER, SpanKind.CONSUMER, SpanKind.INTERNAL])(
     "promotes standard session IDs to tags without changing the source span (kind=%i)",
     (kind) => {
