@@ -4,6 +4,7 @@
 import { createHash } from "node:crypto";
 import { appendFile } from "node:fs/promises";
 import { brotliCompressSync, constants, gzipSync } from "node:zlib";
+import { cdnEncodings, validateCdnReport } from "./cdn.mjs";
 
 export const artifactPath = "dist/esm/index.min.js";
 export const suite = "mot-browser";
@@ -324,6 +325,62 @@ export function createPayload(run) {
     };
     resources.get(environment).scopeLogs[0].logRecords.push(record);
   }
+  if (run.cdn !== undefined) {
+    const observations = validateCdnReport(run.cdn, run.package.version);
+    const resource = structuredClone(resources.get("node"));
+    resource.resource.attributes.find(({ key }) => key === "benchmark.environment").value = {
+      stringValue: "node-cdn",
+    };
+    resource.scopeLogs[0].logRecords = observations.map((result) => {
+      const measured = result.status === "ok";
+      return {
+        eventName: measured
+          ? "microsoft.opentelemetry.benchmark.result"
+          : "microsoft.opentelemetry.benchmark.cdn.status",
+        timeUnixNano: String(BigInt(Date.parse(result.fetchedAt)) * 1_000_000n),
+        attributes: [
+          ...attributes({
+            "test.suite.name": suite,
+            "test.case.name": "bundle_cdn",
+            "benchmark.metric": metricPrefix + cdnEncodings[result.encoding].metric,
+            "benchmark.unit": "By",
+            "benchmark.statistic": "value",
+            "benchmark.artifact.source": "cdn",
+            "benchmark.artifact.path": result.path,
+            "benchmark.artifact.url": result.url,
+            "benchmark.artifact.format": result.format,
+            "benchmark.cdn.version": run.cdn.version,
+            "benchmark.cdn.fetched_at": result.fetchedAt,
+            "benchmark.cdn.status": result.status,
+            "benchmark.cdn.stage": result.stage,
+            "benchmark.compression.method": cdnEncodings[result.encoding].method,
+            ...(result.httpStatus !== undefined
+              ? { "benchmark.cdn.http.status": result.httpStatus }
+              : {}),
+            ...(result.contentEncoding
+              ? { "benchmark.cdn.content_encoding": result.contentEncoding }
+              : {}),
+            ...(measured
+              ? {
+                  "benchmark.artifact.sha256": result.sha256,
+                  "benchmark.cdn.wire.sha256": result.wireSha256,
+                  "benchmark.cdn.manifest.sha256": result.manifestSha256,
+                  "benchmark.sample_count": 1,
+                  "benchmark.operations_per_sample": 1,
+                  "benchmark.operation_count": 1,
+                  "benchmark.warmup_count": 0,
+                }
+              : {
+                  "benchmark.cdn.reason": result.reason,
+                  "benchmark.cdn.message": result.message,
+                }),
+          }),
+          ...(measured ? [{ key: "benchmark.value", value: { doubleValue: result.bytes } }] : []),
+        ],
+      };
+    });
+    resources.set("cdn", resource);
+  }
   return { resourceLogs: [...resources.values()] };
 }
 
@@ -371,6 +428,22 @@ export async function writeJobSummary(run, summaryPath = process.env.GITHUB_STEP
       `| Gzip | ${run.artifact.sizes["bundle.gzip.size"]} |`,
       `| Brotli | ${run.artifact.sizes["bundle.brotli.size"]} |`,
       "",
+      ...(run.cdn
+        ? [
+            "### CDN response-body measurements",
+            "",
+            "Fetched bytes exclude HTTP headers and transfer framing. Missing encodings have no size.",
+            "The checkout revision identifies the measurement run, not the published CDN artifact.",
+            "",
+            "| Artifact | Encoding | Status | Bytes | Detail |",
+            "| --- | --- | --- | ---: | --- |",
+            ...run.cdn.observations.map(
+              (result) =>
+                `| ${code(result.path)} | ${code(result.encoding)} | ${code(result.status)} | ${result.status === "ok" ? result.bytes : ""} | ${code(result.status === "ok" ? result.sha256 : `${result.stage}: ${result.reason} (${result.message})`)} |`,
+            ),
+            "",
+          ]
+        : []),
       "**Generated measurements only; this command does not upload results.**",
       "Collector acceptance does not confirm downstream ingestion or report refresh.",
       "",

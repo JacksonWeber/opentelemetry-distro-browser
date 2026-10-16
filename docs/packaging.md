@@ -222,7 +222,7 @@ Log attributes include `test.case.name`, `test.suite.name`, `benchmark.metric`,
 `benchmark.operations_per_sample`, `benchmark.operation_count`, and `benchmark.warmup_count`
 are OTLP `intValue` strings. Operation count excludes warmups; span duration is **per batch,
 not per operation**. Timestamp strings represent measurement completion, not export time.
-Every observation carries `benchmark.artifact.path`, `.format`, and `.sha256`,
+Every local observation carries `benchmark.artifact.path`, `.format`, and `.sha256`,
 `benchmark.build.config.sha256`, and `benchmark.minifier.name`/`.version`.
 Size observations include `benchmark.compression.method` (`none`, `gzip`, or `brotli`);
 compressed observations include `benchmark.compression.level` (9 or 11).
@@ -230,6 +230,54 @@ Scenario observations also carry `benchmark.bundle.scenario.id`, `.label`, and `
 `benchmark.bundle.entry_point`. Their artifact is `reports/bundle-size.json` with format
 `rollup-esm-scenario`; `benchmark.artifact.sha256` identifies that report and
 `benchmark.build.config.sha256` identifies `scripts/measure-bundle-size.mjs`.
+
+### CDN measurements
+
+`npm run perf -- --cdn` adds CDN measurements to the same run without replacing any build-size,
+scenario, or browser observations. The merged-PR performance workflow enables this flag. Default
+local runs and PR validation stay offline. The runner requests the exact package version's
+primary `opentelemetry-browser` minified IIFE (`min.js`) and UMD (`umd.min.js`) URLs using
+`scripts/cdn.mjs`. It does not select a moving latest-version alias or measure the separate
+instrumentation bundle.
+
+For each artifact, the runner downloads identity, gzip, and Brotli representations. It counts the
+actual encoded HTTP response body, not locally recompressed bytes, headers, TLS overhead, or HTTP
+transfer framing. Gzip and Brotli sizes exist only when the response has the requested
+`Content-Encoding` (`gzip` or `br`). Identity has no content encoding or explicitly uses
+`identity`. Requests reject redirects, non-200 statuses, wrong MIME types, empty bodies, invalid
+JavaScript, and integrity mismatches. The published integrity manifest must identify the exact
+module, version, URL, file, and SHA-256. Identity bytes are parsed as ES2022 without execution.
+Encoded bodies are separately decompressed and must match those identity bytes' SHA-256. Each
+request has a 15-second deadline, the manifest is limited to 256 KiB, and encoded and decoded
+JavaScript are each limited to 8 MiB.
+
+The optional `cdn.json` and `raw.json.cdn` retain all six outcomes, including failures, completion
+timestamps, immutable URLs, response metadata, identity hashes, and wire-body hashes. Console and
+job summaries also show unavailable/error outcomes. A missing publication or unsupported encoding
+does not produce zero bytes and does not prevent valid local and runtime observations from being
+exported. Publication of the exact version and CDN support for compressed responses are external
+prerequisites. The publisher currently uploads uncompressed assets with `no-transform`, so gzip
+and Brotli support must not be assumed.
+
+Successful observations use the existing `microsoft.opentelemetry.benchmark.result` event with
+`test.case.name=bundle_cdn`, the same `bundle.minified.size`, `bundle.gzip.size`, and
+`bundle.brotli.size` metric suffixes, `By` units, and `value` statistic. The resource environment is
+`node-cdn`. Each log adds `benchmark.artifact.source=cdn`, immutable `.url` and `.path`, `.format`
+(`iife` or `umd`), decoded `.sha256`, `benchmark.cdn.version`, ISO `benchmark.cdn.fetched_at`,
+`benchmark.cdn.wire.sha256`, and `benchmark.cdn.manifest.sha256`. Compression methods remain
+`none`, `gzip`, and `brotli`, without an invented compression level. CDN events omit local build
+configuration and minifier metadata. Resource revision and dirty status identify the runner
+checkout, not the published artifact's source revision.
+
+Every failed observation instead uses `microsoft.opentelemetry.benchmark.cdn.status`, with the
+same metric, artifact, encoding, version, and timestamp context but **no `benchmark.value` or
+sample counts**. `benchmark.cdn.status` is `ok` on success events or `unavailable`/`error` on status
+events. `benchmark.cdn.reason` and `.message` explain failures, `.stage` identifies `manifest`,
+`identity`, or `encoding`, and `.http.status` and `.content_encoding` are included when a response
+was received. A compressed observation cannot succeed without a verified identity artifact.
+Report consumers should distinguish URL, format, and compression method, keep missing values
+blank, and distinguish the latest attempt from an older successful measurement. Event timestamps
+and `fetched_at` identify measurement/attempt completion, not publication or export time.
 
 ### Publishing measurements
 
