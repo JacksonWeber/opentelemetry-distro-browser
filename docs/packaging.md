@@ -269,7 +269,7 @@ Record the workflow attempt URL, **Explicit run** UUID, SDK version, measured co
 and per-format encoding outcomes from the job summary and publish log. After collector
 acceptance, verify that exact UUID in the destination and report. A successful workflow
 can contain only unavailable CDN outcomes, so it does not prove that CDN byte sizes
-were measured. Publish the missing artifacts before expecting nonblank size values.
+were measured. Resolve CDN publication or routing before expecting nonblank size values.
 Synthetic fixtures from `npm run test:perf` stay on loopback and must never be exported
 to the live collector.
 

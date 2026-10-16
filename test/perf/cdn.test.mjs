@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { brotliCompressSync, constants, gzipSync } from "node:zlib";
 import { getCdnRequests, measureCdn } from "../../scripts/perf/cdn.mjs";
 import { sha256 } from "../../scripts/perf/results.mjs";
+import { getCdnUploads } from "../../scripts/publish-cdn.mjs";
 
 const version = "0.1.0-beta.1";
 const requests = getCdnRequests(version);
@@ -19,6 +20,31 @@ const encode = (body, encoding) =>
     : encoding === "br"
       ? brotliCompressSync(body, { params: { [constants.BROTLI_PARAM_QUALITY]: 2 } })
       : body;
+
+test("CDN requests match exact publisher destinations in every release channel", () => {
+  for (const [version, channel] of [
+    ["1.2.3", "b"],
+    ["1.2.3-alpha.1", "alpha"],
+    ["0.1.0-beta.1", "beta"],
+    ["1.2.3-rc.1", "rc"],
+  ]) {
+    const uploads = getCdnUploads(version);
+    const expected = ["min.js", "umd.min.js"].flatMap((format) => {
+      const path = `/scripts/otel/${channel}/opentelemetry-browser.${version}.${format}`;
+      const url = `https://js.monitor.azure.com${path}`;
+      const upload = uploads.find((entry) => entry.url === url);
+      assert.ok(upload);
+      assert.equal(upload.blob, path.slice(1));
+      return ["identity", "gzip", "br"].map((encoding) => ({
+        url,
+        path,
+        format: format === "min.js" ? "iife" : "umd",
+        encoding,
+      }));
+    });
+    assert.deepEqual(getCdnRequests(version), expected);
+  }
+});
 
 async function probe(t, override = () => ({}), options = {}) {
   const captured = [];
