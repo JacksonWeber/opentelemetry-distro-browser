@@ -765,47 +765,58 @@ test("CLI preserves exact request bytes and receipt, and prevents a second submi
   }
 });
 
-test("CLI publishes a merged fork target event only for clean results at the exact merged SHA", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "browser-perf-merged-"));
-  try {
-    const eventFile = join(directory, "event.json");
-    await writeFile(eventFile, JSON.stringify(mergeEvent()));
-    const command = fileURLToPath(new URL("../../scripts/perf/export.mjs", import.meta.url));
-    const env = {
-      ...process.env,
-      GITHUB_ACTIONS: "true",
-      GITHUB_EVENT_NAME: "pull_request_target",
-      GITHUB_REPOSITORY: "microsoft/opentelemetry-distro-browser",
-      GITHUB_EVENT_PATH: eventFile,
-    };
-    await withCollector(async (endpoint, captured) => {
-      const args = [command, "--input", directory, "--endpoint", endpoint];
-      for (const changes of [{ dirty: true }, { revision: "b".repeat(40) }, {}]) {
-        const run = { ...fixture(), ...changes };
-        const payload = createPayload(run);
-        await writeFile(join(directory, "raw.json"), JSON.stringify(run));
-        await writeFile(join(directory, "payload.json"), JSON.stringify(payload));
-        if (run.dirty || run.revision !== mergeEvent().pull_request.merge_commit_sha) {
-          await assert.rejects(
-            promisify(execFile)(process.execPath, args, { env }),
-            /CI publishing requires clean results from the exact merged revision/,
-          );
-          assert.equal(captured.length, 0);
-          assert.deepEqual((await readdir(directory)).sort(), [
-            "event.json",
-            "payload.json",
-            "raw.json",
-          ]);
-        } else {
-          await promisify(execFile)(process.execPath, args, { env });
-          assert.equal(captured.length, 1);
-          assert.deepEqual(JSON.parse(captured[0].data), payload);
-          const receipt = JSON.parse(await readFile(join(directory, "export-result.json"), "utf8"));
-          assert.equal(receipt.status, 200);
+for (const [label, createRun] of [
+  ["build and runtime", fixture],
+  ["CDN success", () => fixtureWithCdn()],
+  ["CDN unavailable", () => fixtureWithCdn("unavailable")],
+  ["CDN error", () => fixtureWithCdn("error")],
+]) {
+  test(`CLI publishes ${label} only for clean results at the exact merged SHA`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), "browser-perf-merged-"));
+    try {
+      const eventFile = join(directory, "event.json");
+      await writeFile(eventFile, JSON.stringify(mergeEvent()));
+      const command = fileURLToPath(new URL("../../scripts/perf/export.mjs", import.meta.url));
+      const env = {
+        ...process.env,
+        GITHUB_ACTIONS: "true",
+        GITHUB_EVENT_NAME: "pull_request_target",
+        GITHUB_REPOSITORY: "microsoft/opentelemetry-distro-browser",
+        GITHUB_EVENT_PATH: eventFile,
+      };
+      await withCollector(async (endpoint, captured) => {
+        const args = [command, "--input", directory, "--endpoint", endpoint];
+        for (const changes of [{ dirty: true }, { revision: "b".repeat(40) }, {}]) {
+          const run = { ...createRun(), ...changes };
+          const payload = createPayload(run);
+          await writeFile(join(directory, "raw.json"), JSON.stringify(run));
+          await writeFile(join(directory, "payload.json"), JSON.stringify(payload));
+          if (run.dirty || run.revision !== mergeEvent().pull_request.merge_commit_sha) {
+            await assert.rejects(
+              promisify(execFile)(process.execPath, args, { env }),
+              /CI publishing requires clean results from the exact merged revision/,
+            );
+            assert.equal(captured.length, 0);
+            assert.deepEqual((await readdir(directory)).sort(), [
+              "event.json",
+              "payload.json",
+              "raw.json",
+            ]);
+          } else {
+            await promisify(execFile)(process.execPath, args, { env });
+            assert.equal(captured.length, 1);
+            assert.deepEqual(JSON.parse(captured[0].data), payload);
+            const receipt = JSON.parse(
+              await readFile(join(directory, "export-result.json"), "utf8"),
+            );
+            assert.equal(receipt.status, 200);
+            await assert.rejects(promisify(execFile)(process.execPath, args, { env }), /EEXIST/);
+            assert.equal(captured.length, 1);
+          }
         }
-      }
-    });
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
-});
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+}

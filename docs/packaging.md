@@ -233,6 +233,48 @@ Scenario observations also carry `benchmark.bundle.scenario.id`, `.label`, and `
 
 ### Publishing measurements
 
+#### Testing live CDN measurements
+
+Use `npm run build && npm run size && npm run perf -- --cdn` to add live CDN observations
+without uploading them. The harness requests the exact `package.json` version of the
+IIFE and UMD bundles from `js.monitor.azure.com`, using the release channel `b`, `alpha`,
+`beta`, or `rc`. That version must already be published to obtain successful measurements.
+It does not fall back to another version or substitute local build sizes.
+
+`cdn.json` records each identity, gzip, and Brotli response outcome. Successful
+`bundle_cdn` events contain actual response-body byte counts and hashes, with
+`benchmark.artifact.source=cdn` and `benchmark.environment=node-cdn`. Compressed
+responses must decode to the identity artifact. Missing artifacts or encodings produce
+`microsoft.opentelemetry.benchmark.cdn.status` events without a byte value, not zero.
+Build and runtime measurements remain separate. The checkout revision identifies the
+measurement source, not the revision that produced the published CDN artifact.
+
+The upstream **Merged PR performance** workflow already runs this command and exports
+the validated results after a PR is merged into `main`. Opening or updating a PR does
+not publish data. To repeat a live test after CDN publication, use **Re-run all jobs**
+on an existing merged-PR performance run whose checked-out merge commit includes CDN
+measurement support and the desired package version. For example, with permission to
+rerun that upstream workflow:
+
+```sh
+gh run rerun <workflow-run-id> --repo microsoft/opentelemetry-distro-browser
+```
+
+A rerun uses the original trusted merged commit, not the current PR branch or latest
+`main`. It performs fresh measurements with a new `benchmark.run_id`. Do not replay a
+previous run's export directory or change the merged-PR guards. If the desired package
+version differs from that commit, a reviewed merge with that version is required.
+
+Record the workflow attempt URL, **Explicit run** UUID, SDK version, measured commit,
+and per-format encoding outcomes from the job summary and publish log. After collector
+acceptance, verify that exact UUID in the destination and report. A successful workflow
+can contain only unavailable CDN outcomes, so it does not prove that CDN byte sizes
+were measured. Publish the missing artifacts before expecting nonblank size values.
+Synthetic fixtures from `npm run test:perf` stay on loopback and must never be exported
+to the live collector.
+
+#### Explicit manual export
+
 For an explicitly authorized manual integration test, retain the offline run directory and use:
 
 ```sh
