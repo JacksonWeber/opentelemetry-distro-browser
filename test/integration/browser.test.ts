@@ -6,7 +6,7 @@ import { logs } from "@opentelemetry/api-logs";
 import { afterEach, beforeEach, expect, inject, it, vi } from "vitest";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { version } from "../../package.json";
-import type { AzureMonitorEnvelope } from "../../src/exporter/telemetryModels.js";
+import type { AzureMonitorEnvelope, PageViewData } from "../../src/exporter/telemetryModels.js";
 import { createInMemoryPipeline } from "../fixtures/telemetry.js";
 import { withoutSdkStats } from "../fixtures/sdkStats.js";
 
@@ -44,7 +44,10 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
     resource: resourceFromAttributes({
       "service.version": "synthetic-release-42",
     }),
-    pageView: { applyCustomLogRecordData: () => pageReady() },
+    pageView: {
+      routeResolver: () => "Browser integration",
+      applyCustomLogRecordData: () => pageReady(),
+    },
     session: { enabled: true, persist: false, inactivityTimeout: 60, maxDuration: 3600 },
   });
   const button = document.createElement("button");
@@ -106,6 +109,16 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
       `${new URL(ingestionEndpoint).origin}/captured?runId=${encodeURIComponent(runId)}`,
     ).then((response) => response.json());
     const sessionId = captured[0].tags["ai.session.id"];
+    const pageViews = captured.filter(
+      (envelope): envelope is AzureMonitorEnvelope<PageViewData> =>
+        envelope.data.baseType === "PageViewData",
+    );
+    const automaticPageView = pageViews.find(
+      (envelope) => envelope.data.baseData.name !== "Checkout",
+    );
+    const operationName = automaticPageView?.data.baseData.name;
+    expect(operationName).toEqual(expect.any(String));
+    expect(automaticPageView?.tags["ai.operation.name"]).toBe(operationName);
     expect(sessionId).toMatch(/^[0-9a-f]{32}$/);
     for (const envelope of captured) {
       expect(envelope.tags["ai.session.id"]).toBe(sessionId);
@@ -155,7 +168,10 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
         }),
         expect.objectContaining({
           name: "Microsoft.ApplicationInsights.RemoteDependency",
-          tags: expect.objectContaining({ "ai.operation.id": operationId }),
+          tags: expect.objectContaining({
+            "ai.operation.id": operationId,
+            "ai.operation.name": operationName,
+          }),
           data: expect.objectContaining({
             baseType: "RemoteDependencyData",
             baseData: expect.objectContaining({ name: "checkout.click" }),
@@ -163,7 +179,10 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
         }),
         expect.objectContaining({
           name: "Microsoft.ApplicationInsights.Event",
-          tags: expect.objectContaining({ "ai.operation.id": operationId }),
+          tags: expect.objectContaining({
+            "ai.operation.id": operationId,
+            "ai.operation.name": operationName,
+          }),
           data: expect.objectContaining({
             baseType: "EventData",
             baseData: expect.objectContaining({
@@ -174,7 +193,10 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
         }),
         expect.objectContaining({
           name: "Microsoft.ApplicationInsights.PageView",
-          tags: expect.objectContaining({ "ai.operation.id": operationId }),
+          tags: expect.objectContaining({
+            "ai.operation.id": operationId,
+            "ai.operation.name": "Checkout",
+          }),
           data: {
             baseType: "PageViewData",
             baseData: expect.objectContaining({
@@ -189,7 +211,10 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
         }),
         expect.objectContaining({
           name: "Microsoft.ApplicationInsights.PageviewPerformance",
-          tags: expect.objectContaining({ "ai.operation.id": operationId }),
+          tags: expect.objectContaining({
+            "ai.operation.id": operationId,
+            "ai.operation.name": "Checkout",
+          }),
           data: {
             baseType: "PageviewPerformanceData",
             baseData: expect.objectContaining({
@@ -208,7 +233,10 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
         }),
         expect.objectContaining({
           name: "Microsoft.ApplicationInsights.Event",
-          tags: expect.objectContaining({ "ai.operation.id": operationId }),
+          tags: expect.objectContaining({
+            "ai.operation.id": operationId,
+            "ai.operation.name": operationName,
+          }),
           data: {
             baseType: "EventData",
             baseData: expect.objectContaining({

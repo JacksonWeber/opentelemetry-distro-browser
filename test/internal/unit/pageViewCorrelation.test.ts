@@ -23,9 +23,11 @@ import type {
 import { logToEnvelope } from "../../../src/exporter/logUtils.js";
 import { spanToEnvelope } from "../../../src/exporter/spanUtils.js";
 import { PageViewCorrelation } from "../../../src/instrumentation/pageView/pageViewCorrelation.js";
+import { createPageViewContext } from "../../../src/instrumentation/pageView/pageViewContext.js";
 import { createInMemoryPipeline } from "../../fixtures/telemetry.js";
 
 const originalUrl = location.href;
+const originalTitle = document.title;
 const originalPush = history.pushState;
 const originalReplace = history.replaceState;
 let handle: MicrosoftOpenTelemetryBrowser | undefined;
@@ -35,6 +37,7 @@ afterEach(async () => {
   handle = undefined;
   history.pushState = originalPush;
   history.replaceState = originalReplace;
+  document.title = originalTitle;
   if (location.href !== originalUrl) history.replaceState(null, "", originalUrl);
   trace.disable();
   logs.disable();
@@ -56,6 +59,13 @@ async function start(options: MicrosoftOpenTelemetryBrowserOptions = {}) {
     tracer: trace.getTracer("test"),
     logger: logs.getLogger("test"),
   };
+}
+
+/** Resolves after the page-view soft-navigation settle heuristic. */
+async function settle(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 50)));
+  });
 }
 
 it("keeps page views, child spans, logs and propagation correlated with an all-zero RNG", async () => {
@@ -128,7 +138,10 @@ it.each([false, true])(
     });
     const pipeline = await start({
       instrumentations: [navigation],
-      pageView: { sanitizeUrl: (url) => new URL(url).pathname },
+      pageView: {
+        routeResolver: () => location.pathname,
+        sanitizeUrl: (url) => new URL(url).pathname,
+      },
     });
     const ids: string[] = [];
     for (const path of ["/checkout", "/confirmation"]) {
@@ -178,6 +191,7 @@ it.each([false, true])(
       expect(logToEnvelope(log, "key").tags["ai.operation.id"]).toBe(id);
       expect(logToEnvelope(log, "key").tags).not.toHaveProperty("ai.operation.parentId");
       expect(logToEnvelope(routeLog, "key").tags).not.toHaveProperty("ai.operation.parentId");
+      expect(logToEnvelope(routeLog, "key").tags["ai.operation.name"]).toBe(path);
       expect(logToEnvelope(routeLog, "key").data).toMatchObject({
         baseType: "PageViewData",
         baseData: { id },
@@ -222,6 +236,161 @@ it("preserves explicit contexts and in-flight spans across navigation with a cus
   await pipeline.spanProcessor.forceFlush();
   const child = pipeline.spanExporter.getFinishedSpans().find((span) => span.name === "child")!;
   expect(spanToEnvelope(child, "key").tags["ai.operation.parentId"]).toBe(original.spanId);
+});
+
+it("keeps a delayed page callback's operation name aligned with its operation ID", async () => {
+  const pipeline = await start({ pageView: { routeResolver: () => location.pathname } });
+  const firstContext = context.active();
+  const firstOperation = trace.getSpanContext(firstContext)!;
+  const firstName = location.pathname;
+  const delayed = context.bind(firstContext, () => {
+    pipeline.logger.emit({ body: "delayed page log" });
+    pipeline.tracer.startSpan("delayed page span").end();
+  });
+
+  history.pushState(null, "", "/next-page");
+  expect(trace.getSpanContext(context.active())?.traceId).not.toBe(firstOperation.traceId);
+  delayed();
+  await pipeline.forceFlush();
+
+  const log = pipeline.onLog.mock.calls.find(([record]) => record.body === "delayed page log")![0];
+  const span = pipeline.spanExporter
+    .getFinishedSpans()
+    .find((candidate) => candidate.name === "delayed page span")!;
+  expect(log.spanContext?.traceId).toBe(firstOperation.traceId);
+  expect(span.parentSpanContext?.traceId).toBe(firstOperation.traceId);
+  for (const envelope of [logToEnvelope(log, "key"), spanToEnvelope(span, "key")]) {
+    expect(envelope.tags["ai.operation.id"]).toBe(firstOperation.traceId);
+    expect(envelope.tags["ai.operation.name"]).toBe(firstName);
+  }
+});
+
+it("keeps the route name captured before page settlement", async () => {
+  let route = "/previous";
+  const pipeline = await start({ pageView: { routeResolver: () => route } });
+  await settle();
+
+  history.pushState(null, "", "/checkout");
+  const operation = trace.getSpanContext(context.active())!;
+  pipeline.logger.emit({ body: "before route settlement" });
+  const span = pipeline.tracer.startSpan("before route settlement");
+  route = "/checkout";
+  await settle();
+  span.end();
+  await pipeline.forceFlush();
+
+  const log = pipeline.onLog.mock.calls.find(
+    ([record]) => record.body === "before route settlement",
+  )![0];
+  const exportedSpan = pipeline.spanExporter
+    .getFinishedSpans()
+    .find((candidate) => candidate.name === "before route settlement")!;
+  for (const envelope of [logToEnvelope(log, "key"), spanToEnvelope(exportedSpan, "key")]) {
+    expect(envelope.tags["ai.operation.id"]).toBe(operation.traceId);
+    expect(envelope.tags["ai.operation.name"]).toBe("/previous");
+  }
+});
+
+it("does not revise captured telemetry when the page settles to a title", async () => {
+  document.title = "Checkout 8472";
+  let route: string | undefined = "/previous";
+  const pipeline = await start({ pageView: { routeResolver: () => route } });
+  await settle();
+
+  history.pushState(null, "", "/checkout/8472");
+  pipeline.logger.emit({ body: "before title settlement" });
+  const span = pipeline.tracer.startSpan("before title settlement");
+  route = undefined;
+  await settle();
+  span.end();
+  await pipeline.forceFlush();
+
+  const log = pipeline.onLog.mock.calls.find(
+    ([record]) => record.body === "before title settlement",
+  )![0];
+  const exportedSpan = pipeline.spanExporter
+    .getFinishedSpans()
+    .find((candidate) => candidate.name === "before title settlement")!;
+  for (const envelope of [logToEnvelope(log, "key"), spanToEnvelope(exportedSpan, "key")]) {
+    expect(envelope.tags["ai.operation.name"]).toBe("/previous");
+  }
+});
+
+it("bounds retained operation names while keeping recently used delayed operations", async () => {
+  const pageViews = createPageViewContext();
+  const correlation = new PageViewCorrelation(undefined, pageViews);
+  const publish = (index: number): string => {
+    const id = (index + 1).toString(16).padStart(32, "0");
+    pageViews.setCurrentPageView({
+      id,
+      index,
+      name: `/route/${index}`,
+      nameSource: "route",
+      url: `https://example.test/route/${index}`,
+      referrer: "",
+      navigationType: "push",
+      sameDocument: true,
+      startTimeUnixMs: index,
+    });
+    return id;
+  };
+
+  const first = publish(0);
+  const second = publish(1);
+  for (let index = 2; index < 32; index++) publish(index);
+  expect(correlation.operationName(first)).toBe("/route/0");
+
+  const newest = publish(32);
+  expect(correlation.operationName(first)).toBe("/route/0");
+  expect(correlation.operationName(second)).toBeUndefined();
+  expect(correlation.operationName(newest)).toBe("/route/32");
+  await correlation.shutdown();
+});
+
+it("refreshes the operation ID and name together inside an earlier History wrapper", async () => {
+  const state: { pipeline?: Awaited<ReturnType<typeof start>> } = {};
+  const previousPushState = history.pushState;
+  history.pushState = function (...args): void {
+    previousPushState.apply(this, args);
+    state.pipeline!.logger.emit({ body: "earlier wrapper log" });
+    state.pipeline!.tracer.startSpan("earlier wrapper span").end();
+  };
+  const pipeline = await start({ pageView: { routeResolver: () => location.pathname } });
+  state.pipeline = pipeline;
+  const previousOperation = trace.getSpanContext(context.active())!.traceId;
+
+  history.pushState(null, "", "/inside-earlier-wrapper");
+  await pipeline.forceFlush();
+
+  const log = pipeline.onLog.mock.calls.find(
+    ([record]) => record.body === "earlier wrapper log",
+  )![0];
+  const span = pipeline.spanExporter
+    .getFinishedSpans()
+    .find((candidate) => candidate.name === "earlier wrapper span")!;
+  for (const envelope of [logToEnvelope(log, "key"), spanToEnvelope(span, "key")]) {
+    expect(envelope.tags["ai.operation.id"]).not.toBe(previousOperation);
+    expect(envelope.tags["ai.operation.name"]).toBe("/inside-earlier-wrapper");
+  }
+});
+
+it.each([
+  ["document title", "Personalized order 8472", "/"],
+  ["URL path", "", "/orders/8472"],
+])("does not group telemetry by a high-cardinality %s fallback", async (_source, title, path) => {
+  document.title = title;
+  if (location.pathname !== path) history.replaceState(null, "", path);
+  const pipeline = await start();
+  pipeline.logger.emit({ body: "fallback page log" });
+  pipeline.tracer.startSpan("fallback page span").end();
+  await pipeline.forceFlush();
+
+  const log = pipeline.onLog.mock.calls.find(([record]) => record.body === "fallback page log")![0];
+  const span = pipeline.spanExporter
+    .getFinishedSpans()
+    .find((candidate) => candidate.name === "fallback page span")!;
+  expect(logToEnvelope(log, "key").tags).not.toHaveProperty("ai.operation.name");
+  expect(spanToEnvelope(span, "key").tags).not.toHaveProperty("ai.operation.name");
 });
 
 it.each([

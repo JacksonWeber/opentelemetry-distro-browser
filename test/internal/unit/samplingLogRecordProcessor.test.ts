@@ -5,6 +5,10 @@ import { TraceFlags, type SpanContext } from "@opentelemetry/api";
 import { InMemoryLogRecordExporter, type ReadWriteLogRecord } from "@opentelemetry/sdk-logs";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { describe, expect, it } from "vitest";
+import {
+  getManagedOperationName,
+  setManagedOperationName,
+} from "../../../src/context/operationName.js";
 import { AZURE_MONITOR_SAMPLE_RATE, getSamplingScore } from "../../../src/sampling.js";
 import { AzureMonitorSamplingLogRecordProcessor } from "../../../src/samplingLogRecordProcessor.js";
 
@@ -173,6 +177,16 @@ describe("AzureMonitorSamplingLogRecordProcessor", () => {
     expect(await exportRecords(50, [rejected], () => 0.5)).toEqual([]);
     expect(exported?.attributes[AZURE_MONITOR_SAMPLE_RATE]).toBe(50);
     expect(accepted.attributes[AZURE_MONITOR_SAMPLE_RATE]).toBeUndefined();
+  });
+
+  it("preserves managed operation names on records derived for sampling metadata", async () => {
+    const accepted = makeRecord();
+    setManagedOperationName(accepted, "Products");
+
+    const [exported] = await exportRecords(50, [accepted], () => 0);
+
+    expect(exported).not.toBe(accepted);
+    expect(getManagedOperationName(exported!)).toBe("Products");
   });
 
   it("combines producer and local rates for independently sampled records", async () => {

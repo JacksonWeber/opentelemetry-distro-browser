@@ -99,6 +99,11 @@ interface PendingPageView {
   idleId?: number;
 }
 
+interface ResolvedPageName {
+  readonly name: string;
+  readonly source: PageViewNameSource;
+}
+
 /**
  * Minimal structural view of the experimental Navigation API, typed locally because it is absent
  * from the DOM library and must not be reached through an upstream internal path.
@@ -160,6 +165,8 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
   #pending: PendingPageView | undefined;
   #operation: SpanContext | undefined;
   #operationUrl = "";
+  #operationName: ResolvedPageName | undefined;
+  #resolvingOperationName = false;
   #pageViewIndex = 0;
   #lastUrl = "";
   /**
@@ -215,6 +222,20 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     return this.enabledState ? this.#currentOperation() : undefined;
   }
 
+  /** Safe name resolved with the current operation before its page view is published. */
+  public getOperationName(traceId: string): string | undefined {
+    const operation = this.getOperationContext();
+    if (operation?.traceId !== traceId) return undefined;
+    const published = this.#context.getCurrentPageView();
+    const resolved =
+      published?.id === traceId
+        ? { name: published.name, source: published.nameSource }
+        : this.#operationName;
+    return resolved?.source === NAME_SOURCE_EXPLICIT || resolved?.source === NAME_SOURCE_ROUTE
+      ? resolved.name
+      : undefined;
+  }
+
   /**
    * Emits the pending page view before the distribution snapshots processor buffers for unload.
    * Hidden visibility can precede pagehide, so this cannot rely on pagehide listener ordering.
@@ -229,6 +250,9 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     const shared = this.getConfig().sharedOperation?.();
     if (shared) {
       // Kept for this URL, so the page view in flight keeps its ID after the source shuts down.
+      if (this.#operation !== shared || this.#operationUrl !== url) {
+        this.#operationName = undefined;
+      }
       this.#operation = shared;
       this.#operationUrl = url;
     } else if (!this.#operation || this.#operationUrl !== url) {
@@ -240,8 +264,20 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       };
       markPageContext(this.#operation);
       this.#operationUrl = url;
+      this.#operationName = undefined;
+      this.#operationName = this.#resolveOperationName();
     }
     return this.#operation;
+  }
+
+  #resolveOperationName(): ResolvedPageName | undefined {
+    if (this.#resolvingOperationName) return undefined;
+    this.#resolvingOperationName = true;
+    try {
+      return this.#resolveName();
+    } finally {
+      this.#resolvingOperationName = false;
+    }
   }
 
   /**
@@ -338,6 +374,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     }
     this.enabledState = false;
     this.#operation = undefined;
+    this.#operationName = undefined;
 
     this.#listeners?.abort();
     this.#listeners = undefined;
@@ -692,8 +729,9 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     startedAt: number;
   }): PendingPageView {
     const rawUrl = input.url ?? location.href;
-    const resolved = this.#resolveName();
     const operation = this.#currentOperation();
+    const resolved = this.#resolveName();
+    this.#operationName = resolved;
 
     const pageView: PageView = {
       id: operation.traceId,
@@ -749,7 +787,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
   /**
    * Resolves the page name from the first source that produces one.
    */
-  #resolveName(): { name: string; source: PageViewNameSource } {
+  #resolveName(): ResolvedPageName {
     const explicit = this.#explicitName;
     if (explicit) {
       return { name: explicit, source: NAME_SOURCE_EXPLICIT };

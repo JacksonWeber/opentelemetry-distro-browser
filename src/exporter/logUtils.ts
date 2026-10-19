@@ -20,6 +20,8 @@ import {
   ATTR_PAGE_VIEW_SAME_DOCUMENT,
   ATTR_PAGE_VIEW_TYPE,
   EVENT_BROWSER_PAGE_VIEW,
+  NAME_SOURCE_EXPLICIT,
+  NAME_SOURCE_ROUTE,
 } from "../instrumentation/pageView/semconv.js";
 import {
   createEnvelope,
@@ -60,6 +62,7 @@ import {
   ATTR_USER_ID,
 } from "../user/constants.js";
 import { AZURE_MONITOR_SAMPLE_RATE } from "../sampling.js";
+import { getManagedOperationName } from "../context/operationName.js";
 
 const promotedLogAttributes = /* @__PURE__ */ new Set([
   EXCEPTION_MESSAGE,
@@ -410,6 +413,7 @@ export function logToEnvelope(
     logRecord.resource.attributes["service.name"],
     logRecord.attributes as Attributes,
     logRecord.resource.attributes,
+    getManagedOperationName(logRecord),
   );
   const severityLevel = mapSeverity(logRecord.severityNumber);
   const time = hrTimeToDate(logRecord.hrTime);
@@ -454,17 +458,24 @@ export function logToEnvelope(
       referrer === undefined
         ? undefined
         : truncateToLength(serializeAttribute(referrer), MaxPropertyLengths.THIRTEEN_BIT);
+    const pageViewName = serializeAttribute(
+      logRecord.body ??
+        logRecord.attributes[ATTR_PAGE_VIEW_NAME] ??
+        logRecord.attributes[URL_FULL] ??
+        "Page View",
+    );
+    const pageViewNameSource = logRecord.attributes[ATTR_PAGE_VIEW_NAME_SOURCE];
+    if (pageViewNameSource === NAME_SOURCE_EXPLICIT || pageViewNameSource === NAME_SOURCE_ROUTE) {
+      tags["ai.operation.name"] = truncateToLength(pageViewName, MaxPropertyLengths.TEN_BIT);
+    } else if (logRecord.eventName !== NAVIGATION_EVENT_NAME) {
+      delete tags["ai.operation.name"];
+    }
     name = "Microsoft.ApplicationInsights.PageView";
     baseType = "PageViewData";
     baseData = {
       ver: 2,
       id: pageViewId === undefined ? generatePageViewId() : serializeAttribute(pageViewId),
-      name: serializeAttribute(
-        logRecord.body ??
-          logRecord.attributes[ATTR_PAGE_VIEW_NAME] ??
-          logRecord.attributes[URL_FULL] ??
-          "Page View",
-      ),
+      name: pageViewName,
       url:
         logRecord.attributes[URL_FULL] === undefined
           ? undefined

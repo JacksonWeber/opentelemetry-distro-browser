@@ -38,6 +38,7 @@ import {
 } from "../user/constants.js";
 import { AZURE_MONITOR_SAMPLE_RATE } from "../sampling.js";
 import { selectNonEmptyString } from "../shared/isNonEmptyString.js";
+import { getManagedOperationName } from "../context/operationName.js";
 
 const promotedSpanAttributes = /* @__PURE__ */ new Set([
   HTTP_METHOD,
@@ -92,6 +93,7 @@ export function spanToEnvelope(
     span.resource.attributes["service.name"],
     span.attributes,
     span.resource.attributes,
+    getManagedOperationName(span),
   );
 
   if (span.kind === SpanKind.SERVER || span.kind === SpanKind.CONSUMER) {
@@ -178,6 +180,7 @@ function spanEventToEnvelope(
     span.resource.attributes["service.name"],
     span.attributes,
     span.resource.attributes,
+    getManagedOperationName(span),
   );
   const eventSessionId = attributes["session.id"];
   const sessionId = selectNonEmptyString(eventSessionId, span.attributes["session.id"]);

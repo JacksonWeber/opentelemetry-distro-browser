@@ -7,6 +7,7 @@ import { resourceFromAttributes } from "@opentelemetry/resources";
 import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
 import { ATTR_TELEMETRY_SDK_VERSION } from "@opentelemetry/semantic-conventions";
 import { describe, expect, it } from "vitest";
+import { setManagedOperationName } from "../../../src/context/operationName.js";
 import { spanToEnvelope, spanToEnvelopes } from "../../../src/exporter/spanUtils.js";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../../src/shared/constants.js";
 import { AZURE_MONITOR_SAMPLE_RATE } from "../../../src/sampling.js";
@@ -104,6 +105,37 @@ describe("Azure Monitor span envelope mapping", () => {
     );
 
     expect(envelope.tags["ai.application.ver"]).toBe("v".repeat(1_024));
+  });
+
+  it("maps service.version to application context", () => {
+    const envelope = spanToEnvelope(
+      makeSpan({
+        resource: resourceFromAttributes({
+          "service.name": "browser-store",
+          "service.version": "2.4.1",
+        }),
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.tags["ai.application.ver"]).toBe("2.4.1");
+  });
+
+  it("maps the page name captured for an application span to operation context", () => {
+    const span = makeSpan();
+    setManagedOperationName(span, "Products");
+
+    expect(spanToEnvelope(span, instrumentationKey).tags["ai.operation.name"]).toBe("Products");
+    expect(span.attributes).not.toHaveProperty("ai.operation.name");
+  });
+
+  it("bounds the managed operation name for an application span", () => {
+    const span = makeSpan();
+    setManagedOperationName(span, "n".repeat(70_000));
+
+    expect(spanToEnvelope(span, instrumentationKey).tags["ai.operation.name"]).toBe(
+      "n".repeat(1_024),
+    );
   });
 
   it.each([SpanKind.CLIENT, SpanKind.SERVER, SpanKind.CONSUMER, SpanKind.INTERNAL])(
@@ -272,32 +304,31 @@ describe("Azure Monitor span envelope mapping", () => {
   });
 
   it("maps span events to envelopes parented to the span", () => {
-    const envelopes = spanToEnvelopes(
-      makeSpan({
-        spanContext: () => spanContext,
-        attributes: { "session.id": "session-1" },
-        events: [
-          {
-            name: "exception",
-            time: [1_735_689_601, 0],
-            attributes: {
-              "exception.type": "Error",
-              "exception.message": "boom",
-              "exception.stacktrace":
-                "Error: boom\n    at checkout (https://example.test/app.js:1:2)",
-            },
-            droppedAttributesCount: 0,
+    const span = makeSpan({
+      spanContext: () => spanContext,
+      attributes: { "session.id": "session-1" },
+      events: [
+        {
+          name: "exception",
+          time: [1_735_689_601, 0],
+          attributes: {
+            "exception.type": "Error",
+            "exception.message": "boom",
+            "exception.stacktrace":
+              "Error: boom\n    at checkout (https://example.test/app.js:1:2)",
           },
-          {
-            name: "checkout.step",
-            time: [1_735_689_602, 0],
-            attributes: { phase: "validate", attempt: 2 },
-            droppedAttributesCount: 0,
-          },
-        ],
-      }),
-      instrumentationKey,
-    );
+          droppedAttributesCount: 0,
+        },
+        {
+          name: "checkout.step",
+          time: [1_735_689_602, 0],
+          attributes: { phase: "validate", attempt: 2 },
+          droppedAttributesCount: 0,
+        },
+      ],
+    });
+    setManagedOperationName(span, "Checkout");
+    const envelopes = spanToEnvelopes(span, instrumentationKey);
 
     expect(envelopes).toHaveLength(3);
     expect(envelopes[1]).toMatchObject({
@@ -305,6 +336,7 @@ describe("Azure Monitor span envelope mapping", () => {
       tags: {
         "ai.operation.id": spanContext.traceId,
         "ai.operation.parentId": spanContext.spanId,
+        "ai.operation.name": "Checkout",
         "ai.session.id": "session-1",
       },
       data: {
@@ -317,6 +349,7 @@ describe("Azure Monitor span envelope mapping", () => {
       tags: {
         "ai.operation.id": spanContext.traceId,
         "ai.operation.parentId": spanContext.spanId,
+        "ai.operation.name": "Checkout",
         "ai.session.id": "session-1",
       },
       data: {

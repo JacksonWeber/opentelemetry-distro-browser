@@ -17,6 +17,8 @@ import { resourceFromAttributes } from "@opentelemetry/resources";
 import { BasicTracerProvider } from "@opentelemetry/sdk-trace-base";
 import { StackContextManager } from "@opentelemetry/sdk-trace-web";
 import { afterEach, expect, it, vi } from "vitest";
+import { logToEnvelope } from "../../../src/exporter/logUtils.js";
+import { spanToEnvelope } from "../../../src/exporter/spanUtils.js";
 import {
   useMicrosoftOpenTelemetry,
   type BrowserInstrumentation,
@@ -47,6 +49,12 @@ afterEach(async () => {
 });
 
 const SCOPE = "shared-instrumentation";
+
+async function settle(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 50)));
+  });
+}
 
 /** An instrumentation that records through whichever providers it was bound to. */
 function createProbe() {
@@ -79,6 +87,7 @@ async function start(options: MicrosoftOpenTelemetryBrowserOptions = {}) {
   const pipelines = vi.mocked(addInstance).mock.lastCall![0];
   return {
     handle,
+    pipeline,
     probe,
     pipelines,
     async traceIds() {
@@ -402,6 +411,28 @@ it("hands page correlation to a surviving instance when the owner shuts down", a
   expect(betaOperation).not.toBe(alphaOperation);
   expect(spans.at(-1)).toEqual(["probe", betaOperation]);
   expect(headers.traceparent).toContain(betaOperation);
+});
+
+it("keeps the operation name captured before page correlation changes owners", async () => {
+  const alpha = await start({ pageView: { routeResolver: () => "/owner-route" } });
+  const beta = await start({ pageView: { routeResolver: () => "/successor-route" } });
+  await settle();
+
+  const operation = trace.getSpanContext(context.active())!;
+  beta.probe.record("buffered");
+  await alpha.handle.shutdown();
+  await beta.pipeline.forceFlush();
+
+  const span = beta.pipeline.spanExporter
+    .getFinishedSpans()
+    .find((candidate) => candidate.name === "buffered")!;
+  const log = beta.pipeline.logExporter
+    .getFinishedLogRecords()
+    .find((candidate) => candidate.eventName === "buffered")!;
+  for (const envelope of [spanToEnvelope(span, "key"), logToEnvelope(log, "key")]) {
+    expect(envelope.tags["ai.operation.id"]).toBe(operation.traceId);
+    expect(envelope.tags["ai.operation.name"]).toBe("/owner-route");
+  }
 });
 
 it("correlates a reinitialized instance with its own page operation", async () => {

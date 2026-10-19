@@ -58,11 +58,11 @@ in each Node job's check summary and uploads all three files as build artifacts.
 
 Every executable published entry point has absolute minified, gzip and Brotli budgets:
 
-| Entry point          | Minified |    Gzip | Brotli |
-| -------------------- | -------: | ------: | -----: |
-| `.`                  |   121 kB |   38 kB |  34 kB |
-| `./instrumentations` |    64 kB |   24 kB |  22 kB |
-| `./snippet`          |     6 kB | 2.75 kB | 2.5 kB |
+| Entry point          |  Minified |     Gzip |   Brotli |
+| -------------------- | --------: | -------: | -------: |
+| `.`                  | 123.25 kB | 38.75 kB | 34.25 kB |
+| `./instrumentations` |     64 kB |    24 kB |    22 kB |
+| `./snippet`          |      6 kB |  2.75 kB |   2.5 kB |
 
 The generated JSON and Markdown reports show the measured values, ceilings and result for each
 entry point. During alpha releases, violations are report-only so the baselines can stabilize.
@@ -74,10 +74,10 @@ comparison remains informational and does not replace the absolute gate.
 emits them, so it must run after a production build. Their budgets block in every release channel,
 including alpha:
 
-| Artifact                                                   | Minified |  Gzip | Brotli |
-| ---------------------------------------------------------- | -------: | ----: | -----: |
-| `opentelemetry-browser.{iife,umd}.min.js`                  |   157 kB | 48 kB |  42 kB |
-| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |    63 kB | 19 kB |  17 kB |
+| Artifact                                                   |  Minified |     Gzip | Brotli |
+| ---------------------------------------------------------- | --------: | -------: | -----: |
+| `opentelemetry-browser.{iife,umd}.min.js`                  | 164.25 kB | 50.25 kB |  44 kB |
+| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |     63 kB |    19 kB |  17 kB |
 
 The browser bundles contain only ES2022 syntax. `npm run test:build` parses every emitted UMD and
 IIFE file as an ES2022 script and requires a budget for every minified browser bundle. This check

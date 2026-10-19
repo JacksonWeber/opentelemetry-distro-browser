@@ -15,6 +15,7 @@ interface SharedRegistry {
   version: 1;
   diagInitialized?: boolean;
   pageContexts?: WeakSet<SpanContext>;
+  operationNames?: WeakMap<object, string>;
   router?: RouterState;
   page?: PageContextState;
   unloadSubscribers?: Set<() => void>;
@@ -27,6 +28,12 @@ interface SharedRegistry {
 export function getPageContexts(): WeakSet<SpanContext> | undefined {
   const registry = realm[distroKey] as SharedRegistry | undefined;
   return registry?.version === 1 ? registry.pageContexts : undefined;
+}
+
+/** Exporter-only consumers may read operation names without initializing a distribution. */
+export function getOperationName(record: object): string | undefined {
+  const registry = realm[distroKey] as SharedRegistry | undefined;
+  return registry?.version === 1 ? registry.operationNames?.get(record) : undefined;
 }
 
 /** One versioned, realm-local registry shared by separately bundled distribution copies. */

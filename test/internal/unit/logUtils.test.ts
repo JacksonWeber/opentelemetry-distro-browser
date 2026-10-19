@@ -5,6 +5,7 @@ import { SDK_INFO } from "@opentelemetry/core";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { ATTR_TELEMETRY_SDK_VERSION } from "@opentelemetry/semantic-conventions";
 import { describe, expect, it } from "vitest";
+import { setManagedOperationName } from "../../../src/context/operationName.js";
 import { MaxPropertyLengths, MAX_BEACON_BODY_SIZE } from "../../../src/exporter/constants.js";
 import type { ExceptionData, PageViewData } from "../../../src/exporter/telemetryModels.js";
 import {
@@ -27,6 +28,37 @@ const pageViewDiagnostics = {
 };
 
 describe("Azure Monitor log envelope mapping", () => {
+  it("maps service.version to application context", () => {
+    const envelope = logToEnvelope(
+      makeLog({
+        resource: resourceFromAttributes({
+          "service.name": "browser-store",
+          "service.version": "2.4.1",
+        }),
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.tags["ai.application.ver"]).toBe("2.4.1");
+  });
+
+  it("maps the page name captured for an application log to operation context", () => {
+    const record = makeLog();
+    setManagedOperationName(record, "Products");
+
+    expect(logToEnvelope(record, instrumentationKey).tags["ai.operation.name"]).toBe("Products");
+    expect(record.attributes).not.toHaveProperty("ai.operation.name");
+  });
+
+  it("bounds the managed operation name for an application log", () => {
+    const record = makeLog();
+    setManagedOperationName(record, "n".repeat(70_000));
+
+    expect(logToEnvelope(record, instrumentationKey).tags["ai.operation.name"]).toBe(
+      "n".repeat(1_024),
+    );
+  });
+
   it.each([
     undefined,
     "browser.console",
@@ -706,6 +738,17 @@ describe("Azure Monitor log envelope mapping", () => {
     expect(envelope.data.baseData.properties).toBeUndefined();
   });
 
+  it("bounds the Application Insights application version tag", () => {
+    const envelope = logToEnvelope(
+      makeLog({
+        resource: resourceFromAttributes({ "service.version": "v".repeat(1_025) }),
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.tags["ai.application.ver"]).toBe("v".repeat(1_024));
+  });
+
   it.each([undefined, "browser.page_view"])(
     "maps log user attributes to tags instead of properties for event %s",
     (eventName) => {
@@ -767,6 +810,7 @@ describe("Azure Monitor log envelope mapping", () => {
           attributes: {
             "browser.page_view.id": pageViewId,
             "browser.page_view.name": "Cart",
+            "browser.page_view.name_source": "explicit",
             [durationAttribute]: 425.25,
             "browser.page_view.referrer": "https://shop.example.test/products",
             "url.full": "https://shop.example.test/cart",
@@ -791,6 +835,7 @@ describe("Azure Monitor log envelope mapping", () => {
           measurements: undefined,
         },
       });
+      expect(envelope.tags["ai.operation.name"]).toBe("Cart");
     },
   );
 
@@ -801,6 +846,7 @@ describe("Azure Monitor log envelope mapping", () => {
         attributes: {
           ...pageViewDiagnostics,
           "browser.page_view.name": "Cart",
+          "browser.page_view.name_source": "explicit",
           "browser.page_view.duration": 425.25,
           "browser.page_view.performance.total": 425.25,
           "browser.page_view.performance.network_connect": 25,
@@ -850,12 +896,40 @@ describe("Azure Monitor log envelope mapping", () => {
     expect(envelopes[0]?.data.baseData.measurements).toEqual({ itemCount: 2 });
   });
 
+  it("bounds page operation tags without truncating page-view display names", () => {
+    const pageName = "p".repeat(33_000);
+    const envelopes = logToEnvelopes(
+      makeLog({
+        eventName: "browser.page_view",
+        attributes: {
+          "browser.page_view.name": pageName,
+          "browser.page_view.name_source": "explicit",
+          "browser.page_view.performance.total": 425.25,
+          "browser.page_view.performance.network_connect": 25,
+          "browser.page_view.performance.sent_request": 100.5,
+          "browser.page_view.performance.received_response": 50.25,
+          "browser.page_view.performance.dom_processing": 249.5,
+        },
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelopes.map((envelope) => envelope.tags["ai.operation.name"])).toEqual([
+      "p".repeat(1_024),
+      "p".repeat(1_024),
+    ]);
+    for (const envelope of envelopes) {
+      expect(envelope.data.baseData).toMatchObject({ name: pageName });
+    }
+  });
+
   it("omits default envelope fields and diagnostic custom fields from both page-view envelopes", () => {
     const envelopes = logToEnvelopes(
       makeLog({
         eventName: "browser.page_view",
         attributes: {
           ...pageViewDiagnostics,
+          "browser.page_view.name": "Cart",
           "browser.page_view.performance.total": 170,
           "browser.page_view.performance.network_connect": 20,
           "browser.page_view.performance.sent_request": 50,
@@ -879,6 +953,7 @@ describe("Azure Monitor log envelope mapping", () => {
         "ai.device.id": "browser",
       });
     }
+    expect(envelopes[1]?.tags).not.toHaveProperty("ai.operation.name");
   });
 
   it("does not emit page-view performance when any phase is missing", () => {
@@ -920,18 +995,17 @@ describe("Azure Monitor log envelope mapping", () => {
   });
 
   it("maps legacy browser.navigation to PageViewData", () => {
-    const envelope = logToEnvelope(
-      makeLog({
-        eventName: "browser.navigation",
-        spanContext,
-        attributes: {
-          "url.full": "https://shop.example.test/cart",
-          "browser.navigation.duration": 425.25,
-          "browser.navigation.same_document": true,
-        },
-      }),
-      instrumentationKey,
-    );
+    const record = makeLog({
+      eventName: "browser.navigation",
+      spanContext,
+      attributes: {
+        "url.full": "https://shop.example.test/cart",
+        "browser.navigation.duration": 425.25,
+        "browser.navigation.same_document": true,
+      },
+    });
+    setManagedOperationName(record, "Cart");
+    const envelope = logToEnvelope(record, instrumentationKey);
 
     expect(envelope.data).toEqual({
       baseType: "PageViewData",
@@ -945,6 +1019,7 @@ describe("Azure Monitor log envelope mapping", () => {
         measurements: undefined,
       },
     });
+    expect(envelope.tags["ai.operation.name"]).toBe("Cart");
   });
 
   it.each([

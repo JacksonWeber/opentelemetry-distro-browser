@@ -9,7 +9,12 @@ import { BrowserBatchLogRecordProcessor } from "../../../src/browserBatchLogReco
 import { BasicTracerProvider, BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { StackContextManager } from "@opentelemetry/sdk-trace-web";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import {
+  getManagedOperationName,
+  setManagedOperationName,
+} from "../../../src/context/operationName.js";
 import { useMicrosoftOpenTelemetry, type BrowserInstrumentation } from "../../../src/index.js";
+import { addPageCorrelation } from "../../../src/routing/pageContext.js";
 import { getRegisteredGlobal, getSharedRegistry } from "../../../src/shared/globalOwnership.js";
 import { startTelemetryInstance } from "../../../src/routing/telemetryInstance.js";
 import { USER_STORAGE_KEY } from "../../../src/user/constants.js";
@@ -67,6 +72,26 @@ function probe() {
     },
   } satisfies BrowserInstrumentation & { emit(name: string): void };
 }
+
+it("does not initialize the shared registry for exporter-only operation-name reads", () => {
+  delete realm[distroKey];
+
+  expect(getManagedOperationName({})).toBeUndefined();
+  expect(realm[distroKey]).toBeUndefined();
+});
+
+it("reuses a version 1 operation-name registry across package copies", () => {
+  const legacyRecord = {};
+  const currentRecord = {};
+  const operationNames = new WeakMap<object, string>([[legacyRecord, "Legacy"]]);
+  realm[distroKey] = { version: 1, operationNames };
+
+  setManagedOperationName(currentRecord, "Current");
+
+  expect(getManagedOperationName(legacyRecord)).toBe("Legacy");
+  expect(getManagedOperationName(currentRecord)).toBe("Current");
+  expect(operationNames.has(currentRecord)).toBe(true);
+});
 
 it.each(["trace", "logs", "context", "propagation"] as const)(
   "preserves a pre-existing %s registration while collecting into its own pipelines",
@@ -178,6 +203,35 @@ it("rejects an incompatible distribution registry before accessing storage or ca
   expect(realm[distroKey]).toBe(registry);
   expect(access).not.toHaveBeenCalled();
 });
+
+it.each(["trace", "logs"] as const)(
+  "emits %s with an older page-correlation owner that has no operation name method",
+  async (signal) => {
+    const removeLegacyCorrelation = addPageCorrelation({
+      decorate: (active) => active,
+      operation: () => ({
+        traceId: "12345678901234567890123456789012",
+        spanId: "1234567890123456",
+        traceFlags: 1,
+      }),
+    });
+    cleanup.push(async () => removeLegacyCorrelation());
+    const pipeline = createInMemoryPipeline();
+    const handle = await useMicrosoftOpenTelemetry({
+      spanProcessors: signal === "trace" ? pipeline.options.spanProcessors : [],
+      logRecordProcessors: signal === "logs" ? pipeline.options.logRecordProcessors : [],
+      pageView: { enabled: false },
+    });
+    cleanup.push(() => handle.shutdown());
+
+    if (signal === "trace") trace.getTracer("newer-copy").startSpan("compatible").end();
+    else logs.getLogger("newer-copy").emit({ eventName: "compatible" });
+    await handle.forceFlush();
+
+    if (signal === "trace") expect(pipeline.spanExporter.getFinishedSpans()).toHaveLength(1);
+    else expect(pipeline.logExporter.getFinishedLogRecords()).toHaveLength(1);
+  },
+);
 
 it("allows concurrent initialization without replacing routers or mixing instrumentation telemetry", async () => {
   const first = createInMemoryPipeline();

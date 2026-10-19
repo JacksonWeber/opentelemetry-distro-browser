@@ -389,6 +389,25 @@ describe("PageViewInstrumentation", () => {
       expect(attributes[ATTR_PAGE_VIEW_NAME_SOURCE]).toBe("document_title");
     });
 
+    it("does not retain a provisional route after finalizing to a title fallback", async () => {
+      document.title = "Dashboard";
+      let route: string | undefined = "/dashboard/:id";
+      const { instrumentation, provider } = createInstrumentation({
+        routeResolver: () => route,
+      });
+
+      instrumentation.enable();
+      const operation = instrumentation.getOperationContext()!;
+      expect(instrumentation.getOperationName(operation.traceId)).toBe("/dashboard/:id");
+      route = undefined;
+      await settle();
+
+      const attributes = attributesOf(provider.records[0] as LogRecord);
+      expect(attributes[ATTR_PAGE_VIEW_NAME]).toBe("Dashboard");
+      expect(attributes[ATTR_PAGE_VIEW_NAME_SOURCE]).toBe("document_title");
+      expect(instrumentation.getOperationName(operation.traceId)).toBeUndefined();
+    });
+
     it("falls through to the pathname when there is no title", async () => {
       document.title = "";
       const { instrumentation, provider } = createInstrumentation();

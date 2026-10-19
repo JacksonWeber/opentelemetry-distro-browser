@@ -13,6 +13,7 @@ import {
   isTraceSampled,
   validateSamplingPercentage,
 } from "./sampling.js";
+import { copyManagedOperationName } from "./context/operationName.js";
 
 export interface AzureMonitorSamplingLogRecordProcessorOptions extends BrowserBatchLogRecordProcessorOptions {
   samplingPercentage: number;
@@ -54,6 +55,7 @@ export class AzureMonitorSamplingLogRecordProcessor extends BrowserBatchLogRecor
           },
         },
       }) as ReadWriteLogRecord;
+      copyManagedOperationName(record, azureRecord);
       super.onEmit(azureRecord);
       return;
     }

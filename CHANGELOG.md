@@ -35,6 +35,7 @@ All notable changes to this package are documented in this file.
   `cdnFallback` to retry from backup Azure Monitor CDN hosts (`cr`), and `reportLoadFailure` to send
   an `SDKLoadFailed` exception when the bundle cannot load. Each is off by default and adds code to
   the generated snippet only when enabled.
+- Add Azure Monitor operation and application context tags.
 
 ### Changed
 

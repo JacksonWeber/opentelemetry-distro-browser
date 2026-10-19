@@ -3,6 +3,8 @@
 
 import { context, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
+import { BatchLogRecordProcessor } from "@opentelemetry/sdk-logs";
+import { SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { afterEach, beforeEach, expect, inject, it, vi } from "vitest";
 import type { AzureMonitorEnvelope } from "../../src/exporter/telemetryModels.js";
 import {
@@ -27,6 +29,8 @@ interface Installation {
   propagation: typeof propagation;
   diag: typeof diag;
   useMicrosoftOpenTelemetry: typeof useMicrosoftOpenTelemetry;
+  AzureMonitorLogRecordExporter: typeof import("../../src/index.js").AzureMonitorLogRecordExporter;
+  AzureMonitorSpanExporter: typeof import("../../src/index.js").AzureMonitorSpanExporter;
 }
 
 const handles: MicrosoftOpenTelemetryBrowser[] = [];
@@ -65,7 +69,7 @@ async function loadCopies(mode = "isolated"): Promise<[Installation, Installatio
       scripts.push(await loadBrowserScript(`opentelemetry-browser.iife.${suffix}`));
       const bundle = window.Microsoft?.OpenTelemetry;
       if (!bundle) throw new Error("The IIFE bundle did not initialize");
-      copy = bundle;
+      copy = bundle as unknown as Installation;
     }
     copies.push(copy);
     installations.push(copy);
@@ -270,6 +274,43 @@ it("recognizes another copy's page context when exporting to Azure Monitor", asy
   for (const envelope of captured) {
     expect(envelope.tags["ai.operation.id"]).toBe(operation?.traceId);
     expect(envelope.tags).not.toHaveProperty("ai.operation.parentId");
+  }
+});
+
+it("shares managed operation names with exporters from another distribution copy", async () => {
+  const [host, remote] = await loadCopies();
+  const runId = crypto.randomUUID();
+  const endpoint = `${inject("ingestionEndpoint")}${runId}`;
+  const azureMonitor = {
+    connectionString:
+      `InstrumentationKey=00000000-0000-0000-0000-000000000000;` + `IngestionEndpoint=${endpoint}`,
+  };
+  const handle = await host.useMicrosoftOpenTelemetry({
+    spanProcessors: [new SimpleSpanProcessor(new remote.AzureMonitorSpanExporter(azureMonitor))],
+    logRecordProcessors: [
+      new BatchLogRecordProcessor({
+        exporter: new remote.AzureMonitorLogRecordExporter(azureMonitor),
+      }),
+    ],
+    pageView: { routeResolver: () => "Cross-copy route" },
+  });
+  handles.push(handle);
+
+  host.trace.getTracer("cross-copy-exporter").startSpan("cross-copy-span").end();
+  host.logs.getLogger("cross-copy-exporter").emit({ eventName: "cross-copy-log" });
+  await handle.forceFlush();
+
+  const captured: AzureMonitorEnvelope[] = await fetch(
+    `${new URL(endpoint).origin}/captured?runId=${encodeURIComponent(runId)}`,
+  ).then((response) => response.json());
+  const application = captured.filter((envelope) =>
+    ["cross-copy-span", "cross-copy-log"].includes(
+      String("name" in envelope.data.baseData ? envelope.data.baseData.name : ""),
+    ),
+  );
+  expect(application).toHaveLength(2);
+  for (const envelope of application) {
+    expect(envelope.tags["ai.operation.name"]).toBe("Cross-copy route");
   }
 });
 
