@@ -8,7 +8,8 @@ import {
 } from "./context/contextProcessors.js";
 import { createSession } from "./session/createSession.js";
 import { createUserContext } from "./user/createUserContext.js";
-import { createLocalStorageKeyValueStorage } from "./storage/keyValueStorage.js";
+import { createKeyValueStorage } from "./storage/keyValueStorage.js";
+import { createSessionBufferStorage, sessionBufferStorage } from "./exporter/sessionBuffer.js";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { BrowserBatchLogRecordProcessor } from "./browserBatchLogRecordProcessor.js";
 import { BatchSpanProcessor, type SpanProcessor } from "@opentelemetry/sdk-trace-base";
@@ -122,7 +123,8 @@ export async function useMicrosoftOpenTelemetry(
             inactivityTimeout: options.session?.inactivityTimeout,
             maxDuration: options.session?.maxDuration,
           },
-          createLocalStorageKeyValueStorage(
+          createKeyValueStorage(
+            "localStorage",
             "Session storage unavailable; using an in-memory session.",
             namePrefix,
           ),
@@ -136,13 +138,20 @@ export async function useMicrosoftOpenTelemetry(
       : new ApplicationInsightsSampler(options.samplingPercentage);
   const userContext = createUserContext(
     options.userContext?.enabled,
-    createLocalStorageKeyValueStorage(
+    createKeyValueStorage(
+      "localStorage",
       "User storage unavailable; anonymous ID disabled.",
       namePrefix,
     ),
     storageEnabled,
   );
   const azureMonitor = options.azureMonitor ? { ...options.azureMonitor } : undefined;
+  if (azureMonitor) {
+    sessionBufferStorage.set(
+      azureMonitor,
+      storageEnabled ? createSessionBufferStorage(namePrefix) : null,
+    );
+  }
   let spanProcessors: SpanProcessor[] | undefined = options.spanProcessors?.slice();
   let logRecordProcessors: LogRecordProcessor[] | undefined = options.logRecordProcessors?.slice();
   const ownedProcessors: (SpanProcessor | LogRecordProcessor)[] = [];

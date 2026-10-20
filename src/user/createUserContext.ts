@@ -3,10 +3,7 @@
 
 import { diag } from "@opentelemetry/api";
 import { createDefaultSessionIdGenerator } from "@opentelemetry/browser-sdk/session";
-import {
-  createLocalStorageKeyValueStorage,
-  type KeyValueStorage,
-} from "../storage/keyValueStorage.js";
+import { createKeyValueStorage, type KeyValueStorage } from "../storage/keyValueStorage.js";
 import { isNonEmptyString } from "../shared/isNonEmptyString.js";
 import type { MicrosoftOpenTelemetryBrowserUserContext } from "../types.js";
 import { USER_STORAGE_KEY } from "./constants.js";
@@ -81,7 +78,8 @@ export interface UserContextProvider {
 
 export function createUserContext(
   initialEnabled: boolean | undefined,
-  storage: KeyValueStorage = createLocalStorageKeyValueStorage(
+  storage: KeyValueStorage = createKeyValueStorage(
+    "localStorage",
     "User storage unavailable; anonymous ID disabled.",
   ),
   storageEnabled = true,

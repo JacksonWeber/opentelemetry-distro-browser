@@ -12,6 +12,9 @@ import {
   type MicrosoftOpenTelemetryBrowserOptions,
 } from "../../../src/index.js";
 import { getSdkLoaderScript } from "../../../src/snippet.js";
+import { TEST_INSTRUMENTATION_KEY } from "../../fixtures/azureMonitor.js";
+
+const AZURE_MONITOR_CONNECTION_STRING = `InstrumentationKey=${TEST_INSTRUMENTATION_KEY};IngestionEndpoint=https://example.test`;
 
 const handles: MicrosoftOpenTelemetryBrowser[] = [];
 const keys = ["opentelemetry-session", "opentelemetry-user"];
@@ -31,6 +34,7 @@ afterEach(async () => {
   context.disable();
   diag.disable();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   for (const [key, value] of saved) {
     if (value === null) localStorage.removeItem(key);
     else localStorage.setItem(key, value);
@@ -85,8 +89,13 @@ it("blocks storage throughout identity controls, expiry, flush and shutdown", as
   const session = vi.spyOn(window, "sessionStorage", "get");
   const cookie = vi.spyOn(document, "cookie", "get");
   const cookieWrite = vi.spyOn(document, "cookie", "set");
+  const fetch = vi.fn(
+    async () => new Response("", { status: 503, headers: { "retry-after": "86400" } }),
+  );
+  vi.stubGlobal("fetch", fetch);
   const { handle, emit } = await initialize({
     storage: { enabled: false },
+    azureMonitor: { connectionString: AZURE_MONITOR_CONNECTION_STRING },
     session: { persist: true, inactivityTimeout: 0.001 },
     userContext: { enabled: true },
   });
@@ -101,7 +110,9 @@ it("blocks storage throughout identity controls, expiry, flush and shutdown", as
   handle.userContext.setEnabled(false);
   clock.mockReturnValue(now + 1000);
   expect(emit()["session.id"]).not.toBe(first);
-  await handle.forceFlush();
+  await handle.forceFlush().catch(() => {});
+  expect(fetch).toHaveBeenCalled();
+  window.dispatchEvent(new PageTransitionEvent("pagehide"));
   await handle.shutdown();
   handle.userContext.setEnabled(true);
   handle.userContext.clearAuthenticatedUserContext();
@@ -111,6 +122,24 @@ it("blocks storage throughout identity controls, expiry, flush and shutdown", as
   expect(cookieWrite).not.toHaveBeenCalled();
   local.mockRestore();
   for (const key of keys) expect(localStorage.getItem(key)).toBe("previous-value");
+});
+
+it("prefixes unsent telemetry buffer keys", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => new Response("", { status: 503, headers: { "retry-after": "86400" } })),
+  );
+  const { handle, emit } = await initialize({
+    storage: { namePrefix: "shop-" },
+    azureMonitor: { connectionString: AZURE_MONITOR_CONNECTION_STRING },
+  });
+  emit();
+  await handle.forceFlush().catch(() => {});
+  const bufferKeys = Array.from({ length: sessionStorage.length }, (_, index) =>
+    sessionStorage.key(index),
+  ).filter((key) => key?.includes("opentelemetry-buffer|"));
+  expect(bufferKeys.length).toBeGreaterThan(0);
+  for (const key of bufferKeys) expect(key).toMatch(/^shop-opentelemetry-buffer\|/);
 });
 
 it("isolates prefixed sessions and users, restores them, and scopes identity removal", async () => {

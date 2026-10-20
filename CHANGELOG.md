@@ -6,6 +6,13 @@ All notable changes to this package are documented in this file.
 
 ### Added
 
+- Buffer unsent Azure Monitor telemetry in `sessionStorage` and send it first, once, on the next
+  page load in the same tab. Covers requests in flight at navigation, envelopes that do not fit the
+  unload beacon, and retriable failures, keeping only outstanding envelopes after partial
+  responses. Records are released to the next document only on `pagehide`, are isolated per
+  connection string and exporter, and are bounded to 512 KiB of characters per exporter and one
+  hour. Unavailable or full storage only logs a warning, and `storage.enabled: false` disables the
+  buffer.
 - Add per-instance browser storage controls to initialization and the CDN loader: `storage.enabled:
 false` blocks SDK-managed storage access, including later identity-control calls, while keeping
   sessions and authenticated identity in memory. Use `storage.namePrefix` to scope session and user

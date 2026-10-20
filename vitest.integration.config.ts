@@ -1,7 +1,7 @@
 import { defineConfig } from "vitest/config";
 import config, { browserInstances } from "./vitest.config.js";
 import { loadSnippetPage } from "./test/integration/snippetPageCommand.js";
-import { verifyUnloadDelivery } from "./test/integration/unloadCommand.js";
+import { verifyReloadDelivery, verifyUnloadDelivery } from "./test/integration/unloadCommand.js";
 
 export default defineConfig({
   ...config,
@@ -12,7 +12,7 @@ export default defineConfig({
     setupFiles: [],
     browser: {
       ...config.test?.browser,
-      commands: { loadSnippetPage, verifyUnloadDelivery },
+      commands: { loadSnippetPage, verifyReloadDelivery, verifyUnloadDelivery },
       instances: browserInstances,
     },
     globalSetup: ["./test/integration/redirectServer.ts", "./test/integration/cdnServer.ts"],

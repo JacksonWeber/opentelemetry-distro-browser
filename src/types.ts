@@ -176,8 +176,9 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
      */
     enabled?: boolean;
     /**
-     * Literal prefix for session and user storage keys. Defaults to an empty string, preserving
-     * existing keys. Use a distinct prefix to isolate applications or handles on the same origin.
+     * Literal prefix for session, user and unsent telemetry buffer storage keys. Defaults to an
+     * empty string, preserving existing keys. Use a distinct prefix to isolate applications or
+     * handles on the same origin.
      * Existing unprefixed data is not read, migrated, or removed when a prefix is configured.
      */
     namePrefix?: string;

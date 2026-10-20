@@ -121,6 +121,27 @@ it.each([
   },
 );
 
+it("delivers telemetry left unsent by the previous page once after a same-tab reload", async () => {
+  const runId = crypto.randomUUID();
+  const ingestionEndpoint = `${inject("ingestionEndpoint")}${encodeURIComponent(runId)}`;
+  const fixtureUrl = new URL("./unloadFixture.html", import.meta.url);
+  fixtureUrl.searchParams.set("ingestionEndpoint", ingestionEndpoint);
+  fixtureUrl.searchParams.set("runId", runId);
+  const reloadUrl = fixtureUrl.href;
+  fixtureUrl.searchParams.set("throttle", "true");
+  const captureUrl = `${new URL(ingestionEndpoint).origin}/captured?runId=${encodeURIComponent(runId)}`;
+
+  const envelopes = await commands.verifyReloadDelivery(fixtureUrl.href, reloadUrl, captureUrl, {
+    "throttled-before-reload": 1,
+    "navigation-away": 3,
+  });
+  const names = envelopes.map(
+    (envelope) => (envelope as { data: { baseData: { name?: string } } }).data.baseData.name,
+  );
+  expect(names.filter((name) => name === "throttled-before-reload")).toHaveLength(1);
+  expect(names.filter((name) => name === "navigation-away")).toHaveLength(3);
+}, 60_000);
+
 it("delivers an unsettled page view after the source document navigates away", async () => {
   const runId = crypto.randomUUID();
   const ingestionEndpoint = `${inject("ingestionEndpoint")}${encodeURIComponent(runId)}`;

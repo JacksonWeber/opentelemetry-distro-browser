@@ -19,19 +19,25 @@ export interface KeyValueStorage {
   removeItem(key: string): boolean;
 }
 
-export function createLocalStorageKeyValueStorage(
+/** Same-origin Web Storage with key listing, used to discover records written by earlier pages. */
+export interface WebKeyValueStorage extends KeyValueStorage {
+  /** Keys that start with the storage name prefix, without that prefix. */
+  keys(): string[];
+}
+
+/**
+ * Wraps `localStorage` or `sessionStorage` so storage failures never reach callers. Any error,
+ * including unavailable, blocked or full storage, logs `unavailableMessage` once and returns a
+ * failure result. Keys are prefixed with `namePrefix`.
+ */
+export function createKeyValueStorage(
+  area: "localStorage" | "sessionStorage",
   unavailableMessage: string,
   namePrefix = "",
-): KeyValueStorage {
-  // After a quota or security write failure, pause writes briefly instead of retrying every activity.
+): WebKeyValueStorage {
+  // After a write failure, pause writes briefly instead of retrying every activity.
   let writesPausedUntil = 0;
   let warned = false;
-
-  function warnOnce(): void {
-    if (warned) return;
-    warned = true;
-    diag.warn(unavailableMessage);
-  }
 
   function useStorage<T>(
     operation: (storage: Storage) => T,
@@ -48,27 +54,19 @@ export function createLocalStorageKeyValueStorage(
       return fallback;
     }
     try {
-      if (typeof localStorage !== "undefined") {
-        const result = operation(localStorage);
+      const storage = globalThis[area];
+      if (storage) {
+        const result = operation(storage);
         if (operationType === "remove") writesPausedUntil = 0;
         return result;
       }
-    } catch (error) {
-      const errorName =
-        typeof error === "object" &&
-        error !== null &&
-        "name" in error &&
-        typeof error.name === "string"
-          ? error.name
-          : undefined;
-      if (errorName !== "SecurityError" && errorName !== "QuotaExceededError") {
-        throw error;
-      }
-      if (operationType === "write") {
-        writesPausedUntil = Date.now() + WRITE_BACKOFF_MS;
-      }
+    } catch {
+      if (operationType === "write") writesPausedUntil = Date.now() + WRITE_BACKOFF_MS;
     }
-    warnOnce();
+    if (!warned) {
+      warned = true;
+      diag.warn(unavailableMessage);
+    }
     return fallback;
   }
 
@@ -96,6 +94,15 @@ export function createLocalStorageKeyValueStorage(
         },
         false,
         "remove",
+      ),
+    keys: () =>
+      useStorage(
+        (storage) =>
+          Array.from({ length: storage.length }, (_, index) => storage.key(index) ?? "")
+            .filter((key) => key.startsWith(namePrefix))
+            .map((key) => key.slice(namePrefix.length)),
+        [],
+        "read",
       ),
   };
 }

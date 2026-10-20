@@ -45,7 +45,8 @@ initialization must include an exporting pipeline for the relevant signal.
   A page-view ID is an OpenTelemetry trace ID, not a session ID or UUID. Explicit span context is
   preserved. Page URL, title and descriptive fields are not copied to every record.
 - Percentage sampling and browser/API availability can suppress records. Unload flushing is best
-  effort; no durable offline queue exists.
+  effort; unsent Azure Monitor records are retried by the next page load in the same tab, but no
+  durable offline queue exists.
 
 ## Page view: `browser.page_view`
 

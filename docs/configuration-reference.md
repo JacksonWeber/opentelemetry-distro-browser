@@ -38,6 +38,18 @@ to suffix-derived or public-cloud endpoints; an invalid/missing instrumentation 
 Connection strings identify a destination and do not grant read access to the resource. They are
 public browser configuration, not secrets. Built-in Entra ID token authentication is not supported.
 
+Unsent Azure Monitor telemetry is buffered in `sessionStorage` and sent first by the next page load
+in the same tab. The buffer covers telemetry that is in flight when the page goes away, does not
+fit the unload beacon, or fails with a retriable error; after a partial response only the
+outstanding retriable envelopes stay buffered. Records are keyed by connection string and
+exporter, kept until ingestion accepts or permanently rejects them or the browser takes an unload
+request, and adopted only once after the page that wrote them fires `pagehide`, so hidden but
+live pages and same-origin frames never send each other's telemetry. Each exporter keeps at most
+512 KiB of characters and drops items older than one hour; unavailable or full storage only logs
+a diagnostic warning. `storage.enabled: false` disables the buffer and `storage.namePrefix`
+prefixes its keys. Requests interrupted after ingestion received them can be sent again. Custom
+span and log processors are not buffered, and the buffer does not survive closing the tab.
+
 When Azure Monitor is configured, its processor is added before non-empty custom processor lists
 for each signal. They are independent processor branches, not a chain: filtering within the Azure
 Monitor processor does not filter records received by custom processors. An explicit empty array
@@ -73,10 +85,10 @@ prevent emission to custom log processors. There is no `traces.sampler` option.
 
 ### Browser storage
 
-| Option               | Type      | Default | Behavior                                                                                                                                                                    |
-| -------------------- | --------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `storage.enabled`    | `boolean` | `true`  | `false` blocks all SDK-managed browser storage access for this handle, including later identity-control calls. Sessions use memory; managed anonymous identity is disabled. |
-| `storage.namePrefix` | `string`  | `""`    | Literal prefix for both `opentelemetry-session` and `opentelemetry-user`. For example, `"shop-"` produces `shop-opentelemetry-session` and `shop-opentelemetry-user`.       |
+| Option               | Type      | Default | Behavior                                                                                                                                                                                                    |
+| -------------------- | --------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `storage.enabled`    | `boolean` | `true`  | `false` blocks all SDK-managed browser storage access for this handle, including later identity-control calls and the unsent telemetry buffer. Sessions use memory; managed anonymous identity is disabled. |
+| `storage.namePrefix` | `string`  | `""`    | Literal prefix for `opentelemetry-session`, `opentelemetry-user` and unsent telemetry buffer keys. For example, `"shop-"` produces `shop-opentelemetry-session` and `shop-opentelemetry-user`.              |
 
 Settings are captured at initialization and apply independently to each handle. A prefix isolates
 stored sessions and identities for applications on the same origin; it is not a security boundary.
@@ -89,10 +101,11 @@ change another handle's policy. Setting it to `false` takes precedence over `ses
 still be set and cleared in memory. Disabling storage does not erase existing data, disable telemetry
 collection or stop network requests. Custom processors/exporters must enforce their own storage policy.
 
-This first increment uses localStorage only: no cookies are created and no unsent telemetry is
-persisted. Application Insights `cookieCfg` and cookie domain/path settings are separate cookie
-controls, not localStorage settings. Its `enableSessionStorageBuffer` persists **unsent telemetry**,
-not session identity; that delivery/replay capability is not implemented here.
+Sessions and identities use localStorage; unsent Azure Monitor telemetry uses sessionStorage. No
+cookies are created. Application Insights `cookieCfg` and cookie domain/path settings are separate
+cookie controls, not Web Storage settings. Its `enableSessionStorageBuffer` corresponds to the
+unsent telemetry buffer described under Azure Monitor, which is always on here unless
+`storage.enabled` is false.
 
 Implementation references: Application Insights JavaScript's
 [cookie manager](https://github.com/microsoft/ApplicationInsights-JS/blob/main/shared/AppInsightsCore/src/core/CookieMgr.ts),
@@ -241,7 +254,8 @@ or acquire tracers/loggers after initialization. Iframes and workers have indepe
 
 Both methods return `Promise<void>` and can reject; multiple failures are reported with
 `AggregateError`. Other instances keep running after one handle shuts down. Automatic flushing on
-page hide/hidden visibility is best effort, not offline persistence or guaranteed delivery.
+page hide/hidden visibility is best effort, not guaranteed delivery; Azure Monitor telemetry left
+unsent is retried by the next page load in the same tab through the `sessionStorage` buffer.
 
 ## CDN loader configuration
 

@@ -14,6 +14,7 @@ import {
 } from "./constants.js";
 import {
   type BreezeError,
+  type BreezeResponse,
   isRetriable,
   isSamplingRejection,
   parseBreezeResponse,
@@ -55,6 +56,17 @@ export interface SendRequest {
   readonly unloading?: boolean;
   readonly signal?: AbortSignal;
   readonly retry?: boolean;
+  /** Called once an unload request is handed to the browser by keepalive fetch or beacon. */
+  readonly onDispatch?: () => void;
+  /**
+   * Called after each 206 response with the envelopes that are still retriable, or an empty array
+   * when none remain.
+   */
+  readonly onPartial?: (envelopes: readonly AzureMonitorEnvelope[]) => void;
+  /** Called with each response status before its body is read. */
+  readonly onResponse?: (statusCode: number) => void;
+  /** Checked before each attempt; when it returns `false` the request stops with an error. */
+  readonly active?: () => boolean;
 }
 
 export interface SenderResult {
@@ -108,6 +120,9 @@ export class Sender {
     }
     if (request.unloading === true || request.retry === false) {
       const result = await this.#sendOnce(request);
+      if (result.transport === "fetch" && result.statusCode === 206) {
+        reportPartial(request, result, parseBreezeResponse(result.result));
+      }
       this.#rememberThrottleDeadline(result);
       return result;
     }
@@ -147,14 +162,14 @@ export class Sender {
         return result;
       }
 
-      const breezeErrors =
-        result.statusCode === 206 ? (parseBreezeResponse(result.result)?.errors ?? []) : [];
+      const response = result.statusCode === 206 ? parseBreezeResponse(result.result) : undefined;
+      const breezeErrors = response?.errors ?? [];
       permanentErrors.push(
         ...breezeErrors.filter(
           (error) => !isRetriable(error.statusCode) && !isSamplingRejection(error),
         ),
       );
-      const retryRequest = getRetryRequest(currentRequest, result, breezeErrors);
+      const retryRequest = reportPartial(currentRequest, result, response);
       this.#rememberThrottleDeadline(result);
       if (!retryRequest || attempt >= MAX_SEND_ATTEMPTS) {
         return permanentErrors.length === 0 ? result : { ...result, permanentErrors };
@@ -211,6 +226,7 @@ export class Sender {
 
   async #sendOnce(request: SendRequest): Promise<SenderResultType> {
     if (request.signal?.aborted) throw new DOMException("Request aborted", "AbortError");
+    assertActive(request);
     const unloading = request.unloading === true;
     const keepaliveAvailable =
       pendingKeepaliveBodySize + request.body.byteLength <= MAX_PENDING_KEEPALIVE_BODY_SIZE &&
@@ -230,12 +246,14 @@ export class Sender {
       let endpoint = this.#endpoint;
       try {
         const payload = unloading || !this.#compress ? undefined : await gzipPayload(request.body);
+        // Compression yields, so the page may have been frozen and handed off in between.
+        if (!unloading) assertActive(request);
         endpoint = this.#endpoint;
         const startTime = Date.now();
         try {
           // Browser context may not survive compression or retry awaits, so suppress at the call.
-          response = await context.with(suppressTracing(context.active()), () =>
-            this.#fetch(endpoint, {
+          response = await context.with(suppressTracing(context.active()), () => {
+            const pending = this.#fetch(endpoint, {
               method: "POST",
               headers: {
                 "content-type": request.contentType,
@@ -246,8 +264,10 @@ export class Sender {
               ...(request.signal
                 ? { signal: request.signal, credentials: "omit", referrerPolicy: "no-referrer" }
                 : {}),
-            }),
-          );
+            });
+            if (useKeepalive) request.onDispatch?.();
+            return pending;
+          });
         } catch (error) {
           this.#stats?.countException(error, endpoint);
           if (!isBrowserTransportFailure(error)) {
@@ -267,6 +287,7 @@ export class Sender {
         throw error;
       }
 
+      request.onResponse?.(response.status);
       const retryAfterMs = parseRetryAfterHeader(response.headers.get("retry-after"));
       let result: string;
       try {
@@ -311,6 +332,8 @@ export class Sender {
   }
 
   #sendWithBeacon(request: SendRequest, cause?: unknown): BeaconSenderResult {
+    // A fallback can follow a frozen response body read, after the batch was handed off.
+    assertActive(request);
     const endpoint = this.#endpoint;
     if (request.body.byteLength > MAX_BEACON_BODY_SIZE) {
       throw new RangeError(
@@ -341,6 +364,7 @@ export class Sender {
       throw error;
     }
 
+    request.onDispatch?.();
     return { transport: "beacon" };
   }
 }
@@ -398,6 +422,20 @@ function normalizeHostname(hostname: string): string {
   return hostname.toLowerCase().replace(/\.+$/, "");
 }
 
+/** Returns the retry request, reporting the envelopes still outstanding after a 206 response. */
+function reportPartial(
+  request: SendRequest,
+  result: SenderResult,
+  response: BreezeResponse | undefined,
+): SendRequest | undefined {
+  const retryRequest = getRetryRequest(request, result, response?.errors ?? []);
+  if (result.statusCode === 206) {
+    // An unreadable response leaves every envelope outstanding, without an immediate retry.
+    request.onPartial?.(response ? (retryRequest?.envelopes ?? []) : (request.envelopes ?? []));
+  }
+  return retryRequest;
+}
+
 function getRetryRequest(
   request: SendRequest,
   result: SenderResult,
@@ -426,6 +464,10 @@ function getRetryRequest(
     body: new TextEncoder().encode(JSON.stringify(envelopes)),
     envelopes,
   };
+}
+
+function assertActive(request: SendRequest): void {
+  if (request.active?.() === false) throw new Error("Telemetry was handed off to another page.");
 }
 
 function getRetryDelay(retryAttempt: number, random: number): number {

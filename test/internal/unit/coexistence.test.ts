@@ -4,6 +4,7 @@
 import { context, diag, propagation, trace, type TracerProvider } from "@opentelemetry/api";
 import { logs, type LoggerProvider as ApiLoggerProvider } from "@opentelemetry/api-logs";
 import { W3CTraceContextPropagator } from "@opentelemetry/core";
+import type { Resource } from "@opentelemetry/resources";
 import { LoggerProvider } from "@opentelemetry/sdk-logs";
 import { BrowserBatchLogRecordProcessor } from "../../../src/browserBatchLogRecordProcessor.js";
 import { BasicTracerProvider, BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
@@ -535,13 +536,14 @@ it("removes only new page registrations when propagation registration fails", as
 it("cleans up partially created owned processors before handing them to a pipeline", async () => {
   const spanShutdown = vi.spyOn(BatchSpanProcessor.prototype, "shutdown");
   const logShutdown = vi.spyOn(BrowserBatchLogRecordProcessor.prototype, "shutdown");
-  const failure = new Error("session storage failed");
-  vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
-    throw failure;
-  });
+  const failure = new Error("resource detection failed");
   await expect(
     useMicrosoftOpenTelemetry({
       azureMonitor: { connectionString: "InstrumentationKey=00000000-0000-0000-0000-000000000000" },
+      resource: {
+        attributes: {},
+        waitForAsyncAttributes: () => Promise.reject(failure),
+      } as unknown as Resource,
       session: { enabled: true },
       userContext: { enabled: false },
       pageView: { enabled: false },

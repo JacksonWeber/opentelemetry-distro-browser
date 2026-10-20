@@ -15,6 +15,7 @@ declare module "vitest" {
 export default async function setup(project: TestProject): Promise<() => Promise<void>> {
   const ingestedEnvelopes = new Map<string, unknown[]>();
   const ingestedReferrers = new Map<string, string[]>();
+  const throttledRuns = new Set<string>();
   let redirectRequests = 0;
   let finalRequests = 0;
 
@@ -45,6 +46,20 @@ export default async function setup(project: TestProject): Promise<() => Promise
       try {
         const runId = decodeURIComponent(ingestionMatch[1]);
         const envelopes = JSON.parse(await readRequestBody(request)) as unknown[];
+        // Throttle the first request carrying the marker so it is left for the next page load.
+        if (
+          !throttledRuns.has(runId) &&
+          envelopes.some(
+            (envelope) =>
+              (envelope as { data?: { baseData?: { name?: string } } }).data?.baseData?.name ===
+              "throttled-before-reload",
+          )
+        ) {
+          throttledRuns.add(runId);
+          response.setHeader("access-control-expose-headers", "retry-after");
+          response.writeHead(503, { "retry-after": "86400" }).end();
+          return;
+        }
         ingestedEnvelopes.set(runId, [...(ingestedEnvelopes.get(runId) ?? []), ...envelopes]);
         ingestedReferrers.set(runId, [
           ...(ingestedReferrers.get(runId) ?? []),
