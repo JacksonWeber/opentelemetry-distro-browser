@@ -28,6 +28,7 @@ export interface SdkLoaderConfig {
         readonly softNavigationSettleTimeoutMs?: number;
         readonly useNavigationApiIfAvailable?: boolean;
     };
+    readonly redactQueryParams?: readonly string[];
     readonly reportLoadFailure?: boolean;
     readonly resourceAttributes?: {
         readonly [key: string]: string | number | boolean;

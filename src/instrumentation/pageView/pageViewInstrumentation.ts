@@ -17,7 +17,7 @@ import { InstrumentationBase, safeExecuteInTheMiddle } from "@opentelemetry/inst
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../shared/constants.js";
 import { markPageContext } from "../../shared/pageOperationContext.js";
 import { createPageViewContext, generatePageViewId } from "./pageViewContext.js";
-import { redactUrl } from "./urlRedaction.js";
+import { redactUrl } from "../../shared/urlRedaction.js";
 import {
   ATTR_PAGE_VIEW_DURATION,
   ATTR_PAGE_VIEW_DURATION_SOURCE,

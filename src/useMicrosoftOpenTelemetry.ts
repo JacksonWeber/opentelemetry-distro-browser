@@ -35,6 +35,7 @@ import {
 import { startTelemetryInstance, type TelemetryInstance } from "./routing/telemetryInstance.js";
 import { ApplicationInsightsSampler, isTraceSampled, PageOperationSampler } from "./sampling.js";
 import { AzureMonitorSamplingLogRecordProcessor } from "./samplingLogRecordProcessor.js";
+import { DEFAULT_QUERY_STRINGS_TO_REDACT } from "./shared/urlRedaction.js";
 import type {
   MicrosoftOpenTelemetryBrowser,
   MicrosoftOpenTelemetryBrowserOptions,
@@ -96,6 +97,10 @@ function createOwnedInstrumentations(
 export async function useMicrosoftOpenTelemetry(
   options: MicrosoftOpenTelemetryBrowserOptions = {},
 ): Promise<MicrosoftOpenTelemetryBrowser> {
+  const redactedQueryParams: readonly string[] = [
+    ...DEFAULT_QUERY_STRINGS_TO_REDACT,
+    ...(options.redactQueryParams ?? []),
+  ];
   const session =
     options.session?.enabled !== false ? createSession(options.session ?? {}) : undefined;
   getSharedRegistry();
@@ -114,19 +119,28 @@ export async function useMicrosoftOpenTelemetry(
     ...options.traces,
     propagators: options.traces.propagators?.slice(),
   };
+  const pageViewOptions = options.pageView ?? {};
+  // Preserve legacy replacement semantics unless the additive, instance-wide option is used.
+  const pageView = {
+    ...pageViewOptions,
+    redactedQueryParams:
+      options.redactQueryParams === undefined
+        ? pageViewOptions.redactedQueryParams?.slice()
+        : [...redactedQueryParams, ...(pageViewOptions.redactedQueryParams ?? [])],
+  };
   // While another instance supplies page correlation, page views adopt its operation.
   const correlationState: { current?: PageViewCorrelation } = {};
   const owned = createOwnedInstrumentations(
-    options,
+    { ...options, pageView },
     () => getPageOperation(correlationState.current),
     samplingPercentage,
   );
-  const pageView = owned[0];
-  const correlation = pageView
+  const pageViewInstrumentation = owned[0];
+  const correlation = pageViewInstrumentation
     ? new PageViewCorrelation(
-        () => pageView.getOperationContext(),
-        pageView.pageViews,
-        (traceId) => pageView.getOperationName(traceId),
+        () => pageViewInstrumentation.getOperationContext(),
+        pageViewInstrumentation.pageViews,
+        (traceId) => pageViewInstrumentation.getOperationName(traceId),
       )
     : undefined;
   correlationState.current = correlation;
@@ -159,7 +173,7 @@ export async function useMicrosoftOpenTelemetry(
   const flushForUnload = (): void => {
     if (stopping || unloadFlushPromise) return;
     beginUnloading();
-    pageView?.settleForUnload();
+    pageViewInstrumentation?.settleForUnload();
     const operation = flushProcessors()
       .catch((error: unknown) => {
         reportError("Telemetry unload flush failed", error);
@@ -307,6 +321,7 @@ export async function useMicrosoftOpenTelemetry(
       diag.warn("Trace context options ignored; page context already registered");
     }
     const instanceOptions = {
+      redactedQueryParams,
       // Spread last: the caller's attributes win.
       resourceAttributes: {
         [ATTR_TELEMETRY_DISTRO_NAME]: "@microsoft/opentelemetry-browser",

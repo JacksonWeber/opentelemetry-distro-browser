@@ -64,6 +64,11 @@ All notable changes to this package are documented in this file.
 
 ### Fixed
 
+- Redact URL credentials and sensitive signing and OAuth parameters on captured fetch/XHR HTTP
+  dependency URLs without changing requests. Add `redactQueryParams` settings for additional
+  query-string and fragment parameters on these URLs and page-view URLs/referrers, including CDN
+  loader configuration. Existing page-view replacement settings remain supported. Exceptions,
+  log bodies, span names/status and arbitrary attributes are not scanned.
 - Preserve asynchronously detected resource attributes when initializing trace and log pipelines.
 - Detect OS version from high-entropy client hints
 - Map resource `service.version` to the Azure Monitor `ai.application.ver` tag.

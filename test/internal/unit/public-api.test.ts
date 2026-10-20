@@ -40,6 +40,10 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
     | "session"
     | "userContext"
     | "traces"
+    | "redactQueryParams"
+  >();
+  expectTypeOf<MicrosoftOpenTelemetryBrowserOptions["redactQueryParams"]>().toEqualTypeOf<
+    readonly string[] | undefined
   >();
   expectTypeOf<MicrosoftOpenTelemetryBrowserOptions["resource"]>().toEqualTypeOf<
     Resource | undefined

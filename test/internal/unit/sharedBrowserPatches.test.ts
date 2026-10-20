@@ -532,8 +532,8 @@ it("fans out fetch responses before callers consume their bodies and keeps hooks
   const [b] = second.spanExporter.getFinishedSpans();
   expect(a.parentSpanContext).toEqual(parent);
   expect(b.parentSpanContext).toEqual(parent);
-  expect(a.attributes["url.full"]).toBe("first");
-  expect(b.attributes["url.full"]).toBe("second");
+  expect(a.attributes["url.full"]).toBe(new URL("first", document.baseURI).href);
+  expect(b.attributes["url.full"]).toBe(new URL("second", document.baseURI).href);
   expect(firstHook).toHaveBeenCalledOnce();
   expect(secondHook).toHaveBeenCalledOnce();
   expect(transport).toHaveBeenCalledOnce();

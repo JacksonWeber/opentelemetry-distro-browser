@@ -222,6 +222,12 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
    * long before this object exists.
    */
   pageView?: PageViewInstrumentationConfig;
+  /**
+   * Additional case-sensitive query-string and fragment parameter names to redact on captured
+   * fetch/XHR HTTP client URLs and page-view URLs/referrers. Built-in signing and OAuth parameters
+   * and URL credentials remain protected. Captured at initialization.
+   */
+  redactQueryParams?: readonly string[];
 }
 
 /**

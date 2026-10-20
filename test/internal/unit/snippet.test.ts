@@ -268,7 +268,10 @@ it("escapes values embedded in an inline script", () => {
 type Options = MicrosoftOpenTelemetryBrowserOptions;
 const snippetOptionsMatchTheDistribution = (
   config: Required<SdkLoaderConfig>,
-): Pick<Options, "samplingPercentage" | "session" | "userContext" | "pageView"> & {
+): Pick<
+  Options,
+  "samplingPercentage" | "session" | "userContext" | "pageView" | "redactQueryParams"
+> & {
   azureMonitor: Partial<AzureMonitorOptions>;
   instrumentationOptions: InstrumentationOptions;
 } => config;
@@ -288,6 +291,7 @@ void instrumentationNamesExist;
 
 const configuredOptions = {
   samplingPercentage: 25,
+  redactQueryParams: ["tenant_secret"],
   azureMonitor: { disableBeacon: true },
   session: { enabled: true, persist: false, inactivityTimeout: 60, maxDuration: 600 },
   userContext: { enabled: false },
@@ -339,6 +343,7 @@ it("passes configured options to the bundle", async () => {
     ).toEqual(configuredOptions.instrumentationOptions);
     expect(loaderWindow.snippetOptions).toEqual({
       samplingPercentage: 25,
+      redactQueryParams: configuredOptions.redactQueryParams,
       azureMonitor: { connectionString: "InstrumentationKey=test", disableBeacon: true },
       session: configuredOptions.session,
       userContext: configuredOptions.userContext,
@@ -429,6 +434,8 @@ it.each([
 });
 
 it.each([
+  ["redactQueryParams", { redactQueryParams: "secret" }, "an array of strings when provided"],
+  ["redactQueryParams", { redactQueryParams: [1] }, "an array of strings when provided"],
   ["session.enabled", { session: { enabled: "false" } }, "a boolean when provided"],
   [
     "session.inactivityTimeout",
@@ -542,7 +549,6 @@ cyclic.self = cyclic;
 it.each([
   ["session", cyclic],
   ["instrumentationOptions", { errors: { enabled: true, nested: [cyclic] } }],
-  ["pageView", { redactedQueryParams: new Array<string>(1) }],
   ["instrumentationOptions", JSON.parse('{"__proto__":{"errors":{"enabled":true}}}') as object],
   ["resourceAttributes", JSON.parse('{"__proto__":"shop"}') as object],
 ])("rejects %s values JSON cannot represent as an own property %#", (name, value) => {
@@ -553,6 +559,24 @@ it.each([
       [name]: value,
     } as SdkLoaderConfig),
   ).toThrow(new TypeError(`SdkLoaderConfig.${name} must be a JSON object when provided.`));
+});
+
+it.each([
+  [
+    { redactQueryParams: new Array<string>(1) },
+    "SdkLoaderConfig.redactQueryParams must be a JSON array of strings when provided.",
+  ],
+  [
+    { pageView: { redactedQueryParams: new Array<string>(1) } },
+    "SdkLoaderConfig.pageView must be a JSON object when provided.",
+  ],
+])("rejects sparse redaction arrays before serialization %#", (options, message) => {
+  expect(() =>
+    getSdkLoaderScript({
+      connectionString: "connection",
+      ...options,
+    }),
+  ).toThrow(new TypeError(message));
 });
 
 it("accepts JSON objects with a null prototype and undefined members", () => {

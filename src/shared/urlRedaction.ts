@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 const REDACTED = "REDACTED";
-const DEFAULT_QUERY_STRINGS_TO_REDACT = [
+export const DEFAULT_QUERY_STRINGS_TO_REDACT = [
   "sig",
   "Signature",
   "AWSAccessKeyId",
@@ -30,7 +30,7 @@ function redactParameters(
   return parameters.toString();
 }
 
-/** Applies the distribution's security redaction before an application sanitizer sees a URL. */
+/** Applies security redaction before an application sanitizer sees a URL. */
 export function redactUrl(url: string, redactedQueryParams?: readonly string[]): string {
   const parsed = new URL(url);
   const parametersToRedact = redactedQueryParams ?? DEFAULT_QUERY_STRINGS_TO_REDACT;

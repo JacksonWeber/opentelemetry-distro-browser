@@ -29,6 +29,7 @@ import { AzureMonitorSpanExporter } from "../../../src/exporter/trace.js";
 import { noopLoggerProvider, noopTracerProvider } from "../../../src/routing/instanceRouter.js";
 import { startTelemetryInstance } from "../../../src/routing/telemetryInstance.js";
 import { getSharedRegistry } from "../../../src/shared/globalOwnership.js";
+import { DEFAULT_QUERY_STRINGS_TO_REDACT } from "../../../src/shared/urlRedaction.js";
 import { createInMemoryPipeline } from "../../fixtures/telemetry.js";
 import { ApplicationInsightsSampler, PageOperationSampler } from "../../../src/sampling.js";
 import { AzureMonitorSamplingLogRecordProcessor } from "../../../src/samplingLogRecordProcessor.js";
@@ -86,6 +87,7 @@ it("prepends session enrichment without changing the caller's processor arrays",
   const handle = await useMicrosoftOpenTelemetry(Object.freeze(options));
   handles.add(handle);
   expect(startTelemetryInstance).toHaveBeenCalledExactlyOnceWith({
+    redactedQueryParams: DEFAULT_QUERY_STRINGS_TO_REDACT,
     resourceAttributes: {
       "telemetry.distro.name": "@microsoft/opentelemetry-browser",
       "telemetry.distro.version": OPENTELEMETRY_BROWSER_VERSION,
@@ -231,6 +233,7 @@ it.each(["both", "context manager", "propagators", "no propagators"] as const)(
     handles.add(handle);
 
     expect(startTelemetryInstance).toHaveBeenCalledExactlyOnceWith({
+      redactedQueryParams: DEFAULT_QUERY_STRINGS_TO_REDACT,
       resourceAttributes: {
         "telemetry.distro.name": "@microsoft/opentelemetry-browser",
         "telemetry.distro.version": OPENTELEMETRY_BROWSER_VERSION,
@@ -242,6 +245,7 @@ it.each(["both", "context manager", "propagators", "no propagators"] as const)(
       ],
       logRecordProcessors: [],
       contextManager: withContextManager ? contextManager : undefined,
+      correlation: undefined,
       propagators: configuration === "context manager" ? undefined : propagators,
     });
     context.active();

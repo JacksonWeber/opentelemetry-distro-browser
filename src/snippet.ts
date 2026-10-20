@@ -90,6 +90,8 @@ export interface SdkLoaderConfig {
    * the resource with its `resourceFromAttributes`.
    */
   readonly resourceAttributes?: { readonly [key: string]: string | number | boolean };
+  /** Additional parameters to redact on fetch/XHR and page-view URLs/referrers. */
+  readonly redactQueryParams?: readonly string[];
 }
 
 /**
@@ -296,6 +298,12 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
   check(isNonEmptyString(config?.connectionString), "connectionString", "a non-empty string");
   const { samplingPercentage, azureMonitor, instrumentationOptions, resourceAttributes } = config;
   checkField(config.integrity, "integrity", "string");
+  checkField(config.redactQueryParams, "redactQueryParams", "strings");
+  check(
+    config.redactQueryParams === undefined || isJson(config.redactQueryParams),
+    "redactQueryParams",
+    "a JSON array of strings when provided",
+  );
   check(
     config.crossOrigin === undefined || typeof config.crossOrigin === "string",
     "crossOrigin",
@@ -368,6 +376,7 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
     cfg: {
       azureMonitor: { ...azureMonitor, connectionString: config.connectionString },
       samplingPercentage,
+      redactQueryParams: config.redactQueryParams,
       session: config.session,
       userContext: config.userContext,
       pageView: config.pageView,
