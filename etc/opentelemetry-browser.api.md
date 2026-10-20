@@ -85,6 +85,10 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
     samplingPercentage?: number;
     session?: MicrosoftOpenTelemetryBrowserSessionOptions;
     spanProcessors?: SpanProcessor[];
+    storage?: {
+        enabled?: boolean;
+        namePrefix?: string;
+    };
     traces?: MicrosoftOpenTelemetryBrowserTraceOptions;
     userContext?: {
         enabled?: boolean;

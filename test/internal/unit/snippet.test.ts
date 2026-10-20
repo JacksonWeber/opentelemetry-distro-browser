@@ -270,7 +270,7 @@ const snippetOptionsMatchTheDistribution = (
   config: Required<SdkLoaderConfig>,
 ): Pick<
   Options,
-  "samplingPercentage" | "session" | "userContext" | "pageView" | "redactQueryParams"
+  "samplingPercentage" | "session" | "userContext" | "storage" | "pageView" | "redactQueryParams"
 > & {
   azureMonitor: Partial<AzureMonitorOptions>;
   instrumentationOptions: InstrumentationOptions;
@@ -295,6 +295,7 @@ const configuredOptions = {
   azureMonitor: { disableBeacon: true },
   session: { enabled: true, persist: false, inactivityTimeout: 60, maxDuration: 600 },
   userContext: { enabled: false },
+  storage: { enabled: false, namePrefix: "shop-" },
   pageView: {
     enabled: true,
     redactedQueryParams: ["token"],
@@ -315,6 +316,35 @@ it("leaves optional settings out of the default loader", () => {
     /\(window,document,\{"src":"https:\/\/example\.test\/sdk\.js","crossOrigin":"anonymous","cfg":\{"azureMonitor":\{"connectionString":"connection"\}\}\}\);$/,
   );
 });
+
+it.each([
+  ["enabled", false],
+  ["namePrefix", "shop-"],
+] as const)(
+  "preserves non-enumerable storage.%s in the loaded configuration",
+  async (field, value) => {
+    const storage = Object.defineProperty({}, field, { value });
+    expect(Object.keys(storage)).toEqual([]);
+    const src = createBundleUrl("return Promise.resolve({})");
+    const { inlineScript, initialization } = executeLoader({
+      src,
+      connectionString: "InstrumentationKey=test",
+      storage,
+    });
+    try {
+      await initialization;
+      expect(loaderWindow.snippetOptions).toEqual({
+        azureMonitor: { connectionString: "InstrumentationKey=test" },
+        storage: { [field]: value },
+        instrumentations: [],
+      });
+    } finally {
+      inlineScript.remove();
+      removeLoadedScript(src);
+      URL.revokeObjectURL(src);
+    }
+  },
+);
 
 it("passes configured options to the bundle", async () => {
   const src = URL.createObjectURL(
@@ -347,6 +377,7 @@ it("passes configured options to the bundle", async () => {
       azureMonitor: { connectionString: "InstrumentationKey=test", disableBeacon: true },
       session: configuredOptions.session,
       userContext: configuredOptions.userContext,
+      storage: configuredOptions.storage,
       pageView: configuredOptions.pageView,
       instrumentations: ["errors"],
       resource: { attributes: configuredOptions.resourceAttributes, built: true },

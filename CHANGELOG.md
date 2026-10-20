@@ -6,6 +6,11 @@ All notable changes to this package are documented in this file.
 
 ### Added
 
+- Add per-instance browser storage controls to initialization and the CDN loader: `storage.enabled:
+false` blocks SDK-managed storage access, including later identity-control calls, while keeping
+  sessions and authenticated identity in memory. Use `storage.namePrefix` to scope session and user
+  storage keys. Disabling storage
+  does not erase stored data or stop telemetry collection.
 - Measure actual CDN response-body sizes with `npm run perf -- --cdn` and in merged-PR performance
   runs. Preserve existing build and browser measurements, compare encoded responses with identity bytes, and report
   missing artifacts or unsupported encodings without fabricated sizes.

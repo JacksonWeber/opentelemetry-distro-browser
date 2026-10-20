@@ -8,6 +8,7 @@ import {
 } from "./context/contextProcessors.js";
 import { createSession } from "./session/createSession.js";
 import { createUserContext } from "./user/createUserContext.js";
+import { createLocalStorageKeyValueStorage } from "./storage/keyValueStorage.js";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { BrowserBatchLogRecordProcessor } from "./browserBatchLogRecordProcessor.js";
 import { BatchSpanProcessor, type SpanProcessor } from "@opentelemetry/sdk-trace-base";
@@ -101,15 +102,46 @@ export async function useMicrosoftOpenTelemetry(
     ...DEFAULT_QUERY_STRINGS_TO_REDACT,
     ...(options.redactQueryParams ?? []),
   ];
+  if (
+    options.storage !== undefined &&
+    (typeof options.storage !== "object" ||
+      options.storage === null ||
+      Array.isArray(options.storage))
+  ) {
+    throw new TypeError("storage must be a non-null, non-array object.");
+  }
+  const { enabled: storageEnabled = true, namePrefix = "" } = options.storage ?? {};
+  if (typeof storageEnabled !== "boolean" || typeof namePrefix !== "string") {
+    throw new TypeError("storage.enabled must be a boolean and storage.namePrefix a string.");
+  }
   const session =
-    options.session?.enabled !== false ? createSession(options.session ?? {}) : undefined;
+    options.session?.enabled !== false
+      ? createSession(
+          {
+            persist: storageEnabled ? options.session?.persist : false,
+            inactivityTimeout: options.session?.inactivityTimeout,
+            maxDuration: options.session?.maxDuration,
+          },
+          createLocalStorageKeyValueStorage(
+            "Session storage unavailable; using an in-memory session.",
+            namePrefix,
+          ),
+        )
+      : undefined;
   getSharedRegistry();
   const samplingPercentage = options.samplingPercentage ?? 100;
   const sampler =
     options.samplingPercentage === undefined
       ? new PageOperationSampler()
       : new ApplicationInsightsSampler(options.samplingPercentage);
-  const userContext = createUserContext(options.userContext?.enabled);
+  const userContext = createUserContext(
+    options.userContext?.enabled,
+    createLocalStorageKeyValueStorage(
+      "User storage unavailable; anonymous ID disabled.",
+      namePrefix,
+    ),
+    storageEnabled,
+  );
   const azureMonitor = options.azureMonitor ? { ...options.azureMonitor } : undefined;
   let spanProcessors: SpanProcessor[] | undefined = options.spanProcessors?.slice();
   let logRecordProcessors: LogRecordProcessor[] | undefined = options.logRecordProcessors?.slice();

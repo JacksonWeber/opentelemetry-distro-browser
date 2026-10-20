@@ -38,6 +38,7 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
     | "instrumentations"
     | "pageView"
     | "session"
+    | "storage"
     | "userContext"
     | "traces"
     | "redactQueryParams"
@@ -62,6 +63,9 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
   >();
   expectTypeOf<MicrosoftOpenTelemetryBrowserOptions["userContext"]>().toEqualTypeOf<
     { enabled?: boolean } | undefined
+  >();
+  expectTypeOf<MicrosoftOpenTelemetryBrowserOptions["storage"]>().toEqualTypeOf<
+    { enabled?: boolean; namePrefix?: string } | undefined
   >();
   expectTypeOf<keyof MicrosoftOpenTelemetryBrowserSessionOptions>().toEqualTypeOf<
     "enabled" | "persist" | "inactivityTimeout" | "maxDuration"

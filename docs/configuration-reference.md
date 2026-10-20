@@ -18,6 +18,7 @@ side effects. Initialize only in client-side code, before importing application 
 | `resource`            | OpenTelemetry `Resource`                      | SDK defaults. Supplied attributes merge over defaults; use `service.name` and `service.version` to identify the application. Attributes resolve once; the resource schema URL is not carried through. |
 | `samplingPercentage`  | `number`                                      | Omitted: parent-based always-on trace sampling and no percentage sampling of Azure Monitor logs. See [sampling](#sampling).                                                                           |
 | `session`             | `MicrosoftOpenTelemetryBrowserSessionOptions` | Enabled and persisted, with 30-minute inactivity expiry and 24-hour maximum lifetime.                                                                                                                 |
+| `storage`             | `{ enabled?: boolean; namePrefix?: string }`  | Enabled, with unprefixed keys. See [browser storage](#browser-storage).                                                                                                                               |
 | `userContext`         | `{ enabled?: boolean }`                       | Enabled: managed anonymous identity and authenticated identity set through the handle persist in same-origin storage.                                                                                 |
 | `traces`              | `MicrosoftOpenTelemetryBrowserTraceOptions`   | Synchronous context tracking, W3C Trace Context and Baggage propagation.                                                                                                                              |
 | `spanProcessors`      | `SpanProcessor[]`                             | Additional trace processors. Azure Monitor prepends its default when configured, unless `[]` disables traces. Without Azure Monitor, only supplied processors export.                                 |
@@ -70,6 +71,34 @@ prevent emission to custom log processors. There is no `traces.sampler` option.
 
 ## Session and identity
 
+### Browser storage
+
+| Option               | Type      | Default | Behavior                                                                                                                                                                    |
+| -------------------- | --------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `storage.enabled`    | `boolean` | `true`  | `false` blocks all SDK-managed browser storage access for this handle, including later identity-control calls. Sessions use memory; managed anonymous identity is disabled. |
+| `storage.namePrefix` | `string`  | `""`    | Literal prefix for both `opentelemetry-session` and `opentelemetry-user`. For example, `"shop-"` produces `shop-opentelemetry-session` and `shop-opentelemetry-user`.       |
+
+Settings are captured at initialization and apply independently to each handle. A prefix isolates
+stored sessions and identities for applications on the same origin; it is not a security boundary.
+No data is migrated or removed from other prefixes. The default empty prefix preserves existing data.
+
+Like Application Insights JavaScript, browser persistence is enabled by default. Unlike its
+`isStorageUseDisabled` global helper, `storage.enabled` is instance-scoped so one application cannot
+change another handle's policy. Setting it to `false` takes precedence over `session.persist` and
+`userContext.enabled`; `userContext.setEnabled()` then has no effect. Authenticated identity can
+still be set and cleared in memory. Disabling storage does not erase existing data, disable telemetry
+collection or stop network requests. Custom processors/exporters must enforce their own storage policy.
+
+This first increment uses localStorage only: no cookies are created and no unsent telemetry is
+persisted. Application Insights `cookieCfg` and cookie domain/path settings are separate cookie
+controls, not localStorage settings. Its `enableSessionStorageBuffer` persists **unsent telemetry**,
+not session identity; that delivery/replay capability is not implemented here.
+
+Implementation references: Application Insights JavaScript's
+[cookie manager](https://github.com/microsoft/ApplicationInsights-JS/blob/main/shared/AppInsightsCore/src/core/CookieMgr.ts),
+[Web Storage helpers](https://github.com/microsoft/ApplicationInsights-JS/blob/main/shared/AppInsightsCore/src/utils/StorageHelperFuncs.ts)
+and [send buffer](https://github.com/microsoft/ApplicationInsights-JS/blob/main/channels/applicationinsights-channel-js/src/SendBuffer.ts).
+
 ### Session options
 
 | Option                      | Type              | Default | Behavior                                                                              |
@@ -96,7 +125,7 @@ they start and logs when emitted; later identity changes are not retroactive.
 | `userContext.clearAuthenticatedUserContext()`                 | Clears this handle's authenticated identity and stored authentication. Anonymous identity may remain.                                                        |
 | `userContext.setEnabled(enabled)`                             | Changes identity persistence and anonymous-ID enrichment, without clearing current in-memory authenticated identity. Disabling also removes stored identity. |
 
-Storage is shared within the origin, but each active handle keeps its own state. Update every
+Storage is shared within the origin and configured prefix, but each active handle keeps its own state. Update every
 active handle on sign-out. Scripts in the origin can read stored identity; do not use raw personal
 information, tokens or secrets as IDs. Persistence writes/removals can throw: handle failures when
 setting identity, changing persistence or signing out. These controls remain usable after shutdown.
@@ -106,16 +135,18 @@ For no managed session or identity storage access at initialization:
 ```typescript
 const telemetry = await useMicrosoftOpenTelemetry({
   azureMonitor: { connectionString },
-  session: { enabled: false },
-  userContext: { enabled: false },
+  storage: { enabled: false },
 });
 ```
 
-For memory-only session correlation, use `session: { persist: false }` instead. The two storage
-controls are independent and do not disable telemetry collection. If consent must precede any
+This retains memory-only session correlation. To disable managed sessions too, add
+`session: { enabled: false }`. For only memory-only sessions while preserving user persistence,
+use `session: { persist: false }`. If consent must precede any
 collection or network activity, defer initialization itself until consent is granted. Disabling
 storage at startup does not erase previously stored values; identity removal is an explicit
-`userContext.setEnabled(false)` operation.
+`userContext.setEnabled(false)` operation while browser storage is allowed. To grant persistence
+after starting with `storage.enabled: false`, shut down that handle and initialize a new one with
+storage enabled. The SDK does not replay storage operations from the disabled period.
 
 ## Page-view options
 

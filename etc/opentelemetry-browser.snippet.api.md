@@ -41,6 +41,10 @@ export interface SdkLoaderConfig {
         readonly maxDuration?: number;
     };
     readonly src?: string;
+    readonly storage?: {
+        readonly enabled?: boolean;
+        readonly namePrefix?: string;
+    };
     readonly userContext?: {
         readonly enabled?: boolean;
     };

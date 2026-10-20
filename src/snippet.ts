@@ -64,6 +64,8 @@ export interface SdkLoaderConfig {
   };
   /** Same as `MicrosoftOpenTelemetryBrowserOptions.userContext`. */
   readonly userContext?: { readonly enabled?: boolean };
+  /** Same as `MicrosoftOpenTelemetryBrowserOptions.storage`. */
+  readonly storage?: { readonly enabled?: boolean; readonly namePrefix?: string };
   /** The data-only settings of `MicrosoftOpenTelemetryBrowserOptions.pageView`. */
   readonly pageView?: {
     readonly enabled?: boolean;
@@ -184,11 +186,12 @@ const getTrackUrl = (connectionString: string): { url: string; iKey?: string } =
   return { url: `${endpoint.replace(/\/+$/, "")}/v2/track`, iKey: fields.instrumentationkey };
 };
 
-type FieldKind = "boolean" | "number" | "string" | "strings";
+type FieldKind = "boolean" | "number" | "string" | "strings" | "text";
 
 const fieldKinds: Record<FieldKind, [(value: unknown) => boolean, string]> = {
   boolean: [(value) => typeof value === "boolean", "a boolean"],
   string: [(value) => isNonEmptyString(value), "a non-empty string"],
+  text: [(value) => typeof value === "string", "a string"],
   number: [(value) => Number.isFinite(value) && (value as number) >= 0, "a nonnegative number"],
   strings: [
     (value) => Array.isArray(value) && value.every((item) => typeof item === "string"),
@@ -206,6 +209,7 @@ const optionFields: Record<string, Record<string, FieldKind>> = {
     maxDuration: "number",
   },
   userContext: { enabled: "boolean" },
+  storage: { enabled: "boolean", namePrefix: "text" },
   pageView: {
     enabled: "boolean",
     redactedQueryParams: "strings",
@@ -379,6 +383,13 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
       redactQueryParams: config.redactQueryParams,
       session: config.session,
       userContext: config.userContext,
+      storage:
+        config.storage === undefined
+          ? undefined
+          : {
+              enabled: config.storage.enabled,
+              namePrefix: config.storage.namePrefix,
+            },
       pageView: config.pageView,
     },
     instrumentationOptions,

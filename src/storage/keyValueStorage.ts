@@ -19,7 +19,10 @@ export interface KeyValueStorage {
   removeItem(key: string): boolean;
 }
 
-export function createLocalStorageKeyValueStorage(unavailableMessage: string): KeyValueStorage {
+export function createLocalStorageKeyValueStorage(
+  unavailableMessage: string,
+  namePrefix = "",
+): KeyValueStorage {
   // After a quota or security write failure, pause writes briefly instead of retrying every activity.
   let writesPausedUntil = 0;
   let warned = false;
@@ -72,14 +75,14 @@ export function createLocalStorageKeyValueStorage(unavailableMessage: string): K
   return {
     getItem: (key) =>
       useStorage<StorageReadResult>(
-        (storage) => ({ success: true as const, value: storage.getItem(key) }),
+        (storage) => ({ success: true as const, value: storage.getItem(namePrefix + key) }),
         { success: false as const },
         "read",
       ),
     setItem: (key, value) =>
       useStorage(
         (storage) => {
-          storage.setItem(key, value);
+          storage.setItem(namePrefix + key, value);
           return true;
         },
         false,
@@ -88,7 +91,7 @@ export function createLocalStorageKeyValueStorage(unavailableMessage: string): K
     removeItem: (key) =>
       useStorage(
         (storage) => {
-          storage.removeItem(key);
+          storage.removeItem(namePrefix + key);
           return true;
         },
         false,

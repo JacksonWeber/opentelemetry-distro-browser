@@ -129,6 +129,7 @@ export interface MicrosoftOpenTelemetryBrowserSessionOptions {
   enabled?: boolean;
   /**
    * Persist in localStorage (default true). False uses memory without accessing or clearing storage.
+   * `storage.enabled: false` overrides this setting.
    */
   persist?: boolean;
   /**
@@ -166,6 +167,21 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
   resource?: Resource;
   /** Session tracking, enabled by default. Disabled sessions do not access storage. */
   session?: MicrosoftOpenTelemetryBrowserSessionOptions;
+  /** Browser persistence controls, captured at initialization. Applies only to this handle. */
+  storage?: {
+    /**
+     * Defaults to true. False blocks all SDK-managed browser storage access, including identity
+     * controls called later. Sessions remain in memory; managed anonymous identity is disabled.
+     * Does not erase existing data or disable collection, network requests, or custom processors.
+     */
+    enabled?: boolean;
+    /**
+     * Literal prefix for session and user storage keys. Defaults to an empty string, preserving
+     * existing keys. Use a distinct prefix to isolate applications or handles on the same origin.
+     * Existing unprefixed data is not read, migrated, or removed when a prefix is configured.
+     */
+    namePrefix?: string;
+  };
   /**
    * User identity persistence configuration. `enabled` defaults to true.
    *
@@ -177,11 +193,11 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
    * to keep authenticated values in memory and disable all managed
    * identity persistence and anonymous-ID enrichment without accessing storage.
    *
-   * The storage record is shared by every handle in the origin and remains across browser sessions
+   * The storage record is shared by handles with the same storage prefix in the origin and remains across browser sessions
    * until `userContext.setEnabled(false)` is called or the application clears it. Any script
    * running in the origin can read persisted values, so do not use raw personally identifiable
    * information, secrets, or tokens as identity values. Persistence can be changed later through
-   * the returned user context.
+   * the returned user context unless `storage.enabled` is false.
    */
   userContext?: { enabled?: boolean };
   /** Advanced trace context and propagation configuration. */
@@ -266,10 +282,11 @@ export interface MicrosoftOpenTelemetryBrowserUserContext {
    * Enables persistence for anonymous, authenticated and account identity, or disables all
    * persistence without changing the current in-memory authenticated identity. Managed anonymous
    * identity is applied to telemetry only while persistence is enabled. Disabling also removes
-   * identity persisted by earlier page loads. The stored record is shared by every handle in the
-   * origin, so disabling or signing out through any handle changes that record for future page
+   * identity persisted by earlier page loads. The stored record is shared by handles with the same
+   * storage prefix in the origin, so disabling or signing out changes that record for future page
    * loads. Each active handle keeps its own state, so update every active handle to change the
-   * identity it applies to telemetry.
+   * identity it applies to telemetry. When initialized with `storage.enabled: false`, this method
+   * has no effect and never accesses storage.
    *
    * @throws Error when enabling cannot save identity, or when disabling cannot remove identity
    * this instance persisted.
