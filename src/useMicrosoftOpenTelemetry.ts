@@ -28,7 +28,7 @@ import {
 } from "@opentelemetry/semantic-conventions";
 import { OPENTELEMETRY_BROWSER_VERSION } from "./shared/constants.js";
 import { getSharedRegistry, reportError } from "./shared/globalOwnership.js";
-import { runLifecycleTasks, subscribeToUnload } from "./shared/lifecycle.js";
+import { runLifecycleTasks, subscribeToUnload, throwErrors } from "./shared/lifecycle.js";
 import {
   getPageOperation,
   getPageOperationName,
@@ -319,8 +319,7 @@ export async function useMicrosoftOpenTelemetry(
       } catch (error) {
         errors.push(error);
       }
-      if (errors.length === 1) throw errors[0];
-      if (errors.length > 1) throw new AggregateError(errors, "Telemetry shutdown failed");
+      throwErrors(errors, "Telemetry shutdown failed");
     })().then(resolve, reject);
     return shutdownPromise;
   }

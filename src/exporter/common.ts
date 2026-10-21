@@ -219,9 +219,12 @@ export function createTags(
   return tags;
 }
 
+/**
+ * Creates an envelope whose name is derived from `baseType`, for example `MessageData` becomes
+ * `Microsoft.ApplicationInsights.Message`.
+ */
 export function createEnvelope<T extends AzureMonitorBaseData>(
   instrumentationKey: string,
-  name: string,
   time: string,
   tags: Readonly<Record<string, string>>,
   baseType: AzureMonitorEnvelope["data"]["baseType"],
@@ -229,7 +232,7 @@ export function createEnvelope<T extends AzureMonitorBaseData>(
   sampleRate = 100,
 ): AzureMonitorEnvelope<T> {
   return {
-    name,
+    name: `Microsoft.ApplicationInsights.${baseType.slice(0, -4)}`,
     time,
     iKey: instrumentationKey,
     sampleRate: sampleRate === 100 ? undefined : sampleRate,

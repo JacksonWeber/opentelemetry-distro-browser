@@ -55,12 +55,7 @@ import type {
   SeverityLevel,
   StackFrame,
 } from "./telemetryModels.js";
-import {
-  ATTR_ENDUSER_ID,
-  ATTR_ENDUSER_PSEUDO_ID,
-  ATTR_USER_ACCOUNT_ID,
-  ATTR_USER_ID,
-} from "../user/constants.js";
+import { USER_ATTRIBUTES } from "../user/constants.js";
 import { AZURE_MONITOR_SAMPLE_RATE } from "../sampling.js";
 import { getManagedOperationName } from "../context/operationName.js";
 
@@ -69,10 +64,7 @@ const promotedLogAttributes = /* @__PURE__ */ new Set([
   EXCEPTION_STACKTRACE,
   EXCEPTION_TYPE,
   NAVIGATION_DURATION,
-  ATTR_ENDUSER_ID,
-  ATTR_ENDUSER_PSEUDO_ID,
-  ATTR_USER_ACCOUNT_ID,
-  ATTR_USER_ID,
+  ...USER_ATTRIBUTES,
   AZURE_MONITOR_SAMPLE_RATE,
 ]);
 const promotedPageViewAttributes = /* @__PURE__ */ new Set([
@@ -96,10 +88,7 @@ const promotedPageViewAttributes = /* @__PURE__ */ new Set([
   ATTR_PAGE_VIEW_TYPE,
   URL_FULL,
   AZURE_MONITOR_SAMPLE_RATE,
-  ATTR_ENDUSER_ID,
-  ATTR_ENDUSER_PSEUDO_ID,
-  ATTR_USER_ACCOUNT_ID,
-  ATTR_USER_ID,
+  ...USER_ATTRIBUTES,
 ]);
 // Azure Monitor ExceptionDetails schema limits (character lengths).
 const MAX_EXCEPTION_TYPE_LENGTH = 1024;
@@ -417,12 +406,10 @@ export function logToEnvelope(
   );
   const severityLevel = mapSeverity(logRecord.severityNumber);
   const time = hrTimeToDate(logRecord.hrTime);
-  let name: string;
   let baseType: AzureMonitorEnvelope["data"]["baseType"];
   let baseData: MessageData | ExceptionData | PageViewData | CustomEventData;
 
   if (logRecord.eventName === "exception" || logRecord.attributes[EXCEPTION_TYPE]) {
-    name = "Microsoft.ApplicationInsights.Exception";
     baseType = "ExceptionData";
     const baseDataWithoutException: ExceptionData = {
       ver: 2,
@@ -431,7 +418,6 @@ export function logToEnvelope(
     };
     const envelopeWithoutException = createEnvelope(
       instrumentationKey,
-      name,
       time,
       tags,
       baseType,
@@ -470,7 +456,6 @@ export function logToEnvelope(
     } else if (logRecord.eventName !== NAVIGATION_EVENT_NAME) {
       delete tags["ai.operation.name"];
     }
-    name = "Microsoft.ApplicationInsights.PageView";
     baseType = "PageViewData";
     baseData = {
       ver: 2,
@@ -489,7 +474,6 @@ export function logToEnvelope(
           : truncateCustomDimensions({ ...customFields.properties, refUri: referrerValue }),
     };
   } else if (logRecord.eventName && logRecord.eventName !== "browser.console") {
-    name = "Microsoft.ApplicationInsights.Event";
     baseType = "EventData";
     baseData = {
       ver: 2,
@@ -497,7 +481,6 @@ export function logToEnvelope(
       ...customFields,
     };
   } else {
-    name = "Microsoft.ApplicationInsights.Message";
     baseType = "MessageData";
     const message =
       logRecord.body === undefined || logRecord.body === null
@@ -511,7 +494,7 @@ export function logToEnvelope(
     };
   }
 
-  return createEnvelope(instrumentationKey, name, time, tags, baseType, baseData, sampleRate);
+  return createEnvelope(instrumentationKey, time, tags, baseType, baseData, sampleRate);
 }
 
 export function logToEnvelopes(
@@ -552,7 +535,6 @@ export function logToEnvelopes(
   };
   const performanceEnvelope = createEnvelope(
     instrumentationKey,
-    "Microsoft.ApplicationInsights.PageviewPerformance",
     pageViewEnvelope.time,
     pageViewEnvelope.tags,
     "PageviewPerformanceData",

@@ -3,6 +3,7 @@
 
 import { context } from "@opentelemetry/api";
 import { conflict, getSharedRegistry, reportError } from "../shared/globalOwnership.js";
+import { throwErrors } from "../shared/lifecycle.js";
 import type { BrowserInstrumentation } from "../types.js";
 
 type Method = (this: unknown, ...args: unknown[]) => unknown;
@@ -379,7 +380,6 @@ export function claimInstrumentations(
         errors.push(error);
       }
     }
-    if (errors.length === 1) throw errors[0];
-    if (errors.length > 1) throw new AggregateError(errors, "Instrumentation cleanup failed");
+    throwErrors(errors, "Instrumentation cleanup failed");
   };
 }

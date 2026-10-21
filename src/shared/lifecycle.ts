@@ -4,6 +4,12 @@
 import { callWithTimeout } from "@opentelemetry/core";
 import { getSharedRegistry, reportError } from "./globalOwnership.js";
 
+/** Rethrows a single collected error as-is, or several as one `AggregateError`. */
+export function throwErrors(errors: readonly unknown[], message: string): void {
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, message);
+}
+
 /** Runs bounded task groups in order, collecting all failures. */
 export async function runLifecycleTasks(
   tasks: readonly (() => Promise<void>)[],
@@ -19,8 +25,7 @@ export async function runLifecycleTasks(
       if (result.status === "rejected") errors.push(result.reason);
     }
   }
-  if (errors.length === 1) throw errors[0];
-  if (errors.length > 1) throw new AggregateError(errors, message);
+  throwErrors(errors, message);
 }
 
 /** Waits for every already-bounded operation without imposing a second deadline. */
@@ -32,8 +37,7 @@ export async function waitForAll(
   const errors = results.flatMap((result) =>
     result.status === "rejected" ? [result.reason as unknown] : [],
   );
-  if (errors.length === 1) throw errors[0];
-  if (errors.length > 1) throw new AggregateError(errors, message);
+  throwErrors(errors, message);
 }
 
 /** Installs one pair of unload listeners for all active instances in this realm. */

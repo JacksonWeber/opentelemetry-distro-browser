@@ -30,12 +30,7 @@ import type {
   RemoteDependencyData,
   RequestData,
 } from "./telemetryModels.js";
-import {
-  ATTR_ENDUSER_ID,
-  ATTR_ENDUSER_PSEUDO_ID,
-  ATTR_USER_ACCOUNT_ID,
-  ATTR_USER_ID,
-} from "../user/constants.js";
+import { USER_ATTRIBUTES } from "../user/constants.js";
 import { AZURE_MONITOR_SAMPLE_RATE } from "../sampling.js";
 import { selectNonEmptyString } from "../shared/isNonEmptyString.js";
 import { getManagedOperationName } from "../context/operationName.js";
@@ -46,10 +41,7 @@ const promotedSpanAttributes = /* @__PURE__ */ new Set([
   SERVER_ADDRESS,
   SERVER_PORT,
   URL_FULL,
-  ATTR_ENDUSER_ID,
-  ATTR_ENDUSER_PSEUDO_ID,
-  ATTR_USER_ACCOUNT_ID,
-  ATTR_USER_ID,
+  ...USER_ATTRIBUTES,
   AZURE_MONITOR_SAMPLE_RATE,
 ]);
 const promotedExceptionEventAttributes = /* @__PURE__ */ new Set([
@@ -109,7 +101,6 @@ export function spanToEnvelope(
     };
     return createEnvelope(
       instrumentationKey,
-      "Microsoft.ApplicationInsights.Request",
       hrTimeToDate(span.startTime),
       tags,
       "RequestData",
@@ -151,7 +142,6 @@ export function spanToEnvelope(
   };
   return createEnvelope(
     instrumentationKey,
-    "Microsoft.ApplicationInsights.RemoteDependency",
     hrTimeToDate(span.startTime),
     tags,
     "RemoteDependencyData",
@@ -195,7 +185,6 @@ function spanEventToEnvelope(
     };
     const envelopeWithoutException = createEnvelope(
       instrumentationKey,
-      "Microsoft.ApplicationInsights.Exception",
       time,
       tags,
       "ExceptionData",
@@ -214,15 +203,7 @@ function spanEventToEnvelope(
       exceptions: [createExceptionDetails(attributes, undefined, maxExceptionSize)],
       ...customFields,
     };
-    return createEnvelope(
-      instrumentationKey,
-      "Microsoft.ApplicationInsights.Exception",
-      time,
-      tags,
-      "ExceptionData",
-      baseData,
-      sampleRate,
-    );
+    return createEnvelope(instrumentationKey, time, tags, "ExceptionData", baseData, sampleRate);
   }
 
   const baseData: MessageData = {
@@ -230,15 +211,7 @@ function spanEventToEnvelope(
     message: truncateToLength(event.name, MaxPropertyLengths.FIFTEEN_BIT),
     ...customFields,
   };
-  return createEnvelope(
-    instrumentationKey,
-    "Microsoft.ApplicationInsights.Message",
-    time,
-    tags,
-    "MessageData",
-    baseData,
-    sampleRate,
-  );
+  return createEnvelope(instrumentationKey, time, tags, "MessageData", baseData, sampleRate);
 }
 
 export function spanToEnvelopes(

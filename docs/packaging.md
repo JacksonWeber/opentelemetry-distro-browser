@@ -79,6 +79,12 @@ including alpha:
 | `opentelemetry-browser.{iife,umd}.min.js`                  | 171.5 kB | 53 kB | 46.25 kB |
 | `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |    63 kB | 19 kB |    17 kB |
 
+SWC minifies the browser bundles and shortens `_`-prefixed properties, the TypeScript `private`
+convention used by OpenTelemetry, so source code keeps descriptive names. Members that
+`sharedBrowserPatches.ts` reads on instrumentations from another bundle keep their names; add any
+new cross-bundle `_` member to `crossBundleProperties` in `rollup.config.mjs`. An integration test
+passes instrumentations from the minified instrumentation bundle to the minified SDK bundle.
+
 The browser bundles contain only ES2022 syntax. `npm run test:build` parses every emitted UMD and
 IIFE file as an ES2022 script and requires a budget for every minified browser bundle. This check
 sets a syntax ceiling; it does not validate specific browser versions, which remain provisional

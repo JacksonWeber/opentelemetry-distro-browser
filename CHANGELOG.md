@@ -23,6 +23,12 @@ false` blocks SDK-managed storage access, including later identity-control calls
   runs. Preserve existing build and browser measurements, compare encoded responses with identity bytes, and report
   missing artifacts or unsupported encodings without fabricated sizes.
 
+### Changed
+
+- Shrink the minified CDN bundles by minifying them with SWC, which also shortens `_`-prefixed
+  private properties, and by trimming exporter code. `opentelemetry-browser.min.js` drops from
+  164.64 kB to 150.70 kB minified (50.40 kB to 48.22 kB gzip).
+
 ## 0.1.0-beta.1 - 2026-10-15
 
 ### Added

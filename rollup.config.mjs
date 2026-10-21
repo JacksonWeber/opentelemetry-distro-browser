@@ -2,6 +2,7 @@ import commonjs from "@rollup/plugin-commonjs";
 import { nodeResolve } from "@rollup/plugin-node-resolve";
 import terser from "@rollup/plugin-terser";
 import typescript from "@rollup/plugin-typescript";
+import { minify } from "@swc/core";
 import MagicString from "magic-string";
 import { dts } from "rollup-plugin-dts";
 import { visualizer } from "rollup-plugin-visualizer";
@@ -38,6 +39,39 @@ const bundleForBrowser = () => [
   compile(),
 ];
 
+/**
+ * Instrumentation members that `sharedBrowserPatches.ts` reads or replaces by name on
+ * instrumentations that may come from another bundle or the application, so they keep their names.
+ */
+const crossBundleProperties = [
+  "_active",
+  "_isEnabled",
+  "_isFetchPatched",
+  "_isHistoryPatched",
+  "_isPatched",
+  "_isXhrPatched",
+  "_unwrap",
+  "_wrap",
+];
+
+/**
+ * Minifies a self-contained global bundle with SWC. It also shortens `_`-prefixed properties, the
+ * TypeScript `private` convention used by OpenTelemetry, since nothing outside the bundle can
+ * reach them except `crossBundleProperties`.
+ */
+const swcMinify = () => ({
+  name: "swc-minify",
+  async renderChunk(code) {
+    const { code: minified, map } = await minify(code, {
+      ecma: 2022,
+      compress: { passes: 2 },
+      mangle: { props: { regex: "^_[a-zA-Z]", reserved: crossBundleProperties } },
+      sourceMap: true,
+    });
+    return { code: minified, map };
+  },
+});
+
 /** Self-contained UMD and IIFE bundles, unminified and minified, exposing `name` as a global. */
 const globalBundle = (input, module, name) => ({
   input,
@@ -50,7 +84,7 @@ const globalBundle = (input, module, name) => ({
       exports: "named",
       inlineDynamicImports: true,
       sourcemap: true,
-      ...(minify ? { plugins: [terser()] } : {}),
+      ...(minify ? { plugins: [swcMinify()] } : {}),
     })),
   ),
 });

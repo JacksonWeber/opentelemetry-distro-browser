@@ -135,7 +135,14 @@ export function createUserContext(
     }
   }
 
-  function requireIdentityPersisted(persisted: boolean): void {
+  // Anonymous identity stays enabled only while it is persisted.
+  function persistIdentity(): void {
+    let persisted = false;
+    try {
+      persisted = persist();
+    } finally {
+      anonymousIdentityEnabled = persisted;
+    }
     if (!persisted) {
       throw new Error("Unable to persist user identity.");
     }
@@ -213,13 +220,7 @@ export function createUserContext(
       if (!authenticatedPersistenceEnabled && (!persistenceEnabled || anonymousIdentityEnabled)) {
         return;
       }
-      try {
-        requireIdentityPersisted(persist());
-        anonymousIdentityEnabled = true;
-      } catch (error) {
-        anonymousIdentityEnabled = false;
-        throw error;
-      }
+      persistIdentity();
     },
     clearAuthenticatedUserContext() {
       authenticatedUserId = undefined;
@@ -240,13 +241,7 @@ export function createUserContext(
       if (newEnabled) {
         persistenceEnabled = true;
         authenticatedPersistenceEnabled = true;
-        try {
-          requireIdentityPersisted(persist());
-          anonymousIdentityEnabled = true;
-        } catch (error) {
-          anonymousIdentityEnabled = false;
-          throw error;
-        }
+        persistIdentity();
       } else {
         const mustClearPersistedIdentity = persistedIdentityMayExist;
         const removed = removePersistedIdentity();

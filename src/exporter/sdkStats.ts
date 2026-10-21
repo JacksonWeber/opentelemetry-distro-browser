@@ -167,7 +167,6 @@ export function createInternalSdkStats(
       envelopes.push(
         createEnvelope(
           currentRoute.instrumentationKey,
-          "Microsoft.ApplicationInsights.Metric",
           time,
           { "ai.internal.sdkVersion": getSdkVersion() },
           "MetricData",
