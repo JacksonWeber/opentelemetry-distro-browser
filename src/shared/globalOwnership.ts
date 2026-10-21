@@ -14,6 +14,7 @@ const realm = globalThis as typeof globalThis & { [key: symbol]: unknown };
 interface SharedRegistry {
   version: 1;
   diagInitialized?: boolean;
+  reportingSdkStats?: boolean;
   pageContexts?: WeakSet<SpanContext>;
   operationNames?: WeakMap<object, string>;
   router?: RouterState;
@@ -28,6 +29,24 @@ interface SharedRegistry {
 export function getPageContexts(): WeakSet<SpanContext> | undefined {
   const registry = realm[distroKey] as SharedRegistry | undefined;
   return registry?.version === 1 ? registry.pageContexts : undefined;
+}
+
+/** Prevents diagnostic feedback into telemetry. */
+export function isReportingSdkStats(): boolean {
+  const registry = realm[distroKey] as SharedRegistry | undefined;
+  return registry?.version === 1 && registry.reportingSdkStats === true;
+}
+
+export function reportWithoutTelemetry(report: () => void): void {
+  const existing = realm[distroKey] as SharedRegistry | undefined;
+  const registry = existing?.version === 1 ? existing : undefined;
+  const previous = registry?.reportingSdkStats;
+  if (registry) registry.reportingSdkStats = true;
+  try {
+    report();
+  } finally {
+    if (registry) registry.reportingSdkStats = previous;
+  }
 }
 
 /** Exporter-only consumers may read operation names without initializing a distribution. */

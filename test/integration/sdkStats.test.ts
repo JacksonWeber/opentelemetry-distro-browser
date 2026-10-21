@@ -4,12 +4,14 @@
 import { context, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { FetchInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/fetch";
+import { ResourceTimingInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/resource-timing";
+import type { ReadWriteLogRecord } from "@opentelemetry/sdk-logs";
 import { afterEach, expect, inject, it, vi } from "vitest";
 import type { MicrosoftOpenTelemetryBrowser } from "../../src/types.js";
 import type { AzureMonitorEnvelope } from "../../src/exporter/telemetryModels.js";
 import { assertAzureMonitorEnvelope, TEST_INSTRUMENTATION_KEY } from "../fixtures/azureMonitor.js";
 import { createInMemoryPipeline } from "../fixtures/telemetry.js";
-import { SDK_STATS_ENDPOINT } from "../fixtures/sdkStats.js";
+import { SDK_STATS_ENDPOINT, withoutSdkStats } from "../fixtures/sdkStats.js";
 
 const SECOND_KEY = "22222222-2222-2222-2222-222222222222";
 const handles: MicrosoftOpenTelemetryBrowser[] = [];
@@ -31,14 +33,71 @@ afterEach(async () => {
   }
 });
 
-it.each([
-  { file: "index.js", eu: false },
-  { file: "index.min.js", eu: false },
-  { file: "index.js", eu: true },
-  { file: "index.min.js", eu: true },
-])(
-  "targets production ingestion without configuration lookup through $file with EU state $eu",
-  async ({ file, eu }) => {
+it("excludes real ingestion resource timing without filtering custom processor branches", async () => {
+  const moduleUrl = new URL("../../dist/esm/index.js", import.meta.url);
+  const distro: typeof import("../../src/index.js") = await import(
+    /* @vite-ignore */ moduleUrl.href
+  );
+  const nativeFetch = globalThis.fetch.bind(globalThis);
+  const transport = vi.fn(nativeFetch);
+  vi.stubGlobal("fetch", withoutSdkStats(transport));
+  const runId = crypto.randomUUID();
+  const origin = new URL(inject("ingestionEndpoint")).origin;
+  const destination = `${origin}/ingest/${runId}`;
+  const observed: ReadWriteLogRecord[] = [];
+  const handle = await distro.useMicrosoftOpenTelemetry({
+    azureMonitor: {
+      connectionString: `InstrumentationKey=${TEST_INSTRUMENTATION_KEY};IngestionEndpoint=${destination}`,
+      sdkStats: { enabled: true },
+    },
+    spanProcessors: [],
+    logRecordProcessors: [
+      {
+        onEmit: (record) => observed.push(record),
+        forceFlush: async () => {},
+        shutdown: async () => {},
+      },
+    ],
+    pageView: { enabled: false },
+    storage: { enabled: false },
+    session: { enabled: false },
+    instrumentations: [
+      new ResourceTimingInstrumentation({
+        enabled: false,
+        initiatorTypes: ["fetch"],
+        ignoreUrls: [new RegExp(`^(?!.*\\/ingest\\/${runId}).*$`)],
+        forceProcessingAfter: 0,
+      }),
+    ],
+  });
+  handles.push(handle);
+  logs.getLogger("app").emit({ body: "application" });
+  await handle.forceFlush();
+  await vi.waitFor(() =>
+    expect(observed.some((record) => record.eventName === "browser.resource_timing")).toBe(true),
+  );
+  for (let index = 0; index < 3; index++) {
+    await handle.forceFlush();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  await handle.shutdown();
+  expect(transport).toHaveBeenCalledTimes(2);
+  const captured: AzureMonitorEnvelope[] = await nativeFetch(
+    `${origin}/captured?runId=${runId}`,
+  ).then((response) => response.json());
+  expect(captured).toHaveLength(2);
+  expect(captured.filter((envelope) => envelope.data.baseType === "MetricData")).toHaveLength(1);
+});
+
+it.each(
+  ["index.js", "index.min.js"].flatMap((file) =>
+    [false, true].flatMap((eu) =>
+      [false, true].map((customerStats) => ({ file, eu, customerStats })),
+    ),
+  ),
+)(
+  "isolates internal and customer stats through $file with EU $eu and customer stats $customerStats",
+  async ({ file, eu, customerStats }) => {
     referrerPolicy = document.createElement("meta");
     referrerPolicy.name = "referrer";
     referrerPolicy.content = "unsafe-url";
@@ -70,6 +129,7 @@ it.each([
         ...(instrumented ? pipeline.options : {}),
         azureMonitor: {
           connectionString: `InstrumentationKey=${key};IngestionEndpoint=${customerOrigin}/ingest/${id}`,
+          sdkStats: { enabled: customerStats },
         },
         pageView: { enabled: false },
         instrumentations: instrumented ? [instrumentation] : [],
@@ -110,8 +170,13 @@ it.each([
     const customerReferrers: string[] = await nativeFetch(
       `${origin}/captured-referrers?runId=${runId}`,
     ).then((response) => response.json());
-    expect(customerReferrers).toHaveLength(2);
-    expect(customerReferrers.every((referrer) => referrer.startsWith(location.origin))).toBe(true);
+    expect(customerReferrers).toHaveLength(customerStats ? 4 : 2);
+    expect(
+      customerReferrers.filter((referrer) => referrer.startsWith(location.origin)),
+    ).toHaveLength(2);
+    expect(customerReferrers.filter((referrer) => referrer === "")).toHaveLength(
+      customerStats ? 2 : 0,
+    );
     for (const [id, key] of [
       [runId, TEST_INSTRUMENTATION_KEY],
       [`${runId}-second`, SECOND_KEY],
@@ -122,12 +187,20 @@ it.each([
       const stats = (await read(`${runId}-stats`)).filter(
         (envelope) => envelope.data.baseData.properties?.cikey === key,
       );
-      expect(customer).toHaveLength(2);
-      expect(
-        customer.every(
-          (envelope) => envelope.iKey === key && envelope.data.baseType !== "MetricData",
-        ),
-      ).toBe(true);
+      expect(customer).toHaveLength(customerStats ? 4 : 2);
+      expect(customer.every((envelope) => envelope.iKey === key)).toBe(true);
+      const itemStats = customer.filter((envelope) => envelope.data.baseType === "MetricData");
+      expect(itemStats).toHaveLength(customerStats ? 2 : 0);
+      for (const envelope of itemStats) {
+        assertAzureMonitorEnvelope(envelope);
+        expect(envelope.data.baseData).toMatchObject({
+          metrics: [{ name: "Item_Success_Count", value: 1 }],
+        });
+        expect(Object.keys(envelope.tags)).toEqual(["ai.internal.sdkVersion"]);
+      }
+      expect(JSON.stringify(itemStats)).not.toMatch(
+        /private-user|private-account|application span|application log|ai\.operation|ai\.session/,
+      );
       const successes = stats.filter(
         (envelope) =>
           envelope.data.baseType === "MetricData" &&

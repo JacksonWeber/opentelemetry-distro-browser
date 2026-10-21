@@ -34,6 +34,7 @@ import { runLifecycleTasks } from "../shared/lifecycle.js";
 import {
   commitGlobals,
   getSharedRegistry,
+  isReportingSdkStats,
   reportError,
   rollbackGlobals,
 } from "../shared/globalOwnership.js";
@@ -180,7 +181,7 @@ export async function startTelemetryInstance(
         processors: options.logRecordProcessors.map((processor): LogRecordProcessor => ({
           enabled: (options) => !stopped && (processor.enabled?.(options) ?? true),
           onEmit: (record, ctx) => {
-            if (!stopped) processor.onEmit(record, ctx);
+            if (!stopped && !isReportingSdkStats()) processor.onEmit(record, ctx);
           },
           forceFlush: (options) => processor.forceFlush(options),
           shutdown: shutdownProcessor,

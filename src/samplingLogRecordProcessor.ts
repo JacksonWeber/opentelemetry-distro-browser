@@ -32,13 +32,17 @@ export class AzureMonitorSamplingLogRecordProcessor extends BrowserBatchLogRecor
   }
 
   public override onEmit(record: ReadWriteLogRecord): void {
+    if (!this.accepts(record)) return;
     const spanContext = record.spanContext;
     const correlated = !!spanContext && isSpanContextValid(spanContext);
     const sampled = correlated
       ? isTraceSampled(spanContext.traceId, this.#samplingPercentage)
       : this.#samplingPercentage === 100 ||
         (this.#samplingPercentage !== 0 && this.random() * 100 < this.#samplingPercentage);
-    if (!sampled) return;
+    if (!sampled) {
+      this.drop(record, "SAMPLING");
+      return;
+    }
 
     const currentSampleRate = record.attributes[AZURE_MONITOR_SAMPLE_RATE];
     const effectiveSampleRate = getEffectiveSampleRate(

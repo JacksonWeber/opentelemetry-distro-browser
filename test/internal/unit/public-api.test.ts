@@ -76,7 +76,9 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
   expectTypeOf<MicrosoftOpenTelemetryBrowserOptions["azureMonitor"]>().toEqualTypeOf<
     AzureMonitorOptions | undefined
   >();
-  expectTypeOf<keyof AzureMonitorOptions>().toEqualTypeOf<"connectionString" | "disableBeacon">();
+  expectTypeOf<keyof AzureMonitorOptions>().toEqualTypeOf<
+    "connectionString" | "disableBeacon" | "sdkStats"
+  >();
   expectTypeOf(AzureMonitorSpanExporter).constructorParameters.toEqualTypeOf<
     [options: AzureMonitorOptions]
   >();

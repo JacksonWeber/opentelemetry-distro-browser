@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { trace, type Attributes, type Context } from "@opentelemetry/api";
+import { trace, type Attributes, type Context, type SpanKind } from "@opentelemetry/api";
 import {
   AlwaysOnSampler,
   ParentBasedSampler,
@@ -65,6 +65,8 @@ export function getEffectiveSampleRate(
 export class PageOperationSampler implements Sampler {
   readonly #delegate = new ParentBasedSampler({ root: new AlwaysOnSampler() });
 
+  public constructor(private readonly onDrop?: (kind: SpanKind) => void) {}
+
   public shouldSample(
     parentContext: Context,
     ...parameters: Parameters<Sampler["shouldSample"]> extends [Context, ...infer Rest]
@@ -74,7 +76,9 @@ export class PageOperationSampler implements Sampler {
     const parent = trace.getSpanContext(parentContext);
     const samplingContext =
       parent && isPageContext(parent) ? trace.deleteSpan(parentContext) : parentContext;
-    return this.#delegate.shouldSample(samplingContext, ...parameters);
+    const result = this.#delegate.shouldSample(samplingContext, ...parameters);
+    if (result.decision === SamplingDecision.NOT_RECORD) this.onDrop?.(parameters[2]);
+    return result;
   }
 
   public toString(): string {
@@ -85,7 +89,10 @@ export class PageOperationSampler implements Sampler {
 export class ApplicationInsightsSampler implements Sampler {
   public readonly samplingPercentage: number;
 
-  public constructor(samplingPercentage = 100) {
+  public constructor(
+    samplingPercentage = 100,
+    private readonly onDrop?: (kind: SpanKind) => void,
+  ) {
     this.samplingPercentage = validateSamplingPercentage(samplingPercentage);
   }
 
@@ -98,6 +105,7 @@ export class ApplicationInsightsSampler implements Sampler {
     _links: Parameters<Sampler["shouldSample"]>[5],
   ): SamplingResult {
     const sampled = isTraceSampled(traceId, this.samplingPercentage);
+    if (!sampled) this.onDrop?.(_spanKind);
     const currentSampleRate = attributes[AZURE_MONITOR_SAMPLE_RATE];
     const effectiveSampleRate = getEffectiveSampleRate(currentSampleRate, this.samplingPercentage);
     const setSampleRate =

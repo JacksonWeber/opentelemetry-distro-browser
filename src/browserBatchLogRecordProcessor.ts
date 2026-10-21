@@ -24,7 +24,10 @@ export type BrowserBatchLogRecordProcessorOptions = Pick<
   | "maxExportBatchSize"
   | "scheduledDelayMillis"
   | "exportTimeoutMillis"
->;
+> & {
+  onDrop?: (record: ReadableLogRecord, reason: "QUEUE_FULL" | "SAMPLING") => void;
+  shouldCollect?: (record: ReadableLogRecord) => boolean;
+};
 
 /**
  * Batches distribution-owned logs with the OpenTelemetry defaults.
@@ -46,9 +49,13 @@ export class BrowserBatchLogRecordProcessor implements LogRecordProcessor {
   #stopped = false;
   #queueFullReported = false;
   #shutdownPromise: Promise<void> | undefined;
+  readonly #onDrop: BrowserBatchLogRecordProcessorOptions["onDrop"];
+  readonly #shouldCollect: BrowserBatchLogRecordProcessorOptions["shouldCollect"];
 
   public constructor(options: BrowserBatchLogRecordProcessorOptions) {
     this.#exporter = options.exporter;
+    this.#onDrop = options.onDrop;
+    this.#shouldCollect = options.shouldCollect;
     this.#maxQueueSize = options.maxQueueSize ?? 2048;
     const batchSize = options.maxExportBatchSize ?? 512;
     if (
@@ -65,8 +72,9 @@ export class BrowserBatchLogRecordProcessor implements LogRecordProcessor {
   }
 
   public onEmit(record: ReadWriteLogRecord): void {
-    if (this.#stopped) return;
+    if (!this.accepts(record)) return;
     if (this.#records.length >= this.#maxQueueSize) {
+      this.drop(record, "QUEUE_FULL");
       if (!this.#queueFullReported) {
         this.#queueFullReported = true;
         diag.warn("Log queue full; dropping records");
@@ -76,6 +84,14 @@ export class BrowserBatchLogRecordProcessor implements LogRecordProcessor {
     this.#queueFullReported = false;
     this.#records.push(record);
     this.#schedule();
+  }
+
+  protected drop(record: ReadableLogRecord, reason: "QUEUE_FULL" | "SAMPLING"): void {
+    if (!this.#stopped) this.#onDrop?.(record, reason);
+  }
+
+  protected accepts(record: ReadableLogRecord): boolean {
+    return !this.#stopped && (this.#shouldCollect?.(record) ?? true);
   }
 
   public forceFlush(): Promise<void> {

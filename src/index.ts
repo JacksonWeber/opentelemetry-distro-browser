@@ -16,6 +16,7 @@ export {
   userAgentDetector,
 } from "./resource/index.js";
 export type { AzureMonitorOptions } from "./exporter/base.js";
+export type { AzureMonitorSdkStatsOptions } from "./exporter/customerSdkStats.js";
 export { AzureMonitorLogRecordExporter } from "./exporter/log.js";
 export { AzureMonitorSpanExporter } from "./exporter/trace.js";
 export type {

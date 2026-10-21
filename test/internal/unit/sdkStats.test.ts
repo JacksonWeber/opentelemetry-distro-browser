@@ -505,6 +505,7 @@ it.each(["spans", "logs"] as const)(
     const exporterOptions = {
       connectionString: `InstrumentationKey=${TEST_INSTRUMENTATION_KEY};IngestionEndpoint=${CUSTOMER_ENDPOINT}`,
       sdkStats: {
+        enabled: false,
         instrumentationKey: "22222222-2222-2222-2222-222222222222",
         endpoint: "https://unexpected.example.test/v2/track",
       },

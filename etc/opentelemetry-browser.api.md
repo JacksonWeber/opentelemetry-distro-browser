@@ -35,6 +35,13 @@ export class AzureMonitorLogRecordExporter implements LogRecordExporter {
 export interface AzureMonitorOptions {
     readonly connectionString: string;
     readonly disableBeacon?: boolean;
+    readonly sdkStats?: AzureMonitorSdkStatsOptions;
+}
+
+// @public
+export interface AzureMonitorSdkStatsOptions {
+    readonly collectionIntervalMillis?: number;
+    readonly enabled?: boolean;
 }
 
 // @public

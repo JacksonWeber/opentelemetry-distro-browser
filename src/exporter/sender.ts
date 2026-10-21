@@ -21,6 +21,7 @@ import {
 } from "./breezeUtils.js";
 import type { AzureMonitorEnvelope } from "./telemetryModels.js";
 import type { InternalSdkStats } from "./sdkStats.js";
+import type { CustomerSdkStats } from "./customerSdkStats.js";
 
 let pendingKeepaliveBodySize = 0;
 let pendingKeepaliveRequestCount = 0;
@@ -46,6 +47,7 @@ export interface SenderOptions {
   readonly delay?: (delayMs: number) => Promise<void>;
   readonly random?: () => number;
   readonly stats?: InternalSdkStats;
+  readonly itemStats?: CustomerSdkStats;
 }
 
 export interface SendRequest {
@@ -82,6 +84,7 @@ export class Sender {
   readonly #random: () => number;
   #throttleDeadline = 0;
   readonly #stats: InternalSdkStats | undefined;
+  readonly #itemStats: CustomerSdkStats | undefined;
 
   public constructor(options: SenderOptions) {
     this.#endpoint = options.endpoint;
@@ -94,6 +97,7 @@ export class Sender {
     this.#delay = options.delay ?? wait;
     this.#random = options.random ?? Math.random;
     this.#stats = options.stats;
+    this.#itemStats = options.itemStats;
 
     if (this.#maxPayloadSize !== undefined && this.#maxPayloadSize <= 0) {
       throw new RangeError("maxPayloadSize must be greater than zero.");
@@ -101,73 +105,133 @@ export class Sender {
   }
 
   public async send(request: SendRequest): Promise<SenderResultType> {
-    if (this.#maxPayloadSize !== undefined && request.body.byteLength > this.#maxPayloadSize) {
-      throw new RangeError(
-        `Payload size ${request.body.byteLength} exceeds the ${this.#maxPayloadSize} byte limit.`,
-      );
-    }
-    if (request.unloading === true || request.retry === false) {
-      const result = await this.#sendOnce(request);
-      this.#rememberThrottleDeadline(result);
-      return result;
-    }
+    let pending = request.envelopes;
+    let retryCode = "CLIENT_EXCEPTION";
+    let retryCodes: readonly string[] | undefined;
+    try {
+      if (this.#maxPayloadSize !== undefined && request.body.byteLength > this.#maxPayloadSize) {
+        throw new RangeError(
+          `Payload size ${request.body.byteLength} exceeds the ${this.#maxPayloadSize} byte limit.`,
+        );
+      }
+      if (request.unloading === true || request.retry === false) {
+        const result = await this.#sendOnce(request);
+        this.#rememberThrottleDeadline(result);
+        this.#countItems(request, result);
+        return result;
+      }
 
-    let currentRequest = request;
-    let remainingRetryWaitMs = MAX_RETRY_WAIT_MS;
-    const permanentErrors: BreezeError[] = [];
-    for (let attempt = 1; ; attempt++) {
-      remainingRetryWaitMs = await this.#waitForThrottle(remainingRetryWaitMs);
+      let currentRequest = request;
+      let remainingRetryWaitMs = MAX_RETRY_WAIT_MS;
+      const permanentErrors: BreezeError[] = [];
+      for (let attempt = 1; ; attempt++) {
+        remainingRetryWaitMs = await this.#waitForThrottle(remainingRetryWaitMs);
+        if (attempt > 1) this.#itemStats?.countEnvelopes("Retry", pending, retryCodes ?? retryCode);
 
-      let result: SenderResultType;
-      try {
-        result = await this.#sendOnce(currentRequest);
-      } catch (error) {
-        if (!(error instanceof BrowserTransportError)) {
-          throw error;
+        let result: SenderResultType;
+        try {
+          result = await this.#sendOnce(currentRequest);
+        } catch (error) {
+          if (!(error instanceof BrowserTransportError)) {
+            retryCode = "CLIENT_EXCEPTION";
+            retryCodes = undefined;
+            throw error;
+          }
+          retryCode =
+            error.statusCode === undefined ? "CLIENT_EXCEPTION" : String(error.statusCode);
+          retryCodes = undefined;
+          if (error.statusCode !== undefined && !isRetriable(error.statusCode)) {
+            throw error.cause;
+          }
+          if (error.retryAfterMs !== undefined) {
+            this.#rememberThrottleDelay(error.retryAfterMs);
+          }
+          if (attempt >= MAX_SEND_ATTEMPTS) {
+            throw error.cause;
+          }
+          if (error.retryAfterMs === undefined) {
+            remainingRetryWaitMs = await this.#waitForRetry(
+              getRetryDelay(attempt - 1, this.#random()),
+              remainingRetryWaitMs,
+            );
+          }
+          continue;
         }
-        if (error.statusCode !== undefined && !isRetriable(error.statusCode)) {
-          throw error.cause;
+
+        if (result.transport === "beacon") {
+          this.#itemStats?.countEnvelopes("Success", pending);
+          return result;
         }
-        if (error.retryAfterMs !== undefined) {
-          this.#rememberThrottleDelay(error.retryAfterMs);
+
+        const breezeErrors =
+          result.statusCode === 206
+            ? (parseBreezeResponse(result.result, currentRequest.envelopes?.length)?.errors ?? [])
+            : [];
+        permanentErrors.push(
+          ...breezeErrors.filter(
+            (error) => !isRetriable(error.statusCode) && !isSamplingRejection(error),
+          ),
+        );
+        const retryRequest = getRetryRequest(currentRequest, result, breezeErrors);
+        const willRetry = !!retryRequest && attempt < MAX_SEND_ATTEMPTS;
+        this.#countItems(currentRequest, result, willRetry);
+        pending = willRetry ? retryRequest.envelopes : undefined;
+        this.#rememberThrottleDeadline(result);
+        if (!retryRequest || attempt >= MAX_SEND_ATTEMPTS) {
+          return permanentErrors.length === 0 ? result : { ...result, permanentErrors };
         }
-        if (attempt >= MAX_SEND_ATTEMPTS) {
-          throw error.cause;
-        }
-        if (error.retryAfterMs === undefined) {
+
+        currentRequest = retryRequest;
+        retryCode = String(result.statusCode);
+        retryCodes =
+          this.#itemStats && result.statusCode === 206
+            ? breezeErrors
+                .filter((error) => isRetriable(error.statusCode) && !isSamplingRejection(error))
+                .map((error) => String(error.statusCode))
+            : undefined;
+        if (result.retryAfterMs === undefined) {
           remainingRetryWaitMs = await this.#waitForRetry(
             getRetryDelay(attempt - 1, this.#random()),
             remainingRetryWaitMs,
           );
         }
-        continue;
       }
-
-      if (result.transport === "beacon") {
-        return result;
-      }
-
-      const breezeErrors =
-        result.statusCode === 206 ? (parseBreezeResponse(result.result)?.errors ?? []) : [];
-      permanentErrors.push(
-        ...breezeErrors.filter(
-          (error) => !isRetriable(error.statusCode) && !isSamplingRejection(error),
-        ),
-      );
-      const retryRequest = getRetryRequest(currentRequest, result, breezeErrors);
-      this.#rememberThrottleDeadline(result);
-      if (!retryRequest || attempt >= MAX_SEND_ATTEMPTS) {
-        return permanentErrors.length === 0 ? result : { ...result, permanentErrors };
-      }
-
-      if (result.retryAfterMs === undefined) {
-        remainingRetryWaitMs = await this.#waitForRetry(
-          getRetryDelay(attempt - 1, this.#random()),
-          remainingRetryWaitMs,
-        );
-      }
-      currentRequest = retryRequest;
+    } catch (error) {
+      this.#itemStats?.countEnvelopes("Dropped", pending, retryCodes ?? retryCode);
+      throw error;
     }
+  }
+
+  #countItems(request: SendRequest, result: SenderResultType, willRetry = false): void {
+    const stats = this.#itemStats;
+    const envelopes = request.envelopes;
+    if (!stats || !envelopes) return;
+    if (
+      result.transport === "beacon" ||
+      (result.statusCode >= 200 && result.statusCode < 300 && result.statusCode !== 206)
+    ) {
+      stats.countEnvelopes("Success", envelopes);
+      return;
+    }
+    if (result.statusCode === 206) {
+      const response = parseBreezeResponse(result.result, envelopes.length);
+      if (response) {
+        const errors = new Map(response.errors.map((error) => [error.index, error]));
+        for (const [index, envelope] of envelopes.entries()) {
+          const error = errors.get(index);
+          if (!error) stats.countEnvelopes("Success", [envelope]);
+          else if (isSamplingRejection(error) || !willRetry || !isRetriable(error.statusCode)) {
+            stats.countEnvelopes(
+              "Dropped",
+              [envelope],
+              isSamplingRejection(error) ? "SAMPLING" : String(error.statusCode),
+            );
+          }
+        }
+        return;
+      }
+    }
+    if (!willRetry) stats.countEnvelopes("Dropped", envelopes, String(result.statusCode));
   }
 
   #rememberThrottleDeadline(result: SenderResultType): void {
@@ -345,7 +409,7 @@ export class Sender {
   }
 }
 
-function getTrustedIngestionEndpoint(
+export function getTrustedIngestionEndpoint(
   currentEndpoint: string,
   redirectedEndpoint: string,
 ): string | undefined {

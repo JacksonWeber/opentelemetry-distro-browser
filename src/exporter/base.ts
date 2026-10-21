@@ -15,6 +15,11 @@ import { Sender, type SenderResultType } from "./sender.js";
 import { createInternalSdkStats, type InternalSdkStats } from "./sdkStats.js";
 import { getInternalSdkStatsConfiguration } from "./sdkStatsConfiguration.js";
 import type { AzureMonitorBaseData, AzureMonitorEnvelope } from "./telemetryModels.js";
+import {
+  createCustomerSdkStats,
+  type CustomerSdkStats,
+  type AzureMonitorSdkStatsOptions,
+} from "./customerSdkStats.js";
 
 const CONTENT_TYPE = "application/json";
 
@@ -34,6 +39,8 @@ export interface AzureMonitorOptions {
    * This can prevent pending telemetry from being delivered when the page closes.
    */
   readonly disableBeacon?: boolean;
+  /** Opt-in customer item metrics for this destination. Disabled by default. */
+  readonly sdkStats?: AzureMonitorSdkStatsOptions;
 }
 
 export class AzureMonitorExportClient {
@@ -50,16 +57,23 @@ export class AzureMonitorExportClient {
       throw new Error("Connection string needs a valid InstrumentationKey UUID.");
     }
     this.instrumentationKey = instrumentationKey;
+    this.itemStats = createCustomerSdkStats(
+      options.sdkStats,
+      instrumentationKey,
+      ingestionEndpoint,
+    );
     const statsConfiguration = getInternalSdkStatsConfiguration(ingestionEndpoint);
     this.#stats = createInternalSdkStats(statsConfiguration, instrumentationKey, ingestionEndpoint);
     this.#sender = new Sender({
       endpoint: `${ingestionEndpoint}/v2/track`,
       disableBeacon: options.disableBeacon,
       stats: this.#stats,
+      itemStats: this.itemStats,
     });
   }
 
   public readonly instrumentationKey: string;
+  public readonly itemStats: CustomerSdkStats | undefined;
 
   public export(
     envelopes: readonly AzureMonitorEnvelope[],
@@ -79,12 +93,18 @@ export class AzureMonitorExportClient {
         unloading,
       );
     } catch (error) {
+      this.itemStats?.countEnvelopes(
+        "Dropped",
+        envelopes,
+        error instanceof RangeError ? "PAYLOAD_TOO_LARGE" : "CLIENT_EXCEPTION",
+      );
       callback({
         code: ExportResultCode.FAILED,
         error: error instanceof Error ? error : new Error(String(error)),
       });
       return;
     }
+    this.itemStats?.countEnvelopes("Dropped", batchResult.droppedEnvelopes, "PAYLOAD_TOO_LARGE");
     const operation = Promise.allSettled(
       batchResult.requests.map(({ body, envelopes: batchEnvelopes }) =>
         this.#sender.send({
@@ -104,14 +124,14 @@ export class AzureMonitorExportClient {
         const exportResult = toExportResult(fulfilled);
         if (
           exportResult.code === ExportResultCode.FAILED ||
-          batchResult.droppedEnvelopeCount === 0
+          batchResult.droppedEnvelopes.length === 0
         ) {
           return exportResult;
         }
         return {
           code: ExportResultCode.FAILED,
           error: new Error(
-            `Unload beacon limit exceeded; sent ${envelopes.length - batchResult.droppedEnvelopeCount} of ${envelopes.length} envelopes.`,
+            `Unload beacon limit exceeded; sent ${envelopes.length - batchResult.droppedEnvelopes.length} of ${envelopes.length} envelopes.`,
           ),
         };
       })
@@ -128,6 +148,7 @@ export class AzureMonitorExportClient {
   public async forceFlush(): Promise<void> {
     // Customer exports get keepalive capacity before stats.
     await Promise.all([...this.#pending]);
+    await this.itemStats?.forceFlush();
     await this.#stats.forceFlush();
   }
 
@@ -135,7 +156,7 @@ export class AzureMonitorExportClient {
     if (this.#stopped) return;
     this.#stopped = true;
     const pending = Promise.all([...this.#pending]);
-    await this.#stats.shutdown(pending);
+    await Promise.all([this.#stats.shutdown(pending), this.itemStats?.shutdown(pending)]);
   }
 }
 
@@ -148,19 +169,22 @@ function createBatchRequests(
     body: Uint8Array<ArrayBuffer>;
     envelopes: readonly AzureMonitorEnvelope[];
   }>;
-  droppedEnvelopeCount: number;
+  droppedEnvelopes: readonly AzureMonitorEnvelope[];
 } {
   const encoder = new TextEncoder();
   if (enforceMaxBatchSize) {
-    if (envelopes.length === 0) return { requests: [], droppedEnvelopeCount: 0 };
+    if (envelopes.length === 0) return { requests: [], droppedEnvelopes: [] };
     const original = serializeBatch(envelopes, encoder);
     const fitted =
       original.size <= MAX_BEACON_BODY_SIZE
         ? original
         : fitBatchCustomFields(envelopes, MAX_BEACON_BODY_SIZE, encoder);
     let deliverable = fitted;
+    let droppedEnvelopes: readonly AzureMonitorEnvelope[] = [];
     if (fitted.size > MAX_BEACON_BODY_SIZE) {
       const subset = selectEnvelopeSubset(fitted.envelopes, MAX_BEACON_BODY_SIZE, encoder);
+      const selected = new Set(subset.indexes);
+      droppedEnvelopes = envelopes.filter((_, index) => !selected.has(index));
       deliverable = fitBatchCustomFields(
         subset.indexes.map((index) => envelopes[index]),
         MAX_BEACON_BODY_SIZE,
@@ -176,7 +200,7 @@ function createBatchRequests(
       requests: [
         { body: encoder.encode(deliverable.serialized), envelopes: deliverable.envelopes },
       ],
-      droppedEnvelopeCount: fitted.envelopes.length - deliverable.envelopes.length,
+      droppedEnvelopes,
     };
   }
 
@@ -213,7 +237,7 @@ function createBatchRequests(
     batchSize += (batch.length === 1 ? 0 : 1) + serializedSize;
   }
   flush();
-  return { requests, droppedEnvelopeCount: 0 };
+  return { requests, droppedEnvelopes: [] };
 }
 
 interface SerializedEnvelope {

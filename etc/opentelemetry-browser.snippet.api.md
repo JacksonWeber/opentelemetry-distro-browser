@@ -5,12 +5,19 @@
 ```ts
 
 // @public
+export interface AzureMonitorSdkStatsOptions {
+    readonly collectionIntervalMillis?: number;
+    readonly enabled?: boolean;
+}
+
+// @public
 export function getSdkLoaderScript(config: SdkLoaderConfig): string;
 
 // @public
 export interface SdkLoaderConfig {
     readonly azureMonitor?: {
         readonly disableBeacon?: boolean;
+        readonly sdkStats?: AzureMonitorSdkStatsOptions;
     };
     readonly cdnFallback?: boolean;
     readonly connectionString: string;

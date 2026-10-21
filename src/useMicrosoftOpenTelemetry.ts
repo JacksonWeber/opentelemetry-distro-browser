@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { context, diag, type SpanContext } from "@opentelemetry/api";
+import { context, diag, type SpanContext, type SpanKind } from "@opentelemetry/api";
 import {
   BrowserContextLogRecordProcessor,
   BrowserContextSpanProcessor,
@@ -9,12 +9,20 @@ import {
 import { createSession } from "./session/createSession.js";
 import { createUserContext } from "./user/createUserContext.js";
 import { createLocalStorageKeyValueStorage } from "./storage/keyValueStorage.js";
-import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
+import type { LogRecordProcessor, ReadableLogRecord } from "@opentelemetry/sdk-logs";
 import { BrowserBatchLogRecordProcessor } from "./browserBatchLogRecordProcessor.js";
 import { BatchSpanProcessor, type SpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { beginUnloading, endUnloading } from "./exporter/common.js";
 import { AzureMonitorLogRecordExporter } from "./exporter/log.js";
 import { AzureMonitorSpanExporter } from "./exporter/trace.js";
+import {
+  customerSdkStats,
+  spanItemType,
+  validateSdkStatsOptions,
+  type CustomerSdkStats,
+} from "./exporter/customerSdkStats.js";
+import { logItemType } from "./exporter/logUtils.js";
+import { createStatsSpanProcessor } from "./statsSpanProcessor.js";
 import { PageViewInstrumentation } from "./instrumentation/pageView/index.js";
 import { PageViewCorrelation } from "./instrumentation/pageView/pageViewCorrelation.js";
 import {
@@ -98,6 +106,7 @@ function createOwnedInstrumentations(
 export async function useMicrosoftOpenTelemetry(
   options: MicrosoftOpenTelemetryBrowserOptions = {},
 ): Promise<MicrosoftOpenTelemetryBrowser> {
+  validateSdkStatsOptions(options.azureMonitor?.sdkStats);
   const redactedQueryParams: readonly string[] = [
     ...DEFAULT_QUERY_STRINGS_TO_REDACT,
     ...(options.redactQueryParams ?? []),
@@ -129,11 +138,18 @@ export async function useMicrosoftOpenTelemetry(
         )
       : undefined;
   getSharedRegistry();
+  let spanStats: CustomerSdkStats | undefined;
+  const onSampleDrop =
+    options.azureMonitor?.sdkStats?.enabled === true
+      ? (kind: SpanKind) => {
+          if (!stopping) spanStats?.count("Dropped", spanItemType(kind), "SAMPLING");
+        }
+      : undefined;
   const samplingPercentage = options.samplingPercentage ?? 100;
   const sampler =
     options.samplingPercentage === undefined
-      ? new PageOperationSampler()
-      : new ApplicationInsightsSampler(options.samplingPercentage);
+      ? new PageOperationSampler(onSampleDrop)
+      : new ApplicationInsightsSampler(options.samplingPercentage, onSampleDrop);
   const userContext = createUserContext(
     options.userContext?.enabled,
     createLocalStorageKeyValueStorage(
@@ -142,7 +158,12 @@ export async function useMicrosoftOpenTelemetry(
     ),
     storageEnabled,
   );
-  const azureMonitor = options.azureMonitor ? { ...options.azureMonitor } : undefined;
+  const azureMonitor = options.azureMonitor
+    ? {
+        ...options.azureMonitor,
+        sdkStats: options.azureMonitor.sdkStats && { ...options.azureMonitor.sdkStats },
+      }
+    : undefined;
   let spanProcessors: SpanProcessor[] | undefined = options.spanProcessors?.slice();
   let logRecordProcessors: LogRecordProcessor[] | undefined = options.logRecordProcessors?.slice();
   const ownedProcessors: (SpanProcessor | LogRecordProcessor)[] = [];
@@ -321,21 +342,35 @@ export async function useMicrosoftOpenTelemetry(
       if (spanProcessors?.length !== 0) {
         const exporter = new AzureMonitorSpanExporter(azureMonitor);
         azureMonitorExporters.push(exporter);
-        const spanProcessor = new BatchSpanProcessor(
-          exporter,
-          // The handle flushes on page hide; avoid a second per-processor hide flush.
-          { disableAutoFlushOnDocumentHide: true },
-        );
+        spanStats = customerSdkStats.get(exporter);
+        const spanProcessor = spanStats
+          ? createStatsSpanProcessor({ exporter, disableAutoFlushOnDocumentHide: true }, spanStats)
+          : new BatchSpanProcessor(
+              exporter,
+              // The handle flushes on page hide; avoid a second per-processor hide flush.
+              { disableAutoFlushOnDocumentHide: true },
+            );
         ownedProcessors.push(spanProcessor);
         spanProcessors = [spanProcessor, ...(spanProcessors ?? [])];
       }
       if (logRecordProcessors?.length !== 0) {
         const exporter = new AzureMonitorLogRecordExporter(azureMonitor);
         azureMonitorExporters.push(exporter);
+        const stats = customerSdkStats.get(exporter);
+        const shouldCollect = stats?.shouldCollectLog;
+        const onDrop = stats
+          ? (record: ReadableLogRecord, reason: "QUEUE_FULL" | "SAMPLING") =>
+              stats.count("Dropped", logItemType(record), reason)
+          : undefined;
         const logProcessor =
           options.samplingPercentage === undefined
-            ? new BrowserBatchLogRecordProcessor({ exporter })
-            : new AzureMonitorSamplingLogRecordProcessor({ exporter, samplingPercentage });
+            ? new BrowserBatchLogRecordProcessor({ exporter, onDrop, shouldCollect })
+            : new AzureMonitorSamplingLogRecordProcessor({
+                exporter,
+                samplingPercentage,
+                onDrop,
+                shouldCollect,
+              });
         ownedProcessors.push(logProcessor);
         logRecordProcessors = [logProcessor, ...(logRecordProcessors ?? [])];
       }
