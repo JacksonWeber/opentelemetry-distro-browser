@@ -24,6 +24,61 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+it.each(["index.js", "index.min.js"])(
+  "releases async destination telemetry from %s to ingestion",
+  async (file) => {
+    const artifact =
+      file === "index.js"
+        ? new URL("../../dist/esm/index.js", import.meta.url).href
+        : new URL("../../dist/esm/index.min.js", import.meta.url).href;
+    const sdk = await import(/* @vite-ignore */ artifact);
+    const runId = crypto.randomUUID();
+    const ingestionEndpoint = `${inject("ingestionEndpoint")}${encodeURIComponent(runId)}`;
+    const captureUrl = `${new URL(ingestionEndpoint).origin}/captured?runId=${encodeURIComponent(runId)}`;
+    let resolve!: (value: string) => void;
+    const connectionString = new Promise<string>((done) => {
+      resolve = done;
+    });
+    const telemetry = await sdk.useMicrosoftOpenTelemetry({
+      azureMonitor: { connectionString },
+      pageView: { enabled: false },
+      session: { enabled: false },
+      userContext: { enabled: false },
+    });
+    try {
+      trace.getTracer("async-destination").startSpan("buffered span").end();
+      logs.getLogger("async-destination").emit({ body: "buffered log" });
+      await telemetry.forceFlush();
+      expect(await fetch(captureUrl).then((response) => response.json())).toEqual([]);
+      resolve(
+        `InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=${ingestionEndpoint}`,
+      );
+      await Promise.resolve();
+      await telemetry.forceFlush();
+      const captured: AzureMonitorEnvelope[] = await fetch(captureUrl).then((response) =>
+        response.json(),
+      );
+      expect(captured).toHaveLength(2);
+      expect(captured).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            data: expect.objectContaining({
+              baseData: expect.objectContaining({ name: "buffered span" }),
+            }),
+          }),
+          expect.objectContaining({
+            data: expect.objectContaining({
+              baseData: expect.objectContaining({ message: "buffered log" }),
+            }),
+          }),
+        ]),
+      );
+    } finally {
+      await telemetry.shutdown();
+    }
+  },
+);
+
 it("sends telemetry from a browser interaction to Azure Monitor ingestion", async () => {
   const runId = crypto.randomUUID();
   const ingestionEndpoint = `${inject("ingestionEndpoint")}${encodeURIComponent(runId)}`;

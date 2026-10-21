@@ -154,7 +154,7 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
    */
   samplingPercentage?: number;
   /** Azure Monitor destination. When provided, Azure Monitor export is enabled. */
-  azureMonitor?: AzureMonitorOptions;
+  azureMonitor?: AzureMonitorOptions<string | Promise<string>>;
   /**
    * Resource describing the entity producing telemetry.
    *

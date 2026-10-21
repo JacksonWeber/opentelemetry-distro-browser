@@ -74,9 +74,15 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
     Pick<MicrosoftOpenTelemetryBrowserSessionOptions, "inactivityTimeout" | "maxDuration">
   >().toEqualTypeOf<Pick<SessionManagerConfig, "inactivityTimeout" | "maxDuration">>();
   expectTypeOf<MicrosoftOpenTelemetryBrowserOptions["azureMonitor"]>().toEqualTypeOf<
-    AzureMonitorOptions | undefined
+    AzureMonitorOptions<string | Promise<string>> | undefined
   >();
-  expectTypeOf<keyof AzureMonitorOptions>().toEqualTypeOf<"connectionString" | "disableBeacon">();
+  expectTypeOf<keyof AzureMonitorOptions>().toEqualTypeOf<
+    "connectionString" | "disableBeacon" | "initTimeOut" | "initInMemoMaxSize"
+  >();
+  expectTypeOf<AzureMonitorOptions["connectionString"]>().toEqualTypeOf<string>();
+  expectTypeOf<AzureMonitorOptions<Promise<string>>["connectionString"]>().toEqualTypeOf<
+    Promise<string>
+  >();
   expectTypeOf(AzureMonitorSpanExporter).constructorParameters.toEqualTypeOf<
     [options: AzureMonitorOptions]
   >();

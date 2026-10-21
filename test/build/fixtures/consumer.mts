@@ -1,6 +1,9 @@
 import {
+  AzureMonitorLogRecordExporter,
+  AzureMonitorSpanExporter,
   OPENTELEMETRY_BROWSER_VERSION,
   useMicrosoftOpenTelemetry,
+  type AzureMonitorOptions,
   type BrowserInstrumentation,
   type MicrosoftOpenTelemetryBrowser,
   type MicrosoftOpenTelemetryBrowserOptions,
@@ -61,6 +64,19 @@ const connectionString =
 export const azureMonitorOptions: MicrosoftOpenTelemetryBrowserOptions = {
   azureMonitor: { connectionString },
 };
+// An explicitly annotated pre-existing exporter configuration remains accepted.
+const synchronousOptions: AzureMonitorOptions = { connectionString };
+new AzureMonitorSpanExporter(synchronousOptions);
+new AzureMonitorLogRecordExporter(synchronousOptions);
+const asynchronousOptions: AzureMonitorOptions<Promise<string>> = {
+  connectionString: Promise.resolve(connectionString),
+};
+useMicrosoftOpenTelemetry({ azureMonitor: synchronousOptions });
+useMicrosoftOpenTelemetry({ azureMonitor: asynchronousOptions });
+// @ts-expect-error Standalone trace exporters require a resolved connection string.
+new AzureMonitorSpanExporter(asynchronousOptions);
+// @ts-expect-error Standalone log exporters require a resolved connection string.
+new AzureMonitorLogRecordExporter(asynchronousOptions);
 // @ts-expect-error SDK stats options are internal.
 useMicrosoftOpenTelemetry({ azureMonitor: { connectionString, sdkStats: {} } });
 export const initialize: (

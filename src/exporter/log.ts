@@ -20,6 +20,7 @@ import { logToEnvelopes } from "./logUtils.js";
 export class AzureMonitorLogRecordExporter implements LogRecordExporter {
   readonly #client: AzureMonitorExportClient;
 
+  /** Standalone export requires a resolved string; the distribution owns startup buffering. */
   public constructor(options: AzureMonitorOptions) {
     this.#client = new AzureMonitorExportClient(options);
   }

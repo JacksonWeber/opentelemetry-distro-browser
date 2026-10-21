@@ -28,13 +28,16 @@ side effects. Initialize only in client-side code, before importing application 
 
 ### Azure Monitor destination
 
-| Option                          | Type               | Default and behavior                                                                                                                                          |
-| ------------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `azureMonitor.connectionString` | `string`, required | Application Insights connection string with a valid UUID `InstrumentationKey`. Supports explicit ingestion endpoints and cloud suffixes.                      |
-| `azureMonitor.disableBeacon`    | `boolean`          | `false`. Set to `true` to disable the `sendBeacon` fallback when an unload keepalive request cannot be queued. This may reduce delivery when the page closes. |
+| Option                           | Type                                  | Default and behavior                                                                                                                                          |
+| -------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `azureMonitor.connectionString`  | `string \| Promise<string>`, required | Application Insights connection string with a valid UUID `InstrumentationKey`. Supports explicit ingestion endpoints and cloud suffixes.                      |
+| `azureMonitor.initTimeOut`       | `number`                              | `50000` ms. Maximum promise wait. Must be finite, nonnegative, and at most `2147483647`. Zero expires immediately.                                            |
+| `azureMonitor.initInMemoMaxSize` | `number`                              | `100` items. Maximum completed spans and emitted logs buffered together while waiting. Must be a nonnegative safe integer. Zero disables startup buffering.   |
+| `azureMonitor.disableBeacon`     | `boolean`                             | `false`. Set to `true` to disable the `sendBeacon` fallback when an unload keepalive request cannot be queued. This may reduce delivery when the page closes. |
 
 Endpoints require HTTPS except for localhost or loopback IPs. Invalid endpoints warn and fall back
-to suffix-derived or public-cloud endpoints; an invalid/missing instrumentation key fails startup.
+to suffix-derived or public-cloud endpoints; an invalid/missing instrumentation key in a synchronous
+string fails startup.
 Connection strings identify a destination and do not grant read access to the resource. They are
 public browser configuration, not secrets. Built-in Entra ID token authentication is not supported.
 
@@ -49,6 +52,43 @@ live pages and same-origin frames never send each other's telemetry. Each export
 a diagnostic warning. `storage.enabled: false` disables the buffer and `storage.namePrefix`
 prefixes its keys. Requests interrupted after ingestion received them can be sent again. Custom
 span and log processors are not buffered, and the buffer does not survive closing the tab.
+
+#### Asynchronous connection strings
+
+Pass a `Promise<string>` when the destination is loaded asynchronously:
+
+```typescript
+const telemetry = await useMicrosoftOpenTelemetry({
+  azureMonitor: {
+    connectionString: fetch("/telemetry-config").then((response) => {
+      if (!response.ok) throw new Error("Telemetry configuration unavailable");
+      return response.text();
+    }),
+    initTimeOut: 50000,
+    initInMemoMaxSize: 100,
+  },
+});
+```
+
+Awaiting `useMicrosoftOpenTelemetry()` means collection is ready; it does not wait for the
+connection string. Only the Azure Monitor branches buffer while the destination is pending.
+Custom processors continue receiving telemetry immediately. The queue belongs to the handle and
+counts items, not bytes, across both signals before normal batching. It is not persisted.
+Overflow drops new items and emits one diagnostic. A valid resolution releases retained items
+in arrival order into the normal batch processors; normal batching and sampling still apply.
+
+Timeout, rejection, or an invalid resolved string clears the queue, emits a diagnostic without
+including the connection string or rejection reason, and stops Azure Monitor delivery for that
+handle. Late resolution is ignored. Other handles and custom destinations are unaffected.
+The two initialization limits apply only when the connection string is asynchronous.
+
+While pending, `forceFlush()` and page-hide flushes do not wait for the promise and do not discard
+the startup queue. They cannot send its contents until the destination is known. Call `forceFlush()`
+again after resolution if immediate delivery is needed. Shutdown cancels pending startup and
+discards buffered items; it does not wait for the connection-string promise.
+
+Standalone `AzureMonitorSpanExporter` and `AzureMonitorLogRecordExporter` still require an
+already-resolved string. Startup buffering is owned by the distribution, not the exporters.
 
 When Azure Monitor is configured, its processor is added before non-empty custom processor lists
 for each signal. They are independent processor branches, not a chain: filtering within the Azure

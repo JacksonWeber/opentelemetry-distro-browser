@@ -32,9 +32,11 @@ export class AzureMonitorLogRecordExporter implements LogRecordExporter {
 }
 
 // @public
-export interface AzureMonitorOptions {
-    readonly connectionString: string;
+export interface AzureMonitorOptions<TConnectionString extends string | Promise<string> = string> {
+    readonly connectionString: TConnectionString;
     readonly disableBeacon?: boolean;
+    readonly initInMemoMaxSize?: number;
+    readonly initTimeOut?: number;
 }
 
 // @public
@@ -76,7 +78,7 @@ export interface MicrosoftOpenTelemetryBrowser {
 
 // @public
 export interface MicrosoftOpenTelemetryBrowserOptions {
-    azureMonitor?: AzureMonitorOptions;
+    azureMonitor?: AzureMonitorOptions<string | Promise<string>>;
     instrumentations?: readonly BrowserInstrumentation[];
     logRecordProcessors?: LogRecordProcessor[];
     pageView?: PageViewInstrumentationConfig;

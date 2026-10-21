@@ -13,6 +13,7 @@ All notable changes to this package are documented in this file.
   connection string and exporter, and are bounded to 512 KiB of characters per exporter and one
   hour. Unavailable or full storage only logs a warning, and `storage.enabled: false` disables the
   buffer.
+- Support a deferred connection string
 - Add per-instance browser storage controls to initialization and the CDN loader: `storage.enabled:
 false` blocks SDK-managed storage access, including later identity-control calls, while keeping
   sessions and authenticated identity in memory. Use `storage.namePrefix` to scope session and user

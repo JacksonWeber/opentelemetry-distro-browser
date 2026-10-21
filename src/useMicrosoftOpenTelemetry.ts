@@ -11,11 +11,11 @@ import { createUserContext } from "./user/createUserContext.js";
 import { createKeyValueStorage } from "./storage/keyValueStorage.js";
 import { createSessionBufferStorage, sessionBufferStorage } from "./exporter/sessionBuffer.js";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
-import { BrowserBatchLogRecordProcessor } from "./browserBatchLogRecordProcessor.js";
-import { BatchSpanProcessor, type SpanProcessor } from "@opentelemetry/sdk-trace-base";
+import type { SpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { beginUnloading, endUnloading } from "./exporter/common.js";
-import { AzureMonitorLogRecordExporter } from "./exporter/log.js";
-import { AzureMonitorSpanExporter } from "./exporter/trace.js";
+import type { AzureMonitorLogRecordExporter } from "./exporter/log.js";
+import type { AzureMonitorSpanExporter } from "./exporter/trace.js";
+import { createAzureMonitorProcessors } from "./exporter/createAzureMonitorProcessors.js";
 import { PageViewInstrumentation } from "./instrumentation/pageView/index.js";
 import { PageViewCorrelation } from "./instrumentation/pageView/pageViewCorrelation.js";
 import {
@@ -36,7 +36,6 @@ import {
 } from "./routing/pageContext.js";
 import { startTelemetryInstance, type TelemetryInstance } from "./routing/telemetryInstance.js";
 import { ApplicationInsightsSampler, isTraceSampled, PageOperationSampler } from "./sampling.js";
-import { AzureMonitorSamplingLogRecordProcessor } from "./samplingLogRecordProcessor.js";
 import { DEFAULT_QUERY_STRINGS_TO_REDACT } from "./shared/urlRedaction.js";
 import type {
   MicrosoftOpenTelemetryBrowser,
@@ -156,6 +155,8 @@ export async function useMicrosoftOpenTelemetry(
   let logRecordProcessors: LogRecordProcessor[] | undefined = options.logRecordProcessors?.slice();
   const ownedProcessors: (SpanProcessor | LogRecordProcessor)[] = [];
   const azureMonitorExporters: (AzureMonitorSpanExporter | AzureMonitorLogRecordExporter)[] = [];
+  let stopAzureMonitorStartup: (() => void) | undefined;
+  let startAzureMonitorDiagnostics: (() => void) | undefined;
   const traceOptions = options.traces && {
     ...options.traces,
     propagators: options.traces.propagators?.slice(),
@@ -257,6 +258,7 @@ export async function useMicrosoftOpenTelemetry(
     });
     void (async () => {
       stopping = true;
+      stopAzureMonitorStartup?.();
       const errors: unknown[] = [];
       for (const cleanup of [
         () => instance?.detach(),
@@ -327,26 +329,22 @@ export async function useMicrosoftOpenTelemetry(
 
   try {
     if (azureMonitor) {
-      if (spanProcessors?.length !== 0) {
-        const exporter = new AzureMonitorSpanExporter(azureMonitor);
-        azureMonitorExporters.push(exporter);
-        const spanProcessor = new BatchSpanProcessor(
-          exporter,
-          // The handle flushes on page hide; avoid a second per-processor hide flush.
-          { disableAutoFlushOnDocumentHide: true },
-        );
-        ownedProcessors.push(spanProcessor);
-        spanProcessors = [spanProcessor, ...(spanProcessors ?? [])];
+      const { span, log, stop, startDiagnostics } = createAzureMonitorProcessors(
+        azureMonitor,
+        spanProcessors?.length !== 0,
+        logRecordProcessors?.length !== 0,
+        options.samplingPercentage,
+        azureMonitorExporters,
+      );
+      stopAzureMonitorStartup = stop;
+      startAzureMonitorDiagnostics = startDiagnostics;
+      if (span) {
+        ownedProcessors.push(span);
+        spanProcessors = [span, ...(spanProcessors ?? [])];
       }
-      if (logRecordProcessors?.length !== 0) {
-        const exporter = new AzureMonitorLogRecordExporter(azureMonitor);
-        azureMonitorExporters.push(exporter);
-        const logProcessor =
-          options.samplingPercentage === undefined
-            ? new BrowserBatchLogRecordProcessor({ exporter })
-            : new AzureMonitorSamplingLogRecordProcessor({ exporter, samplingPercentage });
-        ownedProcessors.push(logProcessor);
-        logRecordProcessors = [logProcessor, ...(logRecordProcessors ?? [])];
+      if (log) {
+        ownedProcessors.push(log);
+        logRecordProcessors = [log, ...(logRecordProcessors ?? [])];
       }
     }
     const noDestination = !azureMonitor && !spanProcessors && !logRecordProcessors;
@@ -383,6 +381,7 @@ export async function useMicrosoftOpenTelemetry(
     processorsTransferred = true;
     instance = await startTelemetryInstance(instanceOptions);
     // Warn only once the instance has installed the console diagnostic logger.
+    startAzureMonitorDiagnostics?.();
     if (noDestination) {
       diag.warn(
         "No telemetry destination: set azureMonitor, spanProcessors or logRecordProcessors",
