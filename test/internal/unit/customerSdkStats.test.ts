@@ -4,7 +4,11 @@
 import { context, diag, propagation, ROOT_CONTEXT, SpanKind, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { ExportResultCode, type ExportResult } from "@opentelemetry/core";
-import { LoggerProvider } from "@opentelemetry/sdk-logs";
+import {
+  BatchLogRecordProcessor,
+  LoggerProvider,
+  SimpleLogRecordProcessor,
+} from "@opentelemetry/sdk-logs";
 import { ConsoleInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/console";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
@@ -33,6 +37,7 @@ import {
   assertAzureMonitorEnvelope,
 } from "../../fixtures/azureMonitor.js";
 import { installFakeClock } from "../../fixtures/clock.js";
+import { reportFailure } from "../../../src/exporter/sdkStats.js";
 
 const endpoint = "https://customer.example.test";
 const connectionString = `InstrumentationKey=${TEST_INSTRUMENTATION_KEY};IngestionEndpoint=${endpoint}`;
@@ -641,6 +646,61 @@ it("retains sampling counts and emission-time log policy while the destination r
   });
 });
 
+it.each([0, 1])(
+  "counts deferred startup overflow by signal and type with capacity %s",
+  async (initInMemoMaxSize) => {
+    let resolve!: (value: string) => void;
+    const pending = new Promise<string>((done) => (resolve = done));
+    const handle = await useMicrosoftOpenTelemetry({
+      azureMonitor: {
+        connectionString: pending,
+        initInMemoMaxSize,
+        sdkStats: { enabled: true },
+      },
+      samplingPercentage: 100,
+      pageView: { enabled: false },
+      storage: { enabled: false },
+      session: { enabled: false },
+    });
+    owners.push(handle);
+    const tracer = trace.getTracer("startup-overflow");
+    const logger = logs.getLogger("startup-overflow");
+    new Sender({ endpoint: "https://peer.example.test/v2/track" });
+    logs.getLogger("@opentelemetry/browser-instrumentation/resource-timing").emit({
+      eventName: "browser.resource_timing",
+      attributes: { "url.full": "https://peer.example.test/v2/track" },
+    });
+    logger.emit({ body: "first" });
+    logger.emit({ body: "overflow" });
+    logger.emit({ eventName: "exception" });
+    tracer.startSpan("dependency").end();
+    tracer.startSpan("request", { kind: SpanKind.SERVER }).end();
+    tracer.startSpan("another request", { kind: SpanKind.CONSUMER }).end();
+    expect(fetch).not.toHaveBeenCalled();
+    resolve(connectionString);
+    await Promise.resolve();
+    await handle.forceFlush();
+    expect(totals()).toEqual({
+      ...(initInMemoMaxSize ? { "Item_Success_Count:TRACE": 1 } : {}),
+      "Item_Dropped_Count:TRACE:QUEUE_FULL": 2 - initInMemoMaxSize,
+      "Item_Dropped_Count:EXCEPTION:QUEUE_FULL": 1,
+      "Item_Dropped_Count:DEPENDENCY:QUEUE_FULL": 1,
+      "Item_Dropped_Count:REQUEST:QUEUE_FULL": 2,
+    });
+    tracer.startSpan("after activation").end();
+    logger.emit({ body: "after activation" });
+    await handle.shutdown();
+    expect(totals()).toEqual({
+      "Item_Success_Count:TRACE": initInMemoMaxSize + 1,
+      "Item_Success_Count:DEPENDENCY": 1,
+      "Item_Dropped_Count:TRACE:QUEUE_FULL": 2 - initInMemoMaxSize,
+      "Item_Dropped_Count:EXCEPTION:QUEUE_FULL": 1,
+      "Item_Dropped_Count:DEPENDENCY:QUEUE_FULL": 1,
+      "Item_Dropped_Count:REQUEST:QUEUE_FULL": 2,
+    });
+  },
+);
+
 it.each([undefined, 0, 100])(
   "does not count resource timing for its own ingestion at sampling %s",
   async (samplingPercentage) => {
@@ -689,6 +749,96 @@ it.each([false, true])(
     expect(diag.warn).toHaveBeenCalledOnce();
   },
 );
+
+it.each([
+  `${endpoint}/v2.1/track`,
+  `${endpoint}/redirected`,
+  "https://eastus-8.in.applicationinsights.azure.com/v2.1/track",
+])("excludes remembered SDK dispatches to %s before sampling", async (redirectedEndpoint) => {
+  const handle = await initialize(TEST_INSTRUMENTATION_KEY, 0);
+  const response = new Response(null);
+  Object.defineProperties(response, {
+    redirected: { value: true },
+    url: { value: redirectedEndpoint },
+  });
+  fetch.mockResolvedValueOnce(response);
+  const sender = new Sender({
+    endpoint: redirectedEndpoint.includes("applicationinsights")
+      ? "https://dc.services.visualstudio.com/v2/track"
+      : `${endpoint}/v2/track`,
+  });
+  await sender.send(request());
+  await sender.send(request());
+  expect(fetch.mock.calls[1][0]).toBe(redirectedEndpoint);
+  fetch.mockClear();
+  const logger = logs.getLogger("@opentelemetry/browser-instrumentation/resource-timing");
+  logger.emit({
+    eventName: "browser.resource_timing",
+    attributes: { "url.full": redirectedEndpoint },
+  });
+  await handle.forceFlush();
+  expect(fetch).not.toHaveBeenCalled();
+  logger.emit({
+    eventName: "browser.resource_timing",
+    attributes: { "url.full": `${redirectedEndpoint}/unrelated` },
+  });
+  logs.getLogger("application").emit({
+    eventName: "browser.resource_timing",
+    attributes: { "url.full": redirectedEndpoint },
+  });
+  await handle.forceFlush();
+  expect(totals()).toEqual({ "Item_Dropped_Count:CUSTOM_EVENT:SAMPLING": 2 });
+});
+
+it.each([
+  { name: "simple", Processor: SimpleLogRecordProcessor },
+  { name: "batch", Processor: BatchLogRecordProcessor },
+])(
+  "does not feed diagnostics into standalone $name processors without a context manager",
+  async ({ Processor }) => {
+    context.disable();
+    const exporter = new AzureMonitorLogRecordExporter({
+      connectionString,
+      sdkStats: { enabled: true },
+    });
+    const provider = new LoggerProvider({ processors: [new Processor({ exporter })] });
+    owners.push(provider);
+    const instrumentation = new ConsoleInstrumentation({ enabled: false, logMethods: ["warn"] });
+    instrumentation.setLoggerProvider(provider);
+    instrumentation.enable();
+    finishers.push(() => instrumentation.disable());
+    const wrappedWarn = console.warn;
+    vi.spyOn(diag, "warn").mockImplementation((...args) => console.warn(...args));
+    provider.getLogger("app").emit({ body: "application" });
+    fetch
+      .mockResolvedValueOnce(new Response(null))
+      .mockResolvedValueOnce(new Response(null, { status: 503 }));
+    await provider.forceFlush();
+    await exporter.forceFlush();
+    await provider.forceFlush();
+    await exporter.forceFlush();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(diag.warn).toHaveBeenCalledOnce();
+    expect(console.warn).toBe(wrappedWarn);
+    console.warn("application warning");
+    await provider.forceFlush();
+    await exporter.forceFlush();
+    expect(totals()).toEqual({ "Item_Success_Count:TRACE": 1 });
+    expect(fetch).toHaveBeenCalledTimes(4);
+  },
+);
+
+it("restores console instrumentation when a stats diagnostic logger throws", () => {
+  const instrumentation = new ConsoleInstrumentation({ enabled: false, logMethods: ["warn"] });
+  instrumentation.enable();
+  finishers.push(() => instrumentation.disable());
+  const wrappedWarn = console.warn;
+  vi.spyOn(diag, "warn").mockImplementation(() => {
+    throw new Error("logger failed");
+  });
+  expect(() => reportFailure(new Error("stats failed"))).not.toThrow();
+  expect(console.warn).toBe(wrappedWarn);
+});
 
 it("keeps opt-in and counters isolated across instances and hands off after shutdown", async () => {
   const secondKey = "22222222-2222-2222-2222-222222222222";

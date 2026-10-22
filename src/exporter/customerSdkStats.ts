@@ -5,9 +5,9 @@ import { SpanKind } from "@opentelemetry/api";
 import type { LogRecordExporter, ReadableLogRecord } from "@opentelemetry/sdk-logs";
 import type { SpanExporter } from "@opentelemetry/sdk-trace-base";
 import { getSdkVersion, isUnloading } from "./common.js";
-import { getTrustedIngestionEndpoint, Sender } from "./sender.js";
+import { Sender } from "./sender.js";
 import { createSdkStatsEnvelope, reportFailure, sendSdkStats } from "./sdkStats.js";
-import { getInternalSdkStatsConfiguration } from "./sdkStatsConfiguration.js";
+import { isSdkIngestionUrl } from "../shared/globalOwnership.js";
 import type { AzureMonitorEnvelope, MetricData } from "./telemetryModels.js";
 
 /**
@@ -90,6 +90,17 @@ function envelopeItemType(envelope: AzureMonitorEnvelope): ItemType {
   }
 }
 
+export function shouldCollectSdkStatsLog(record: ReadableLogRecord): boolean {
+  if (
+    record.eventName !== "browser.resource_timing" ||
+    record.instrumentationScope.name !== "@opentelemetry/browser-instrumentation/resource-timing"
+  )
+    return true;
+  const url = record.attributes["url.full"];
+  // Resource timing runs after fetch suppression, so exclude ingestion requests.
+  return !(typeof url === "string" && isSdkIngestionUrl(url));
+}
+
 export function createCustomerSdkStats(
   options: AzureMonitorSdkStatsOptions | undefined,
   instrumentationKey: string,
@@ -101,29 +112,11 @@ export function createCustomerSdkStats(
   const counts = new Map<string, number>();
   const ingestionEndpoint = `${endpoint}/v2/track`;
   const sender = new Sender({ endpoint: ingestionEndpoint, disableBeacon: true });
-  const internalEndpoint = getInternalSdkStatsConfiguration(endpoint)?.endpoint;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let flushing: Promise<void> | undefined;
   let shutdownPromise: Promise<void> | undefined;
   let stopping = false;
   let stopped = false;
-
-  function shouldCollectLog(record: ReadableLogRecord): boolean {
-    if (
-      record.eventName !== "browser.resource_timing" ||
-      record.instrumentationScope.name !== "@opentelemetry/browser-instrumentation/resource-timing"
-    )
-      return true;
-    const url = record.attributes["url.full"];
-    // Resource timing runs after fetch suppression, so exclude ingestion requests.
-    return !(
-      typeof url === "string" &&
-      /\/v2\/track(?:[?#]|$)/.test(url) &&
-      (url === internalEndpoint ||
-        url === ingestionEndpoint ||
-        getTrustedIngestionEndpoint(ingestionEndpoint, url))
-    );
-  }
 
   function schedule(): void {
     if (stopping || flushing || timer !== undefined || !counts.size) return;
@@ -197,5 +190,11 @@ export function createCustomerSdkStats(
     return shutdownPromise;
   }
 
-  return { count, countEnvelopes, shouldCollectLog, forceFlush, shutdown };
+  return {
+    count,
+    countEnvelopes,
+    shouldCollectLog: shouldCollectSdkStatsLog,
+    forceFlush,
+    shutdown,
+  };
 }

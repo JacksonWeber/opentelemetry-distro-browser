@@ -10,7 +10,13 @@ import type { AzureMonitorOptions } from "./base.js";
 import { AzureMonitorLogRecordExporter } from "./log.js";
 import { AzureMonitorSpanExporter } from "./trace.js";
 import { sessionBufferStorage } from "./sessionBuffer.js";
-import { customerSdkStats, type CustomerSdkStats } from "./customerSdkStats.js";
+import {
+  customerSdkStats,
+  shouldCollectSdkStatsLog,
+  spanItemType,
+  type CustomerSdkStats,
+  type ItemType,
+} from "./customerSdkStats.js";
 import { createStatsSpanProcessor } from "../statsSpanProcessor.js";
 import { logItemType } from "./logUtils.js";
 
@@ -30,6 +36,17 @@ export function createAzureMonitorProcessors(
 } {
   let span: SpanProcessor | undefined;
   let log: AzureMonitorSamplingLogRecordProcessor | undefined;
+  const startupDrops =
+    options.sdkStats?.enabled && typeof options.connectionString !== "string"
+      ? { span: new Map<ItemType, number>(), log: new Map<ItemType, number>() }
+      : undefined;
+
+  function transferDrops(signal: "span" | "log", stats: CustomerSdkStats | undefined): void {
+    for (const [type, count] of startupDrops?.[signal] ?? []) {
+      stats?.count("Dropped", type, "QUEUE_FULL", count);
+    }
+    startupDrops?.[signal].clear();
+  }
 
   function initialize(connectionString: string): void {
     const resolved = { ...options, connectionString };
@@ -42,6 +59,7 @@ export function createAzureMonitorProcessors(
       const exporter = new AzureMonitorSpanExporter(resolved);
       exporters.push(exporter);
       const stats = customerSdkStats.get(exporter);
+      transferDrops("span", stats);
       if (stats) onSpanStats?.(stats);
       // The distribution already flushes on page hide.
       span = stats
@@ -52,6 +70,7 @@ export function createAzureMonitorProcessors(
       const exporter = new AzureMonitorLogRecordExporter(resolved);
       exporters.push(exporter);
       const stats = customerSdkStats.get(exporter);
+      transferDrops("log", stats);
       log = new AzureMonitorSamplingLogRecordProcessor({
         exporter,
         samplingPercentage: readSamplingPercentage,
@@ -90,11 +109,14 @@ export function createAzureMonitorProcessors(
     () => queue.fail(),
   );
 
+  const stop = (): void => {
+    queue.shutdown();
+    startupDrops?.span.clear();
+    startupDrops?.log.clear();
+    warnings = undefined;
+  };
   return {
-    stop: () => {
-      queue.shutdown();
-      warnings = undefined;
-    },
+    stop,
     startDiagnostics: () => {
       const buffered = warnings ?? [];
       warnings = undefined;
@@ -103,12 +125,17 @@ export function createAzureMonitorProcessors(
     span: tracesEnabled
       ? {
           onStart() {},
-          onEnd: (record) => queue.track(() => span?.onEnd(record)),
+          onEnd: (record) => {
+            if (queue.track(() => span?.onEnd(record)) === "QUEUE_FULL" && startupDrops) {
+              const type = spanItemType(record.kind);
+              startupDrops.span.set(type, (startupDrops.span.get(type) ?? 0) + 1);
+            }
+          },
           forceFlush: async () => {
             await span?.forceFlush();
           },
           shutdown: async () => {
-            queue.shutdown();
+            stop();
             await span?.shutdown();
           },
         }
@@ -116,14 +143,22 @@ export function createAzureMonitorProcessors(
     log: logsEnabled
       ? {
           onEmit: (record) => {
+            if (startupDrops && !shouldCollectSdkStatsLog(record)) return;
             const percentage = readSamplingPercentage();
-            queue.track(() => log?.onEmitWithSamplingPercentage(record, percentage));
+            if (
+              queue.track(() => log?.onEmitWithSamplingPercentage(record, percentage)) ===
+                "QUEUE_FULL" &&
+              startupDrops
+            ) {
+              const type = logItemType(record);
+              startupDrops.log.set(type, (startupDrops.log.get(type) ?? 0) + 1);
+            }
           },
           forceFlush: async () => {
             await log?.forceFlush();
           },
           shutdown: async () => {
-            queue.shutdown();
+            stop();
             await log?.shutdown();
           },
         }

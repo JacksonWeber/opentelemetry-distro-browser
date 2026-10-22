@@ -23,6 +23,7 @@ import {
 import type { AzureMonitorEnvelope } from "./telemetryModels.js";
 import type { InternalSdkStats } from "./sdkStats.js";
 import type { CustomerSdkStats } from "./customerSdkStats.js";
+import { rememberSdkIngestionUrl } from "../shared/globalOwnership.js";
 
 let pendingKeepaliveBodySize = 0;
 let pendingKeepaliveRequestCount = 0;
@@ -114,6 +115,7 @@ export class Sender {
     if (this.#maxPayloadSize !== undefined && this.#maxPayloadSize <= 0) {
       throw new RangeError("maxPayloadSize must be greater than zero.");
     }
+    rememberSdkIngestionUrl(this.#endpoint);
   }
 
   public async send(request: SendRequest): Promise<SenderResultType> {
@@ -389,6 +391,7 @@ export class Sender {
 
     const redirectedEndpoint = getTrustedIngestionEndpoint(attemptedEndpoint, response.url);
     if (redirectedEndpoint !== undefined && redirectedEndpoint !== this.#endpoint) {
+      rememberSdkIngestionUrl(redirectedEndpoint);
       this.#endpoint = redirectedEndpoint;
       this.#stats?.updateEndpoint(redirectedEndpoint);
       this.#compress = isTrustedIngestionEndpoint(redirectedEndpoint);
@@ -434,7 +437,7 @@ export class Sender {
   }
 }
 
-export function getTrustedIngestionEndpoint(
+function getTrustedIngestionEndpoint(
   currentEndpoint: string,
   redirectedEndpoint: string,
 ): string | undefined {

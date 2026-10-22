@@ -5,7 +5,12 @@ import { context, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { FetchInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/fetch";
 import { ResourceTimingInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/resource-timing";
-import type { ReadWriteLogRecord } from "@opentelemetry/sdk-logs";
+import { ConsoleInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/console";
+import {
+  BatchLogRecordProcessor,
+  LoggerProvider,
+  type ReadWriteLogRecord,
+} from "@opentelemetry/sdk-logs";
 import { afterEach, expect, inject, it, vi } from "vitest";
 import type { MicrosoftOpenTelemetryBrowser } from "../../src/types.js";
 import type { AzureMonitorEnvelope } from "../../src/exporter/telemetryModels.js";
@@ -14,7 +19,7 @@ import { createInMemoryPipeline } from "../fixtures/telemetry.js";
 import { SDK_STATS_ENDPOINT, withoutSdkStats } from "../fixtures/sdkStats.js";
 
 const SECOND_KEY = "22222222-2222-2222-2222-222222222222";
-const handles: MicrosoftOpenTelemetryBrowser[] = [];
+const handles: Pick<MicrosoftOpenTelemetryBrowser, "shutdown">[] = [];
 let referrerPolicy: HTMLMetaElement | undefined;
 
 afterEach(async () => {
@@ -88,6 +93,139 @@ it("excludes real ingestion resource timing without filtering custom processor b
   expect(captured).toHaveLength(2);
   expect(captured.filter((envelope) => envelope.data.baseType === "MetricData")).toHaveLength(1);
 });
+
+it.each([0, 100])(
+  "excludes peer ingestion across two custom origins at %s percent sampling",
+  async (samplingPercentage) => {
+    const moduleUrl = new URL("../../dist/esm/index.js", import.meta.url);
+    const distro: typeof import("../../src/index.js") = await import(
+      /* @vite-ignore */ moduleUrl.href
+    );
+    const nativeFetch = globalThis.fetch.bind(globalThis);
+    const transport = vi.fn(nativeFetch);
+    vi.stubGlobal("fetch", withoutSdkStats(transport));
+    const runId = crypto.randomUUID();
+    const firstOrigin = new URL(inject("ingestionEndpoint")).origin;
+    const secondOrigin = firstOrigin.replace("127.0.0.1", "localhost");
+    const start = async (origin: string, key: string) => {
+      const instrumentation = new ResourceTimingInstrumentation({
+        enabled: false,
+        initiatorTypes: ["fetch"],
+        ignoreUrls: [new RegExp(`^(?!.*\\/ingest\\/${runId}).*$`)],
+        forceProcessingAfter: 0,
+      });
+      const bind = vi.spyOn(instrumentation, "setLoggerProvider");
+      const observed: ReadWriteLogRecord[] = [];
+      const handle = await distro.useMicrosoftOpenTelemetry({
+        azureMonitor: {
+          connectionString: `InstrumentationKey=${key};IngestionEndpoint=${origin}/ingest/${runId}`,
+          sdkStats: { enabled: true, collectionIntervalMillis: 50 },
+        },
+        samplingPercentage,
+        spanProcessors: [],
+        logRecordProcessors: [
+          {
+            onEmit: (record) => observed.push(record),
+            forceFlush: async () => {},
+            shutdown: async () => {},
+          },
+        ],
+        pageView: { enabled: false },
+        storage: { enabled: false },
+        session: { enabled: false },
+        instrumentations: [instrumentation],
+      });
+      handles.push(handle);
+      return { handle, observed, logger: bind.mock.calls[0][0].getLogger("app") };
+    };
+    const first = await start(firstOrigin, TEST_INSTRUMENTATION_KEY);
+    const second = await start(secondOrigin, SECOND_KEY);
+    first.logger.emit({ body: "first application log" });
+    second.logger.emit({ body: "second application log" });
+    await Promise.all([first.handle.forceFlush(), second.handle.forceFlush()]);
+    for (const { observed } of [first, second]) {
+      await vi.waitFor(() => {
+        const urls = observed
+          .filter((record) => record.eventName === "browser.resource_timing")
+          .map((record) => record.attributes["url.full"]);
+        expect(urls).toContain(`${firstOrigin}/ingest/${runId}/v2/track`);
+        expect(urls).toContain(`${secondOrigin}/ingest/${runId}/v2/track`);
+      });
+    }
+    for (let index = 0; index < 3; index++) {
+      await Promise.all([first.handle.forceFlush(), second.handle.forceFlush()]);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    await Promise.all([first.handle.shutdown(), second.handle.shutdown()]);
+    expect(transport).toHaveBeenCalledTimes(samplingPercentage === 0 ? 2 : 4);
+    const captured: AzureMonitorEnvelope[] = await nativeFetch(
+      `${firstOrigin}/captured?runId=${runId}`,
+    ).then((response) => response.json());
+    expect(captured).toHaveLength(samplingPercentage === 0 ? 2 : 4);
+    const stats = captured.filter((envelope) => envelope.data.baseType === "MetricData");
+    expect(stats).toHaveLength(2);
+    for (const envelope of stats) {
+      expect(envelope.data.baseData).toMatchObject({
+        metrics: [
+          {
+            name: samplingPercentage === 0 ? "Item_Dropped_Count" : "Item_Success_Count",
+            value: 1,
+          },
+        ],
+        properties: {
+          telemetryType: "TRACE",
+          ...(samplingPercentage === 0 ? { dropCode: "SAMPLING" } : {}),
+        },
+      });
+    }
+  },
+);
+
+it.each(["index.js", "index.min.js"])(
+  "keeps standalone stats warnings out of console telemetry through %s",
+  async (file) => {
+    const modulePath = `../../dist/esm/${file}`;
+    const moduleUrl = new URL(modulePath, import.meta.url);
+    const distro: typeof import("../../src/index.js") = await import(
+      /* @vite-ignore */ moduleUrl.href
+    );
+    context.disable();
+    const transport = vi.fn<typeof fetch>(async (url, init) => {
+      const envelopes: AzureMonitorEnvelope[] = JSON.parse(await new Request(url, init).text());
+      return new Response(null, {
+        status: envelopes.some((envelope) => envelope.data.baseType === "MetricData") ? 503 : 200,
+      });
+    });
+    vi.stubGlobal("fetch", withoutSdkStats(transport));
+    const exporter = new distro.AzureMonitorLogRecordExporter({
+      connectionString: `InstrumentationKey=${TEST_INSTRUMENTATION_KEY};IngestionEndpoint=https://customer.example.test`,
+      sdkStats: { enabled: true },
+    });
+    const provider = new LoggerProvider({
+      processors: [new BatchLogRecordProcessor({ exporter })],
+    });
+    handles.push(provider);
+    const instrumentation = new ConsoleInstrumentation({ enabled: false, logMethods: ["warn"] });
+    instrumentation.setLoggerProvider(provider);
+    instrumentation.enable();
+    vi.spyOn(diag, "warn").mockImplementation((...args) => console.warn(...args));
+    try {
+      const wrappedWarn = console.warn;
+      for (let index = 1; index <= 2; index++) {
+        console.warn("application warning");
+        await provider.forceFlush();
+        await exporter.forceFlush();
+        await provider.forceFlush();
+        await exporter.forceFlush();
+        expect(transport).toHaveBeenCalledTimes(index * 2);
+        expect(diag.warn).toHaveBeenCalledTimes(index);
+        expect(console.warn).toBe(wrappedWarn);
+      }
+    } finally {
+      instrumentation.disable();
+    }
+  },
+);
 
 it.each(
   ["index.js", "index.min.js"].flatMap((file) =>

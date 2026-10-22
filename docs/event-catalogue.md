@@ -262,6 +262,14 @@ Internal exporter network SDK Stats are a separate SDK-owned delivery path, not 
 events or a public Metrics API. They are not included in the event schemas above. See the
 [SDK Stats implementation](../src/exporter/sdkStats.ts).
 
+Opt-in customer SDK Stats (`azureMonitor.sdkStats.enabled`) report item successes, retries and
+drops to the customer's destination. Queue drops include overflow while a promised connection
+string is pending; counts are retained by signal and item type until the destination resolves.
+To prevent feedback, stats-enabled Azure Monitor branches exclude resource-timing records for
+known SDK ingestion URLs across instances, including remembered redirects. Custom processor
+branches still receive those records. Stats failure warnings bypass OpenTelemetry console
+wrappers while being logged, including with standalone exporters and no context manager.
+
 ## Azure Monitor mapping
 
 Source: [log mapping](../src/exporter/logUtils.ts) and [span mapping](../src/exporter/spanUtils.ts).
