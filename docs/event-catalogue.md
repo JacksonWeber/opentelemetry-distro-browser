@@ -257,9 +257,9 @@ sends an `SDKLoadFailed` exception directly to the configured ingestion endpoint
 log from the SDK, since initialization may never occur. Its reported URL omits credentials, query
 and fragment. Source: [loader implementation](../src/snippet.ts).
 
-Internal exporter network health statistics are a separate SDK-owned delivery path, not customer
+Internal exporter network SDK Stats are a separate SDK-owned delivery path, not customer
 events or a public Metrics API. They are not included in the event schemas above. See the
-[statistics implementation](../src/exporter/sdkStats.ts).
+[SDK Stats implementation](../src/exporter/sdkStats.ts).
 
 ## Azure Monitor mapping
 

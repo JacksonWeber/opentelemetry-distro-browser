@@ -4,14 +4,14 @@ Deliver advanced parity with capabilities that already exist in
 `microsoft/ApplicationInsights-JS`, implemented through standard OpenTelemetry APIs and contracts
 where applicable.
 
-Status: in progress. The advanced loader and high-entropy OS version have shipped; SDK health
-statistics, envelope context tags and URL redaction are partly done. Gaps were last compared against ApplicationInsights-JS 3.4.5.
+Status: in progress. The advanced loader and high-entropy OS version have shipped; customer SDK Stats,
+envelope context tags and URL redaction are partly done. Gaps were last compared against ApplicationInsights-JS 3.4.5.
 
 ## Work items
 
 | Item | M3 outcome | ApplicationInsights-JS reference | Status |
 | --- | --- | --- | --- |
-| SDK health statistics | Pipeline counters for sent, dropped, retried and throttled telemetry, reported through a path that cannot collect itself. | `sdkStats`, `stats` | Partial. Request-level success, failure, retry, throttle, exception and duration counters are sent hourly to the internal stats endpoint, with no public option (#121). Item-level `Item_Success_Count`, `Item_Dropped_Count` and `Item_Retry_Count`, including drops from queue limits and sampling, remain. |
+| Customer SDK Stats | Pipeline counters for sent, dropped, retried and throttled telemetry, reported through a path that cannot collect itself. | `sdkStats`, `stats` | Partial. Request-level success, failure, retry, throttle, exception and duration counters are sent hourly to the internal stats endpoint, with no public option (#121). Item-level `Item_Success_Count`, `Item_Dropped_Count` and `Item_Retry_Count`, including drops from queue limits and sampling, remain. |
 | Diagnostics settings | Counterparts of the console and telemetry logging levels and debug mode, built on OpenTelemetry `diag` and isolated from customer telemetry. | `loggingLevelConsole`, `loggingLevelTelemetry`, `enableDebug` | Not started |
 | Dynamic configuration | Runtime configuration updates and remote configuration sync, including instrumentation replacement and a telemetry kill switch, limited to options that can be updated atomically. | `updateCfg`, `disableTelemetry`, `applicationinsights-cfgsync-js` | Not started |
 | Telemetry initializers and plugins | OpenTelemetry-native enrichment and filtering that can be registered after startup, plus extension lookup and replacement. | `addTelemetryInitializer`, `getPlugin` | Not started |

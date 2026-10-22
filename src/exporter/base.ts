@@ -39,7 +39,7 @@ export interface AzureMonitorOptions {
    * This can prevent pending telemetry from being delivered when the page closes.
    */
   readonly disableBeacon?: boolean;
-  /** Opt-in customer item metrics for this destination. Disabled by default. */
+  /** Opt-in customer SDK Stats for this destination. Disabled by default. */
   readonly sdkStats?: AzureMonitorSdkStatsOptions;
 }
 

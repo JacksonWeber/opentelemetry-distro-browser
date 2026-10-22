@@ -11,7 +11,7 @@ import { getInternalSdkStatsConfiguration } from "./sdkStatsConfiguration.js";
 import type { AzureMonitorEnvelope, MetricData } from "./telemetryModels.js";
 
 /**
- * Customer SDK health metrics, configured at startup.
+ * Customer SDK Stats, configured at startup.
  *
  * @remarks
  * Transport counters count envelopes. Queue and sampling drops count source records.
@@ -21,7 +21,7 @@ import type { AzureMonitorEnvelope, MetricData } from "./telemetryModels.js";
  */
 export interface AzureMonitorSdkStatsOptions {
   /**
-   * Enables customer item metrics. Defaults to false and leaves internal stats unchanged.
+   * Enables customer SDK Stats. Defaults to false and leaves internal SDK Stats unchanged.
    */
   readonly enabled?: boolean;
   /**
