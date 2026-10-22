@@ -6,6 +6,10 @@ All notable changes to this package are documented in this file.
 
 ### Added
 
+- Validate releases end to end: `npm run test:e2e` sends telemetry from the npm and CDN builds to
+  real Azure Monitor ingestion in Chromium, Firefox, and WebKit; `npm run test:build` rejects
+  post-ES2022 built-ins in browser bundles; and `npm run cdn:verify`, run after `cdn:publish`, checks
+  every public CDN file's headers, bytes, and integrity hashes.
 - Buffer unsent Azure Monitor telemetry in `sessionStorage` and send it first, once, on the next
   page load in the same tab. Covers requests in flight at navigation, envelopes that do not fit the
   unload beacon, and retriable failures, keeping only outstanding envelopes after partial
@@ -41,8 +45,6 @@ false` blocks SDK-managed storage access, including later identity-control calls
 - Document CDN loader snippet setup and failure handling in the README.
 - Classify named browser log events as Azure Monitor custom events regardless of severity, while
   preserving browser console records as trace messages with their severity.
-- Publish the minimum supported Chrome, Edge, Firefox, and Safari versions and gate the built
-  browser bundle against those releases with real-browser acceptance tests.
 - Publish a `<module>.<version>.size.svg` size badge with each CDN release, generated at build time.
 - Configure the CDN loader snippet with JSON settings: `getSdkLoaderScript()` accepts
   `samplingPercentage`, `azureMonitor.disableBeacon`, `session`, `userContext`, data-only `pageView`

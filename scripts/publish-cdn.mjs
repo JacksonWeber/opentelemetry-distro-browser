@@ -7,41 +7,20 @@ import { readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
-import {
-  cacheControl,
-  cdnDirectory,
-  getCdnArtifacts,
-  getCdnBadges,
-  getCdnPath,
-  getCdnUrl,
-  getContentType,
-  root,
-} from "./cdn.mjs";
+import { cdnDirectory, getCdnUploads, root } from "./cdn.mjs";
+import { verifyCdn } from "./verify-cdn.mjs";
+
+export { getCdnUploads };
 
 const usage = `Usage: npm run cdn:publish -- --account <storage-account> [--container cdn] [--dry-run]
 
 Uploads the files prepared in cdn/ by \`npm run build\` to
 <container>/scripts/otel/<channel>/ with immutable caching. Existing files are never overwritten;
-an identical existing file is skipped and a different one fails the publish.
+an identical existing file is skipped and a different one fails the publish. After uploading, it
+runs \`npm run cdn:verify\` against the public CDN URLs.
 
 Authentication uses Azure CLI Entra ID login (--auth-mode login) unless
 AZURE_STORAGE_SAS_TOKEN is set.`;
-
-/** Lists the uploads for a version: bundles, source maps and badges first, integrity files last. */
-export function getCdnUploads(version) {
-  const files = getCdnArtifacts(version).flatMap(({ file }) => [file, `${file}.map`]);
-  const badges = getCdnBadges(version).map(({ file }) => file);
-  const integrityFiles = [
-    ...new Set(getCdnArtifacts(version).map(({ module }) => `${module}.${version}.integrity.json`)),
-  ];
-  return [...files, ...badges, ...integrityFiles].map((file) => ({
-    file,
-    blob: `${getCdnPath(version)}/${file}`,
-    url: getCdnUrl(version, file),
-    contentType: getContentType(file),
-    cacheControl,
-  }));
-}
 
 const quote = (value) => (/^[\w./:=@-]+$/.test(value) ? value : `"${value.replace(/"/g, '\\"')}"`);
 
@@ -63,6 +42,7 @@ export async function publishCdn({
   directory = cdnDirectory,
   dryRun = false,
   run = az,
+  verify = verifyCdn,
   log = (line) => process.stdout.write(`${line}\n`),
 }) {
   const uploads = getCdnUploads(version);
@@ -133,6 +113,7 @@ export async function publishCdn({
     }
     log(`Uploaded ${upload.url}`);
   }
+  if (!dryRun) await verify({ version, directory, log });
   return uploads;
 }
 

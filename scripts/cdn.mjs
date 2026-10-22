@@ -63,6 +63,20 @@ export function getContentType(file) {
   return "application/json; charset=utf-8";
 }
 
+/** Lists the uploads for a version: bundles, source maps and badges first, integrity files last. */
+export function getCdnUploads(version) {
+  const files = getCdnArtifacts(version).flatMap(({ file }) => [file, `${file}.map`]);
+  const badges = getCdnBadges(version).map(({ file }) => file);
+  const integrityFiles = modules.map((module) => `${module}.${version}.integrity.json`);
+  return [...files, ...badges, ...integrityFiles].map((file) => ({
+    file,
+    blob: `${getCdnPath(version)}/${file}`,
+    url: getCdnUrl(version, file),
+    contentType: getContentType(file),
+    cacheControl,
+  }));
+}
+
 /** Formats the minified and gzip size of a bundle as the badge message. */
 export function getSizeBadgeMessage(bytes) {
   const kib = (value) => `${(value / 1024).toFixed(1)} KiB`;

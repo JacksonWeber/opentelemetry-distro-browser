@@ -68,6 +68,7 @@
     "test": "vitest run",
     "test:unit": "vitest run --config vitest.unit.config.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "test:install-browsers": "playwright install chromium firefox webkit",
     "test:watch": "vitest",
     "test:coverage": "vitest run --config vitest.config.ts --coverage",
@@ -76,13 +77,14 @@
     "api:check": "api-extractor run && api-extractor run --config api-extractor.instrumentations.json && api-extractor run --config api-extractor.snippet.json",
     "api:update": "npm run build && api-extractor run --local && api-extractor run --local --config api-extractor.instrumentations.json && api-extractor run --local --config api-extractor.snippet.json",
     "cdn:publish": "node scripts/publish-cdn.mjs",
+    "cdn:verify": "node scripts/verify-cdn.mjs",
     "size": "node scripts/measure-bundle-size.mjs",
     "size:compare": "node scripts/compare-bundle-size.mjs",
     "size:report": "npm run size",
     "perf": "node scripts/perf/run.mjs",
     "perf:export": "node scripts/perf/export.mjs",
     "test:perf": "node --test test/perf/*.test.mjs",
-    "check": "npm run format && npm run lint && npm run docs && npm run typecheck && npm run test:report && npm run test:perf && npm run test:unit && npm run test:coverage && npm run build && npm run test:build && npm run test:integration && npm run api:check && npm run size",
+    "check": "npm run format && npm run lint && npm run docs && npm run typecheck && npm run test:report && npm run test:perf && npm run test:unit && npm run test:coverage && npm run build && npm run test:build && npm run test:integration && npm run test:e2e && npm run api:check && npm run size",
     "prepack": "npm run build"
   },
   "dependencies": {

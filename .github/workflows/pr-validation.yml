@@ -131,6 +131,9 @@ jobs:
       - name: Run browser bundle integration tests across browser engines
         run: npm run test:integration
 
+      - name: Send telemetry to real Azure Monitor ingestion across browser engines
+        run: npm run test:e2e
+
       - name: Check public API report
         run: npm run api:check
 

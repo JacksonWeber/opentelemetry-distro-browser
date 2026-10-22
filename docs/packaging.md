@@ -40,7 +40,10 @@ AMD loaders.
 consumption with TypeScript Node16, NodeNext, and Bundler resolution, source maps, minification,
 and tree shaking. `npm run test:integration` imports the ESM bundles and loads every minified and
 unminified UMD and IIFE artifact in Chromium, Firefox, and WebKit. It exercises both global and AMD
-loading.
+loading. `npm run test:e2e` sends page views, spans, logs and exceptions from the ESM build and the
+minified CDN bundle to the real Azure Monitor ingestion service in all three engines and requires
+every item to be accepted. It uses the public test resource that the Application Insights
+JavaScript SDK end-to-end tests use and needs network access.
 The `sideEffects: false` contract remains in place; importing the package does not initialize
 telemetry.
 
@@ -86,9 +89,11 @@ new cross-bundle `_` member to `crossBundleProperties` in `rollup.config.mjs`. A
 passes instrumentations from the minified instrumentation bundle to the minified SDK bundle.
 
 The browser bundles contain only ES2022 syntax. `npm run test:build` parses every emitted UMD and
-IIFE file as an ES2022 script and requires a budget for every minified browser bundle. This check
-sets a syntax ceiling; it does not validate specific browser versions, which remain provisional
-until exact supported versions are declared and tested.
+IIFE file as an ES2022 script and requires a budget for every minified browser bundle. It also scans
+each bundle for post-ES2022 built-ins such as `Array.prototype.toSorted` or `Object.groupBy`;
+the only allowed exception is ES2023 `Array.prototype.findLast`, which the upstream web-vitals code
+uses. These checks set a language ceiling; they do not validate specific browser versions, which
+remain provisional until exact supported versions are declared and tested.
 
 ## CDN and loader snippet
 
@@ -112,6 +117,12 @@ the Azure CLI, using Entra ID login unless `AZURE_STORAGE_SAS_TOKEN` is set, wit
 `public, max-age=31536000, immutable, no-transform` caching. It uploads the integrity files last,
 never overwrites a published file, skips files that are already published with identical content,
 and fails if a published file differs. Use `--dry-run` to list the URLs without uploading.
+
+After uploading, `cdn:publish` runs `npm run cdn:verify`, which fetches every public URL and fails
+unless each returns 200 with the expected `Content-Type`, the immutable `Cache-Control` directives,
+`Access-Control-Allow-Origin: *`, bytes identical to `cdn/`, and integrity files whose hashes match
+the served bundles. `npm run cdn:verify -- --remote-only` skips the local comparison to audit an
+earlier release.
 
 The `./snippet` helper generates the copy/paste loader. Without `src`, it loads the `min.js` IIFE
 bundle for the package version, so the snippet and the bundle versions always match. It enables the

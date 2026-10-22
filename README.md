@@ -388,16 +388,18 @@ Internet Explorer and other browsers requiring ES5 are not supported. The ESM an
 entries require a browser bundler; UMD and IIFE artifacts support classic script loading.
 
 CI runs the complete unit and emitted-bundle integration suites in current Playwright Chromium,
-Firefox, and WebKit. Chromium provides engine coverage for Chrome, Edge, and Opera; WebKit provides
-engine coverage for Safari.
+Firefox, and WebKit, and sends telemetry from the npm and CDN builds to the real Azure Monitor
+ingestion service in all three. Chromium provides engine coverage for Chrome, Edge, and Opera;
+WebKit provides engine coverage for Safari. Older browser versions are not tested.
 
 The package publishes ESM and CommonJS entries through its `exports` map. Server-rendered builds can
 import the package, but browser telemetry should be initialized in client-side code.
 
 ## Known beta limitations
 
-- **Modern browsers only.** Internet Explorer and pre-ES2015 browsers are unsupported. The package
-  targets ES2022, so ES2015 support alone is not sufficient. Support follows the
+- **Modern browsers only.** Internet Explorer and ES5 browsers are unsupported. The browser bundles
+  use ES2022 syntax and ES2022 built-ins, plus ES2023 `Array.prototype.findLast` from the upstream
+  web-vitals code, so ES2015 support alone is not sufficient. Support follows the
   [latest-stable policy](#browser-support); exact minimum browser versions are not declared.
 - **Evolving semantic conventions.** Browser events use experimental/development-stability upstream
   conventions and distribution-owned page-view conventions, not a stable browser event schema.

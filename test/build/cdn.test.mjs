@@ -2,9 +2,12 @@
 // Licensed under the MIT License.
 
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import { readFile, readdir } from "node:fs/promises";
-import { resolve } from "node:path";
+import { createServer } from "node:http";
+import { basename, resolve } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import vm from "node:vm";
@@ -21,6 +24,7 @@ import {
   root,
 } from "../../scripts/cdn.mjs";
 import { getCdnUploads, publishCdn } from "../../scripts/publish-cdn.mjs";
+import { verifyCdn } from "../../scripts/verify-cdn.mjs";
 
 const { version } = JSON.parse(await readFile(resolve(root, "package.json"), "utf8"));
 const sha = (algorithm, bytes) => createHash(algorithm).update(bytes).digest("base64");
@@ -244,11 +248,20 @@ test("publishes immutable files without overwriting and uploads integrity files 
   };
   const saved = process.env.AZURE_STORAGE_SAS_TOKEN;
   delete process.env.AZURE_STORAGE_SAS_TOKEN;
+  const verified = [];
   try {
-    await publishCdn({ version, account: "store", container: "cdn", run, log: () => {} });
+    await publishCdn({
+      version,
+      account: "store",
+      container: "cdn",
+      run,
+      verify: async (options) => verified.push(options.version),
+      log: () => {},
+    });
   } finally {
     if (saved !== undefined) process.env.AZURE_STORAGE_SAS_TOKEN = saved;
   }
+  assert.deepEqual(verified, [version]);
 
   const uploadCalls = calls.filter((args) => args[2] === "upload");
   assert.equal(uploadCalls.length, uploads.length - 1);
@@ -285,5 +298,127 @@ test("publishes immutable files without overwriting and uploads integrity files 
       run: () => ({ status: 1, stdout: "", stderr: "AuthorizationPermissionMismatch" }),
     }),
     /Unable to check .*AuthorizationPermissionMismatch/,
+  );
+});
+
+test("the publish and verify CLIs load without an import cycle", () => {
+  const publish = spawnSync(
+    process.execPath,
+    ["scripts/publish-cdn.mjs", "--account", "store", "--dry-run"],
+    { cwd: root, encoding: "utf8", timeout: 30_000 },
+  );
+  assert.equal(publish.status, 0, publish.stderr);
+  assert.match(publish.stdout, new RegExp(`Would upload .*integrity\\.json`));
+  const verify = spawnSync(process.execPath, ["scripts/verify-cdn.mjs", "--help"], {
+    cwd: root,
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+  assert.equal(verify.status, 0, verify.stderr);
+  assert.match(verify.stdout, /npm run cdn:verify/);
+});
+
+test("verifies published CDN headers, bytes and integrity hashes", async (t) => {
+  let override = () => {};
+  const server = createServer(async (request, response) => {
+    const file = basename(new URL(request.url, "http://localhost").pathname);
+    const bytes = await readFile(resolve(cdnDirectory, file)).catch(() => undefined);
+    if (!bytes) return response.writeHead(404).end();
+    const headers = {
+      "Content-Type": getCdnUploads(version).find((upload) => upload.file === file).contentType,
+      // Azure Storage reorders directives; verification compares them as a set.
+      "Cache-Control": "no-transform, public, max-age=31536000, immutable",
+    };
+    if (request.headers.origin) headers["Access-Control-Allow-Origin"] = "*";
+    const served = { headers, body: bytes };
+    override(file, served);
+    response.writeHead(200, served.headers);
+    // A stalled response sends part of the body and never finishes.
+    if (served.stall) response.write(served.body.subarray(0, 16));
+    else response.end(served.body);
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+  const options = {
+    version,
+    origin: `http://127.0.0.1:${server.address().port}`,
+    log: () => {},
+  };
+
+  const verified = await verifyCdn(options);
+  assert.deepEqual(
+    verified.sort(),
+    getCdnUploads(version)
+      .map(({ url }) => url)
+      .sort(),
+  );
+
+  const bundle = `opentelemetry-browser.${version}.min.js`;
+  override = (file, served) => {
+    if (file === bundle) served.body = Buffer.concat([served.body, Buffer.from("\n")]);
+    if (file.endsWith(".map")) delete served.headers["Access-Control-Allow-Origin"];
+    if (file.endsWith(".svg")) served.headers["Cache-Control"] = "public, max-age=300";
+  };
+  await assert.rejects(verifyCdn({ ...options, remoteOnly: true }), (error) => {
+    assert.match(error.message, new RegExp(`${bundle}\\.map: Access-Control-Allow-Origin`));
+    assert.match(error.message, /\.size\.svg: Cache-Control public, max-age=300/);
+    assert.match(error.message, new RegExp(`integrity\\.json: sha256 does not match .*/${bundle}`));
+    assert.doesNotMatch(error.message, /differs from the local build/);
+    return true;
+  });
+  await assert.rejects(
+    verifyCdn(options),
+    new RegExp(`${bundle}: content differs from the local build`),
+  );
+
+  override = (file, served) => {
+    if (file.endsWith(".integrity.json")) served.headers["Content-Type"] = "text/plain";
+  };
+  await assert.rejects(verifyCdn(options), /integrity\.json: Content-Type text\/plain/);
+
+  const manifest = `opentelemetry-browser.${version}.integrity.json`;
+  const editManifest = (edit) => {
+    override = (file, served) => {
+      if (file !== manifest) return;
+      const integrity = JSON.parse(served.body.toString("utf8"));
+      edit(integrity);
+      served.body = Buffer.from(JSON.stringify(integrity));
+    };
+  };
+  const remote = { ...options, remoteOnly: true };
+
+  editManifest((integrity) => (integrity.ext = {}));
+  await assert.rejects(verifyCdn(remote), (error) => {
+    for (const format of ["min.js", "js", "umd.min.js", "umd.js"]) {
+      assert.match(
+        error.message,
+        new RegExp(`${manifest}: missing @${format.replaceAll(".", "\\.")}(\\n|$)`),
+      );
+    }
+    return true;
+  });
+
+  editManifest((integrity) => delete integrity.ext["@umd.js"]);
+  await assert.rejects(verifyCdn(remote), new RegExp(`${manifest}: missing @umd\\.js`));
+
+  editManifest((integrity) => {
+    integrity.ext["@min.js"].integrity = integrity.ext["@js"].integrity;
+  });
+  await assert.rejects(verifyCdn(remote), (error) => {
+    assert.match(error.message, new RegExp(`${manifest}: integrity does not match .*/${bundle}`));
+    assert.doesNotMatch(error.message, /sha\d+ does not match/);
+    return true;
+  });
+
+  override = (file, served) => {
+    if (file === bundle) served.stall = true;
+  };
+  await assert.rejects(
+    verifyCdn({ ...remote, timeoutMs: 500 }),
+    new RegExp(`${bundle}: download failed \\(timed out after 500 ms\\)`),
   );
 });
