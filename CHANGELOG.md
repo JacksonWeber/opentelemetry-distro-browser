@@ -6,6 +6,9 @@ All notable changes to this package are documented in this file.
 
 ### Added
 
+- Add opt-in customer SDK Stats through `azureMonitor.sdkStats.enabled`, reporting item success,
+  drop, and retry counts to the configured Application Insights resource. Include sampling and
+  queue-limit drops in distribution-owned pipelines and support a configurable reporting interval.
 - Support per-instance runtime sampling updates through dynamic configuration
 - Validate releases end to end: `npm run test:e2e` sends telemetry from the npm and CDN builds to
   real Azure Monitor ingestion in Chromium, Firefox, and WebKit; `npm run test:build` rejects
