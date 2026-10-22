@@ -1,8 +1,12 @@
 import {
+  AzureMonitorLogRecordExporter,
+  AzureMonitorSpanExporter,
   OPENTELEMETRY_BROWSER_VERSION,
   useMicrosoftOpenTelemetry,
+  type AzureMonitorOptions,
   type BrowserInstrumentation,
   type MicrosoftOpenTelemetryBrowser,
+  type MicrosoftOpenTelemetryBrowserConfigurationUpdate,
   type MicrosoftOpenTelemetryBrowserOptions,
   type MicrosoftOpenTelemetryBrowserSessionOptions,
 } from "@microsoft/opentelemetry-browser";
@@ -75,6 +79,20 @@ useMicrosoftOpenTelemetry({
   // @ts-expect-error Customer stats cannot override Microsoft's internal destination.
   azureMonitor: { connectionString, sdkStats: { endpoint: "https://example.test" } },
 });
+// An explicitly annotated pre-existing exporter configuration remains accepted.
+const synchronousOptions: AzureMonitorOptions = { connectionString };
+new AzureMonitorSpanExporter(synchronousOptions);
+new AzureMonitorLogRecordExporter(synchronousOptions);
+const asynchronousOptions: AzureMonitorOptions<Promise<string>> = {
+  connectionString: Promise.resolve(connectionString),
+};
+useMicrosoftOpenTelemetry({ azureMonitor: synchronousOptions });
+useMicrosoftOpenTelemetry({ azureMonitor: asynchronousOptions });
+// @ts-expect-error Standalone trace exporters require a resolved connection string.
+new AzureMonitorSpanExporter(asynchronousOptions);
+// @ts-expect-error Standalone log exporters require a resolved connection string.
+new AzureMonitorLogRecordExporter(asynchronousOptions);
+useMicrosoftOpenTelemetry({ azureMonitor: { connectionString, sdkStats: {} } });
 export const initialize: (
   config: MicrosoftOpenTelemetryBrowserOptions,
 ) => Promise<MicrosoftOpenTelemetryBrowser> = useMicrosoftOpenTelemetry;
@@ -100,6 +118,16 @@ useMicrosoftOpenTelemetry({ traces: { processors: [] } });
 useMicrosoftOpenTelemetry({ logs: { processors: [] } });
 // @ts-expect-error Azure Monitor connection strings belong to its exporters, not the initializer.
 useMicrosoftOpenTelemetry({ connectionString: "InstrumentationKey=00000000" });
+
+export async function updateSampling(handle: MicrosoftOpenTelemetryBrowser): Promise<void> {
+  const reset: MicrosoftOpenTelemetryBrowserConfigurationUpdate = {
+    samplingPercentage: undefined,
+  };
+  await handle.updateCfg({});
+  await handle.updateCfg({ samplingPercentage: 25 });
+  await handle.updateCfg({ samplingPercentage: undefined });
+  await handle.updateCfg(reset);
+}
 
 export async function shutdown(handle: MicrosoftOpenTelemetryBrowser): Promise<void> {
   await handle.forceFlush();

@@ -588,6 +588,59 @@ it("counts the default parent-based sampler's drops", async () => {
   expect(totals()).toEqual({ "Item_Dropped_Count:DEPENDENCY:SAMPLING": 1 });
 });
 
+it("keeps sampling counters attached across runtime policy changes", async () => {
+  const handle = await initialize(TEST_INSTRUMENTATION_KEY, 100);
+  const tracer = trace.getTracer("runtime-stats");
+  const logger = logs.getLogger("runtime-stats");
+  const emit = () => {
+    tracer.startSpan("operation", { kind: SpanKind.SERVER }).end();
+    logger.emit({ body: "log" });
+  };
+  emit();
+  await handle.forceFlush();
+  await handle.updateCfg({ samplingPercentage: 0 });
+  emit();
+  await handle.forceFlush();
+  await handle.updateCfg({ samplingPercentage: undefined });
+  emit();
+  await handle.forceFlush();
+  expect(totals()).toEqual({
+    "Item_Success_Count:REQUEST": 2,
+    "Item_Success_Count:TRACE": 2,
+    "Item_Dropped_Count:REQUEST:SAMPLING": 1,
+    "Item_Dropped_Count:TRACE:SAMPLING": 1,
+  });
+});
+
+it("retains sampling counts and emission-time log policy while the destination resolves", async () => {
+  let resolve!: (value: string) => void;
+  const pending = new Promise<string>((done) => (resolve = done));
+  const handle = await useMicrosoftOpenTelemetry({
+    azureMonitor: { connectionString: pending, sdkStats: { enabled: true } },
+    samplingPercentage: 0,
+    pageView: { enabled: false },
+    storage: { enabled: false },
+    session: { enabled: false },
+  });
+  owners.push(handle);
+  trace.getTracer("deferred-stats").startSpan("sampled", { kind: SpanKind.SERVER }).end();
+  logs.getLogger("deferred-stats").emit({ body: "sampled" });
+  await handle.updateCfg({ samplingPercentage: 100 });
+  trace.getTracer("deferred-stats").startSpan("retained").end();
+  logs.getLogger("deferred-stats").emit({ body: "retained" });
+  await handle.forceFlush();
+  expect(fetch).not.toHaveBeenCalled();
+  resolve(connectionString);
+  await Promise.resolve();
+  await handle.forceFlush();
+  expect(totals()).toEqual({
+    "Item_Dropped_Count:REQUEST:SAMPLING": 1,
+    "Item_Dropped_Count:TRACE:SAMPLING": 1,
+    "Item_Success_Count:DEPENDENCY": 1,
+    "Item_Success_Count:TRACE": 1,
+  });
+});
+
 it.each([undefined, 0, 100])(
   "does not count resource timing for its own ingestion at sampling %s",
   async (samplingPercentage) => {

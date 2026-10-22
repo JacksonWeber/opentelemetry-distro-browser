@@ -212,7 +212,6 @@ export function createSdkStatsEnvelope(
 ): AzureMonitorEnvelope<MetricData> {
   return createEnvelope(
     instrumentationKey,
-    "Microsoft.ApplicationInsights.Metric",
     time,
     { "ai.internal.sdkVersion": getSdkVersion() },
     "MetricData",

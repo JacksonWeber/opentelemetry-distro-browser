@@ -86,6 +86,39 @@ export class PageOperationSampler implements Sampler {
   }
 }
 
+/** Internal sampler that follows the instance's committed sampling policy. */
+export class RuntimeSampler implements Sampler {
+  #percentage: number | undefined;
+  #delegate: Sampler | undefined;
+
+  public constructor(
+    private readonly read: () => number | undefined,
+    private readonly onDrop?: (kind: SpanKind) => void,
+  ) {
+    this.#currentDelegate();
+  }
+
+  #currentDelegate(): Sampler {
+    const percentage = this.read();
+    if (!this.#delegate || percentage !== this.#percentage) {
+      this.#delegate =
+        percentage === undefined
+          ? new PageOperationSampler(this.onDrop)
+          : new ApplicationInsightsSampler(percentage, this.onDrop);
+      this.#percentage = percentage;
+    }
+    return this.#delegate;
+  }
+
+  public shouldSample(...parameters: Parameters<Sampler["shouldSample"]>): SamplingResult {
+    return this.#currentDelegate().shouldSample(...parameters);
+  }
+
+  public toString(): string {
+    return `RuntimeSampler{${this.#currentDelegate().toString()}}`;
+  }
+}
+
 export class ApplicationInsightsSampler implements Sampler {
   public readonly samplingPercentage: number;
 

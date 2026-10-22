@@ -6,6 +6,19 @@ All notable changes to this package are documented in this file.
 
 ### Added
 
+- Support per-instance runtime sampling updates through dynamic configuration
+- Validate releases end to end: `npm run test:e2e` sends telemetry from the npm and CDN builds to
+  real Azure Monitor ingestion in Chromium, Firefox, and WebKit; `npm run test:build` rejects
+  post-ES2022 built-ins in browser bundles; and `npm run cdn:verify`, run after `cdn:publish`, checks
+  every public CDN file's headers, bytes, and integrity hashes.
+- Buffer unsent Azure Monitor telemetry in `sessionStorage` and send it first, once, on the next
+  page load in the same tab. Covers requests in flight at navigation, envelopes that do not fit the
+  unload beacon, and retriable failures, keeping only outstanding envelopes after partial
+  responses. Records are released to the next document only on `pagehide`, are isolated per
+  connection string and exporter, and are bounded to 512 KiB of characters per exporter and one
+  hour. Unavailable or full storage only logs a warning, and `storage.enabled: false` disables the
+  buffer.
+- Support a deferred connection string
 - Add per-instance browser storage controls to initialization and the CDN loader: `storage.enabled:
 false` blocks SDK-managed storage access, including later identity-control calls, while keeping
   sessions and authenticated identity in memory. Use `storage.namePrefix` to scope session and user
@@ -14,6 +27,12 @@ false` blocks SDK-managed storage access, including later identity-control calls
 - Measure actual CDN response-body sizes with `npm run perf -- --cdn` and in merged-PR performance
   runs. Preserve existing build and browser measurements, compare encoded responses with identity bytes, and report
   missing artifacts or unsupported encodings without fabricated sizes.
+
+### Changed
+
+- Shrink the minified CDN bundles by minifying them with SWC, which also shortens `_`-prefixed
+  private properties, and by trimming exporter code. `opentelemetry-browser.min.js` drops from
+  164.64 kB to 150.70 kB minified (50.40 kB to 48.22 kB gzip).
 
 ## 0.1.0-beta.1 - 2026-10-15
 
@@ -27,8 +46,6 @@ false` blocks SDK-managed storage access, including later identity-control calls
 - Document CDN loader snippet setup and failure handling in the README.
 - Classify named browser log events as Azure Monitor custom events regardless of severity, while
   preserving browser console records as trace messages with their severity.
-- Publish the minimum supported Chrome, Edge, Firefox, and Safari versions and gate the built
-  browser bundle against those releases with real-browser acceptance tests.
 - Publish a `<module>.<version>.size.svg` size badge with each CDN release, generated at build time.
 - Configure the CDN loader snippet with JSON settings: `getSdkLoaderScript()` accepts
   `samplingPercentage`, `azureMonitor.disableBeacon`, `session`, `userContext`, data-only `pageView`

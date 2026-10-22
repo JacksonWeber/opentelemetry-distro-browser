@@ -3,6 +3,7 @@
 
 import {
   ROOT_CONTEXT,
+  SpanKind,
   context,
   diag,
   propagation,
@@ -13,7 +14,7 @@ import { logs, SeverityNumber } from "@opentelemetry/api-logs";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { detectResources, resourceFromAttributes } from "@opentelemetry/resources";
 import { BrowserBatchLogRecordProcessor } from "../../../src/browserBatchLogRecordProcessor.js";
-import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { BatchSpanProcessor, SamplingDecision } from "@opentelemetry/sdk-trace-base";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   browserDetector,
@@ -31,7 +32,7 @@ import { startTelemetryInstance } from "../../../src/routing/telemetryInstance.j
 import { getSharedRegistry } from "../../../src/shared/globalOwnership.js";
 import { DEFAULT_QUERY_STRINGS_TO_REDACT } from "../../../src/shared/urlRedaction.js";
 import { createInMemoryPipeline } from "../../fixtures/telemetry.js";
-import { ApplicationInsightsSampler, PageOperationSampler } from "../../../src/sampling.js";
+import { AZURE_MONITOR_SAMPLE_RATE, RuntimeSampler } from "../../../src/sampling.js";
 import { AzureMonitorSamplingLogRecordProcessor } from "../../../src/samplingLogRecordProcessor.js";
 
 vi.mock("../../../src/routing/telemetryInstance.js", { spy: true });
@@ -92,7 +93,7 @@ it("prepends session enrichment without changing the caller's processor arrays",
       "telemetry.distro.name": "@microsoft/opentelemetry-browser",
       "telemetry.distro.version": OPENTELEMETRY_BROWSER_VERSION,
     },
-    sampler: expect.any(PageOperationSampler),
+    sampler: expect.any(RuntimeSampler),
     spanProcessors: [
       expect.objectContaining({ onStart: expect.any(Function) }),
       pipeline.spanProcessor,
@@ -128,6 +129,7 @@ it("adds Azure Monitor batch exporters after context enrichment and before calle
     logRecordProcessors: pipeline.options.logRecordProcessors,
     pageView: { enabled: false },
   });
+  handles.add(handle);
 
   expect(startTelemetryInstance).toHaveBeenCalledOnce();
   const sdkOptions = vi.mocked(startTelemetryInstance).mock.calls[0]?.[0];
@@ -143,9 +145,7 @@ it("adds Azure Monitor batch exporters after context enrichment and before calle
     expect.objectContaining({ onEmit: expect.any(Function) }),
   );
   expect(sdkOptions.logRecordProcessors[1]).toBeInstanceOf(BrowserBatchLogRecordProcessor);
-  expect(sdkOptions.logRecordProcessors[1]).not.toBeInstanceOf(
-    AzureMonitorSamplingLogRecordProcessor,
-  );
+  expect(sdkOptions.logRecordProcessors[1]).toBeInstanceOf(AzureMonitorSamplingLogRecordProcessor);
   expect(sdkOptions.logRecordProcessors[2]).toBe(pipeline.logProcessor);
   expect(
     addDocumentListener.mock.calls.filter(([eventName]) => eventName === "visibilitychange"),
@@ -155,24 +155,93 @@ it("adds Azure Monitor batch exporters after context enrichment and before calle
   expect(upstreamHandle.shutdown).toHaveBeenCalledOnce();
 });
 
-it("installs fixed-percentage sampling only when explicitly configured", async () => {
+it("honors an inherited startup sampling getter and captures its value once", async () => {
+  const read = vi.fn(() => 0);
+  class Options {
+    get samplingPercentage() {
+      return read();
+    }
+    pageView = { enabled: false };
+    session = { enabled: false };
+    userContext = { enabled: false };
+  }
   vi.mocked(startTelemetryInstance).mockResolvedValueOnce(fakeInstance());
-
-  const handle = await useMicrosoftOpenTelemetry({
-    samplingPercentage: 25,
-    azureMonitor: {
-      connectionString:
-        "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example.test",
-    },
-    pageView: { enabled: false },
-  });
+  const handle = await useMicrosoftOpenTelemetry(new Options());
   handles.add(handle);
-
-  const sdkOptions = vi.mocked(startTelemetryInstance).mock.calls[0]?.[0];
-  expect(sdkOptions?.sampler).toBeInstanceOf(ApplicationInsightsSampler);
-  expect((sdkOptions?.sampler as ApplicationInsightsSampler).samplingPercentage).toBe(25);
-  expect(sdkOptions?.logRecordProcessors[1]).toBeInstanceOf(AzureMonitorSamplingLogRecordProcessor);
+  const sampler = vi.mocked(startTelemetryInstance).mock.calls[0]?.[0].sampler;
+  if (!sampler) throw new Error("Expected telemetry instance sampler");
+  expect(read).toHaveBeenCalledOnce();
+  const sample = () =>
+    sampler.shouldSample(
+      ROOT_CONTEXT,
+      "00000000000000000000000000000001",
+      "operation",
+      SpanKind.INTERNAL,
+      {},
+      [],
+    );
+  expect(sample().decision).toBe(SamplingDecision.NOT_RECORD);
+  await handle.updateCfg({ samplingPercentage: 100 });
+  expect(sample().decision).toBe(SamplingDecision.RECORD_AND_SAMPLED);
+  expect(read).toHaveBeenCalledOnce();
 });
+
+it.each([undefined, 25])(
+  "keeps a stable runtime sampler with initial percentage %s",
+  async (samplingPercentage) => {
+    vi.mocked(startTelemetryInstance).mockResolvedValueOnce(fakeInstance());
+
+    const handle = await useMicrosoftOpenTelemetry({
+      samplingPercentage,
+      azureMonitor: {
+        connectionString:
+          "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example.test",
+      },
+      pageView: { enabled: false },
+    });
+    handles.add(handle);
+
+    const sdkOptions = vi.mocked(startTelemetryInstance).mock.calls[0]?.[0];
+    const sampler = sdkOptions?.sampler;
+    if (!sampler) throw new Error("Expected telemetry instance sampler");
+    expect(sampler).toBeInstanceOf(RuntimeSampler);
+    expect(sdkOptions?.logRecordProcessors[1]).toBeInstanceOf(
+      AzureMonitorSamplingLogRecordProcessor,
+    );
+    const sampledId = "00000000000000000000000000000001";
+    const droppedId = "ffffffffffffffffffffffffffffffff";
+    const parent = trace.setSpanContext(ROOT_CONTEXT, {
+      traceId: sampledId,
+      spanId: "0000000000000001",
+      traceFlags: 0,
+    });
+    const sample = (traceId: string, parentContext = ROOT_CONTEXT) =>
+      sampler.shouldSample(parentContext, traceId, "operation", SpanKind.INTERNAL, {}, []);
+    expect(sample(sampledId).decision).toBe(SamplingDecision.RECORD_AND_SAMPLED);
+    expect(sample(droppedId).decision).toBe(
+      samplingPercentage === undefined
+        ? SamplingDecision.RECORD_AND_SAMPLED
+        : SamplingDecision.NOT_RECORD,
+    );
+    expect(sample(sampledId).attributes?.[AZURE_MONITOR_SAMPLE_RATE]).toBe(samplingPercentage);
+    expect(sample(sampledId, parent).decision).toBe(
+      samplingPercentage === undefined
+        ? SamplingDecision.NOT_RECORD
+        : SamplingDecision.RECORD_AND_SAMPLED,
+    );
+
+    await handle.updateCfg({ samplingPercentage: 0 });
+    expect(sample(sampledId).decision).toBe(SamplingDecision.NOT_RECORD);
+    await handle.updateCfg({ samplingPercentage: 100 });
+    expect(sample(droppedId, parent).decision).toBe(SamplingDecision.RECORD_AND_SAMPLED);
+    await handle.updateCfg({ samplingPercentage: undefined });
+    expect(sample(droppedId).decision).toBe(SamplingDecision.RECORD_AND_SAMPLED);
+    expect(sample(sampledId, parent).decision).toBe(SamplingDecision.NOT_RECORD);
+    expect(sample(sampledId).attributes?.[AZURE_MONITOR_SAMPLE_RATE]).toBeUndefined();
+    expect(startTelemetryInstance).toHaveBeenCalledOnce();
+    expect(vi.mocked(startTelemetryInstance).mock.calls[0]?.[0]?.sampler).toBe(sampler);
+  },
+);
 
 it("honors explicit per-signal disabling with Azure Monitor configured", async () => {
   vi.mocked(startTelemetryInstance).mockResolvedValueOnce(fakeInstance());
@@ -238,7 +307,7 @@ it.each(["both", "context manager", "propagators", "no propagators"] as const)(
         "telemetry.distro.name": "@microsoft/opentelemetry-browser",
         "telemetry.distro.version": OPENTELEMETRY_BROWSER_VERSION,
       },
-      sampler: expect.any(PageOperationSampler),
+      sampler: expect.any(RuntimeSampler),
       spanProcessors: [
         expect.objectContaining({ onStart: expect.any(Function) }),
         pipeline.spanProcessor,

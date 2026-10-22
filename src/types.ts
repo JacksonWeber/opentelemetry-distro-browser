@@ -17,6 +17,10 @@ import type { WebVitalsInstrumentationConfig } from "@opentelemetry/browser-inst
 import type { XhrInstrumentationConfig } from "@opentelemetry/browser-instrumentation/experimental/xhr";
 import type { AzureMonitorOptions } from "./exporter/base.js";
 import type { PageViewInstrumentationConfig } from "./instrumentation/pageView/types.js";
+import type {
+  MicrosoftOpenTelemetryBrowserConfigurationUpdate,
+  MicrosoftOpenTelemetryBrowserConfigurationUpdateResult,
+} from "./configuration/runtimeConfiguration.js";
 
 /**
  * Selects and configures the instrumentations that `getInstrumentations` constructs.
@@ -154,7 +158,7 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
    */
   samplingPercentage?: number;
   /** Azure Monitor destination. When provided, Azure Monitor export is enabled. */
-  azureMonitor?: AzureMonitorOptions;
+  azureMonitor?: AzureMonitorOptions<string | Promise<string>>;
   /**
    * Resource describing the entity producing telemetry.
    *
@@ -176,8 +180,9 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
      */
     enabled?: boolean;
     /**
-     * Literal prefix for session and user storage keys. Defaults to an empty string, preserving
-     * existing keys. Use a distinct prefix to isolate applications or handles on the same origin.
+     * Literal prefix for session, user and unsent telemetry buffer storage keys. Defaults to an
+     * empty string, preserving existing keys. Use a distinct prefix to isolate applications or
+     * handles on the same origin.
      * Existing unprefixed data is not read, migrated, or removed when a prefix is configured.
      */
     namePrefix?: string;
@@ -299,6 +304,22 @@ export interface MicrosoftOpenTelemetryBrowserUserContext {
  * @public
  */
 export interface MicrosoftOpenTelemetryBrowser {
+  /**
+   * Updates this instance's samplingPercentage without replacing providers or processors.
+   * The percentage must be finite and between 0 and 100. Explicit undefined restores the
+   * parent-based trace sampler and disables percentage sampling for Azure Monitor logs.
+   * Updates affect subsequent sampling decisions, not telemetry already sampled or queued.
+   *
+   * mergeExisting defaults to true, preserving omitted fields. False replaces the supported
+   * runtime configuration, resetting omitted fields to their defaults; startup options are unchanged.
+   * Calls are serialized and return a Promise with the committed revision and changed paths.
+   * No-op updates retain the revision. Invalid or unsupported fields reject without changes.
+   * New and queued updates reject once shutdown begins.
+   */
+  updateCfg(
+    patch: MicrosoftOpenTelemetryBrowserConfigurationUpdate,
+    mergeExisting?: boolean,
+  ): Promise<MicrosoftOpenTelemetryBrowserConfigurationUpdateResult>;
   /** Mutable user identity and persistence controls. */
   readonly userContext: MicrosoftOpenTelemetryBrowserUserContext;
   /**

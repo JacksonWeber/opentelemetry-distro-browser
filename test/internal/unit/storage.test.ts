@@ -12,6 +12,9 @@ import {
   type MicrosoftOpenTelemetryBrowserOptions,
 } from "../../../src/index.js";
 import { getSdkLoaderScript } from "../../../src/snippet.js";
+import { TEST_INSTRUMENTATION_KEY } from "../../fixtures/azureMonitor.js";
+
+const AZURE_MONITOR_CONNECTION_STRING = `InstrumentationKey=${TEST_INSTRUMENTATION_KEY};IngestionEndpoint=https://example.test`;
 
 const handles: MicrosoftOpenTelemetryBrowser[] = [];
 const keys = ["opentelemetry-session", "opentelemetry-user"];
@@ -31,6 +34,7 @@ afterEach(async () => {
   context.disable();
   diag.disable();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   for (const [key, value] of saved) {
     if (value === null) localStorage.removeItem(key);
     else localStorage.setItem(key, value);
@@ -77,41 +81,82 @@ async function initialize(options: MicrosoftOpenTelemetryBrowserOptions = {}) {
   };
 }
 
-it("blocks storage throughout identity controls, expiry, flush and shutdown", async () => {
-  const now = Date.now();
-  const clock = vi.spyOn(Date, "now").mockReturnValue(now);
-  for (const key of keys) preserve(key, "previous-value");
-  const local = vi.spyOn(window, "localStorage", "get");
-  const session = vi.spyOn(window, "sessionStorage", "get");
-  const cookie = vi.spyOn(document, "cookie", "get");
-  const cookieWrite = vi.spyOn(document, "cookie", "set");
-  const { handle, emit } = await initialize({
-    storage: { enabled: false },
-    session: { persist: true, inactivityTimeout: 0.001 },
-    userContext: { enabled: true },
-  });
-  const first = emit()["session.id"];
-  expect(first).toMatch(/^[0-9a-f]{32}$/);
-  handle.userContext.setEnabled(true);
-  handle.userContext.setAuthenticatedUserContext("user", "account");
-  expect(emit()["user.id"]).toBe("user");
-  expect(emit()["enduser.pseudo.id"]).toBeUndefined();
-  handle.userContext.clearAuthenticatedUserContext();
-  expect(emit()["user.id"]).toBeUndefined();
-  handle.userContext.setEnabled(false);
-  clock.mockReturnValue(now + 1000);
-  expect(emit()["session.id"]).not.toBe(first);
-  await handle.forceFlush();
-  await handle.shutdown();
-  handle.userContext.setEnabled(true);
-  handle.userContext.clearAuthenticatedUserContext();
-  expect(local).not.toHaveBeenCalled();
-  expect(session).not.toHaveBeenCalled();
-  expect(cookie).not.toHaveBeenCalled();
-  expect(cookieWrite).not.toHaveBeenCalled();
-  local.mockRestore();
-  for (const key of keys) expect(localStorage.getItem(key)).toBe("previous-value");
-});
+it.each(["string", "promise"] as const)(
+  "blocks storage throughout identity controls, expiry, flush and shutdown (%s)",
+  async (destination) => {
+    const now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    for (const key of keys) preserve(key, "previous-value");
+    const local = vi.spyOn(window, "localStorage", "get");
+    const session = vi.spyOn(window, "sessionStorage", "get");
+    const cookie = vi.spyOn(document, "cookie", "get");
+    const cookieWrite = vi.spyOn(document, "cookie", "set");
+    const fetch = vi.fn(
+      async () => new Response("", { status: 503, headers: { "retry-after": "86400" } }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    const { handle, emit } = await initialize({
+      storage: { enabled: false },
+      azureMonitor: {
+        connectionString:
+          destination === "string"
+            ? AZURE_MONITOR_CONNECTION_STRING
+            : Promise.resolve(AZURE_MONITOR_CONNECTION_STRING),
+      },
+      session: { persist: true, inactivityTimeout: 0.001 },
+      userContext: { enabled: true },
+    });
+    const first = emit()["session.id"];
+    expect(first).toMatch(/^[0-9a-f]{32}$/);
+    handle.userContext.setEnabled(true);
+    handle.userContext.setAuthenticatedUserContext("user", "account");
+    expect(emit()["user.id"]).toBe("user");
+    expect(emit()["enduser.pseudo.id"]).toBeUndefined();
+    handle.userContext.clearAuthenticatedUserContext();
+    expect(emit()["user.id"]).toBeUndefined();
+    handle.userContext.setEnabled(false);
+    clock.mockReturnValue(now + 1000);
+    expect(emit()["session.id"]).not.toBe(first);
+    await handle.forceFlush().catch(() => {});
+    expect(fetch).toHaveBeenCalled();
+    window.dispatchEvent(new PageTransitionEvent("pagehide"));
+    await handle.shutdown();
+    handle.userContext.setEnabled(true);
+    handle.userContext.clearAuthenticatedUserContext();
+    expect(local).not.toHaveBeenCalled();
+    expect(session).not.toHaveBeenCalled();
+    expect(cookie).not.toHaveBeenCalled();
+    expect(cookieWrite).not.toHaveBeenCalled();
+    local.mockRestore();
+    for (const key of keys) expect(localStorage.getItem(key)).toBe("previous-value");
+  },
+);
+
+it.each(["string", "promise"] as const)(
+  "prefixes unsent telemetry buffer keys (%s)",
+  async (destination) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("", { status: 503, headers: { "retry-after": "86400" } })),
+    );
+    const { handle, emit } = await initialize({
+      storage: { namePrefix: "shop-" },
+      azureMonitor: {
+        connectionString:
+          destination === "string"
+            ? AZURE_MONITOR_CONNECTION_STRING
+            : Promise.resolve(AZURE_MONITOR_CONNECTION_STRING),
+      },
+    });
+    emit();
+    await handle.forceFlush().catch(() => {});
+    const bufferKeys = Array.from({ length: sessionStorage.length }, (_, index) =>
+      sessionStorage.key(index),
+    ).filter((key) => key?.includes("opentelemetry-buffer|"));
+    expect(bufferKeys.length).toBeGreaterThan(0);
+    for (const key of bufferKeys) expect(key).toMatch(/^shop-opentelemetry-buffer\|/);
+  },
+);
 
 it("isolates prefixed sessions and users, restores them, and scopes identity removal", async () => {
   for (const prefix of ["", "app-a-", "app-b-"]) {

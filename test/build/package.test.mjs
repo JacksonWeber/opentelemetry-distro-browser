@@ -242,6 +242,91 @@ test("browser bundles contain only ES2022 syntax and have size budgets", async (
   );
 });
 
+// Post-ES2022 built-ins. Names that collide with common APIs (`with`, `transfer`, `union`) are
+// omitted to avoid false positives such as OpenTelemetry's `context.with`.
+const newerPrototypeMethods = new Set([
+  "findLast",
+  "findLastIndex",
+  "toReversed",
+  "toSorted",
+  "toSpliced",
+  "isWellFormed",
+  "toWellFormed",
+  "transferToFixedLength",
+  "symmetricDifference",
+  "isSubsetOf",
+  "isSupersetOf",
+  "isDisjointFrom",
+  "getOrInsert",
+  "getOrInsertComputed",
+  "toBase64",
+  "toHex",
+]);
+const newerStaticMethods = new Set([
+  "Object.groupBy",
+  "Map.groupBy",
+  "Promise.withResolvers",
+  "Promise.try",
+  "Array.fromAsync",
+  "Iterator.from",
+  "RegExp.escape",
+  "Math.sumPrecise",
+  "Math.f16round",
+  "Error.isError",
+  "Uint8Array.fromBase64",
+  "Uint8Array.fromHex",
+  "Atomics.pause",
+]);
+// ES2023 `Array.prototype.findLast` ships in web-vitals (via @opentelemetry/browser-instrumentation)
+// and is available in every supported latest-stable browser.
+const allowedNewerBuiltIns = new Set(["findLast"]);
+
+function findNewerBuiltIns(code) {
+  const found = new Set();
+  const visit = (node) => {
+    if (Array.isArray(node)) return node.forEach(visit);
+    if (!node || typeof node.type !== "string") return;
+    const { property } = node;
+    const name =
+      node.type !== "MemberExpression"
+        ? undefined
+        : !node.computed && property.type === "Identifier"
+          ? property.name
+          : node.computed && property.type === "Literal" && typeof property.value === "string"
+            ? property.value
+            : undefined;
+    if (name !== undefined) {
+      const qualified = node.object.type === "Identifier" ? `${node.object.name}.${name}` : "";
+      if (newerStaticMethods.has(qualified)) found.add(qualified);
+      else if (newerPrototypeMethods.has(name) && !allowedNewerBuiltIns.has(name)) found.add(name);
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (key !== "type" && value && typeof value === "object") visit(value);
+    }
+  };
+  visit(parseScript(code, { ecmaVersion: 2022, sourceType: "script" }));
+  return [...found].sort();
+}
+
+test("browser bundles use only ES2022 built-ins apart from documented exceptions", async () => {
+  assert.deepEqual(
+    findNewerBuiltIns(
+      "a.findLast(f); a.toSorted(); b.findLastIndex(f); Object.groupBy(a, f); context.with(c, f);",
+    ),
+    ["Object.groupBy", "findLastIndex", "toSorted"],
+  );
+  assert.deepEqual(findNewerBuiltIns('Object["groupBy"](a, f);'), ["Object.groupBy"]);
+  assert.deepEqual(findNewerBuiltIns('a["toSorted"]();'), ["toSorted"]);
+  assert.deepEqual(findNewerBuiltIns('a["findLast"](f); a[name](); c["with"](f);'), []);
+  const files = (await readdir(new URL("dist/browser/", root))).filter((file) =>
+    file.endsWith(".js"),
+  );
+  for (const file of files) {
+    const code = await readFile(new URL(`dist/browser/${file}`, root), "utf8");
+    assert.deepEqual(findNewerBuiltIns(code), [], `${file} uses post-ES2022 built-ins`);
+  }
+});
+
 async function exerciseNpmPackage(distro) {
   const spans = new InMemorySpanExporter();
   const records = new InMemoryLogRecordExporter();
@@ -669,6 +754,7 @@ for (const [name, module, moduleResolution] of [
         module,
         moduleResolution,
         strict: true,
+        exactOptionalPropertyTypes: true,
         noEmit: true,
         types: [],
       },
@@ -698,6 +784,7 @@ for (const [name, module, moduleResolution] of [
         module,
         moduleResolution,
         strict: true,
+        exactOptionalPropertyTypes: true,
         noEmit: true,
         types: ["node"],
       },

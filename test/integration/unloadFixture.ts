@@ -18,6 +18,7 @@ const statsIngestionEndpoint = parameters.get("statsIngestionEndpoint");
 const inFlight = parameters.get("inFlight") === "true";
 const artifact = parameters.get("artifact");
 const largeBatch = parameters.get("largeBatch") === "true";
+const throttle = parameters.get("throttle") === "true";
 if (!ingestionEndpoint || !runId) {
   throw new Error("Unload fixture requires ingestionEndpoint and runId parameters.");
 }
@@ -58,7 +59,7 @@ if (statsIngestionEndpoint) {
   trace = bundle.trace;
 }
 
-await useMicrosoftOpenTelemetry({
+const telemetry = await useMicrosoftOpenTelemetry({
   azureMonitor: {
     connectionString:
       `InstrumentationKey=00000000-0000-0000-0000-000000000000;` +
@@ -104,6 +105,11 @@ if (pageView) {
   history.pushState(null, "", "#unsettled");
 }
 const tracer = trace.getTracer("browser-unload-test");
+if (throttle) {
+  // Ingestion throttles this export, leaving it buffered for the next page load.
+  tracer.startSpan("throttled-before-reload", { attributes: { "test.run_id": runId } }).end();
+  await telemetry.forceFlush().catch(() => {});
+}
 const spanCount = largeBatch ? 8 : 1;
 for (let index = 0; index < spanCount; index++) {
   tracer

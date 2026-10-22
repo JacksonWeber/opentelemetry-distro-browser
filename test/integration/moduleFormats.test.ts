@@ -192,6 +192,63 @@ it.each(["opentelemetry-browser.umd.js", "opentelemetry-browser.umd.min.js"])(
   },
 );
 
+it("records dependencies from the minified instrumentation bundle in the minified SDK bundle", async () => {
+  // Each minified bundle shortens `_` properties independently. The SDK must still adapt
+  // instrumentations from the other bundle through the reserved cross-bundle members.
+  const restoreDefine = preserveAmdDefine();
+  delete window.define;
+  delete window.Microsoft;
+  const scripts: HTMLScriptElement[] = [];
+  try {
+    scripts.push(await loadScript("opentelemetry-browser.iife.min.js"));
+    scripts.push(await loadScript("opentelemetry-browser-instrumentations.iife.min.js"));
+    const bundle = getBrowserBundle();
+    const instrumentationBundle = getInstrumentationBundle();
+    if (!bundle || !instrumentationBundle) throw new Error("A minified bundle did not load");
+
+    const pipeline = createInMemoryPipeline();
+    const telemetry = await bundle.useMicrosoftOpenTelemetry({
+      ...pipeline.options,
+      pageView: { enabled: false },
+      instrumentations: await instrumentationBundle.getInstrumentations({
+        xhr: { enabled: false },
+      }),
+    });
+    try {
+      try {
+        await fetch(new URL("/cross-bundle-dependency", location.origin));
+      } catch {
+        // Only the captured dependency matters.
+      }
+      // Firefox ends fetch spans after the response settles, so wait for the exported span.
+      await expect
+        .poll(async () => {
+          await telemetry.forceFlush();
+          return pipeline.spanExporter
+            .getFinishedSpans()
+            .some((span) =>
+              String(span.attributes["url.full"]).endsWith("/cross-bundle-dependency"),
+            );
+        })
+        .toBe(true);
+    } finally {
+      try {
+        await telemetry.shutdown();
+      } finally {
+        bundle.trace.disable();
+        bundle.logs.disable();
+        bundle.propagation.disable();
+        bundle.context.disable();
+        bundle.diag.disable();
+      }
+    }
+  } finally {
+    for (const script of scripts) script.remove();
+    delete window.Microsoft;
+    restoreDefine();
+  }
+});
+
 it.each([
   "opentelemetry-browser-instrumentations.umd.js",
   "opentelemetry-browser-instrumentations.umd.min.js",

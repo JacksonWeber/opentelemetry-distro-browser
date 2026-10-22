@@ -9,8 +9,9 @@ and [loader options](../src/snippet.ts).
 ## Initialization options
 
 Pass these options to `await useMicrosoftOpenTelemetry(options)`. Options are captured at startup;
-there is no general runtime configuration-update API. Importing the package has no initialization
-side effects. Initialize only in client-side code, before importing application code to instrument.
+the [runtime update API](#runtime-sampling-updates) changes sampling only. Native
+initialization options are unchanged. Importing the package has no initialization side effects.
+Initialize only in client-side code, before importing application code to instrument.
 
 | Option                | Type                                          | Default and behavior                                                                                                                                                                                  |
 | --------------------- | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -28,15 +29,67 @@ side effects. Initialize only in client-side code, before importing application 
 
 ### Azure Monitor destination
 
-| Option                          | Type               | Default and behavior                                                                                                                                          |
-| ------------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `azureMonitor.connectionString` | `string`, required | Application Insights connection string with a valid UUID `InstrumentationKey`. Supports explicit ingestion endpoints and cloud suffixes.                      |
-| `azureMonitor.disableBeacon`    | `boolean`          | `false`. Set to `true` to disable the `sendBeacon` fallback when an unload keepalive request cannot be queued. This may reduce delivery when the page closes. |
+| Option                           | Type                                  | Default and behavior                                                                                                                                          |
+| -------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `azureMonitor.connectionString`  | `string \| Promise<string>`, required | Application Insights connection string with a valid UUID `InstrumentationKey`. Supports explicit ingestion endpoints and cloud suffixes.                      |
+| `azureMonitor.initTimeOut`       | `number`                              | `50000` ms. Maximum promise wait. Must be finite, nonnegative, and at most `2147483647`. Zero expires immediately.                                            |
+| `azureMonitor.initInMemoMaxSize` | `number`                              | `100` items. Maximum completed spans and emitted logs buffered together while waiting. Must be a nonnegative safe integer. Zero disables startup buffering.   |
+| `azureMonitor.disableBeacon`     | `boolean`                             | `false`. Set to `true` to disable the `sendBeacon` fallback when an unload keepalive request cannot be queued. This may reduce delivery when the page closes. |
 
 Endpoints require HTTPS except for localhost or loopback IPs. Invalid endpoints warn and fall back
-to suffix-derived or public-cloud endpoints; an invalid/missing instrumentation key fails startup.
+to suffix-derived or public-cloud endpoints; an invalid/missing instrumentation key in a synchronous
+string fails startup.
 Connection strings identify a destination and do not grant read access to the resource. They are
 public browser configuration, not secrets. Built-in Entra ID token authentication is not supported.
+
+Unsent Azure Monitor telemetry is buffered in `sessionStorage` and sent first by the next page load
+in the same tab. The buffer covers telemetry that is in flight when the page goes away, does not
+fit the unload beacon, or fails with a retriable error; after a partial response only the
+outstanding retriable envelopes stay buffered. Records are keyed by connection string and
+exporter, kept until ingestion accepts or permanently rejects them or the browser takes an unload
+request, and adopted only once after the page that wrote them fires `pagehide`, so hidden but
+live pages and same-origin frames never send each other's telemetry. Each exporter keeps at most
+512 KiB of characters and drops items older than one hour; unavailable or full storage only logs
+a diagnostic warning. `storage.enabled: false` disables the buffer and `storage.namePrefix`
+prefixes its keys. Requests interrupted after ingestion received them can be sent again. Custom
+span and log processors are not buffered, and the buffer does not survive closing the tab.
+
+#### Asynchronous connection strings
+
+Pass a `Promise<string>` when the destination is loaded asynchronously:
+
+```typescript
+const telemetry = await useMicrosoftOpenTelemetry({
+  azureMonitor: {
+    connectionString: fetch("/telemetry-config").then((response) => {
+      if (!response.ok) throw new Error("Telemetry configuration unavailable");
+      return response.text();
+    }),
+    initTimeOut: 50000,
+    initInMemoMaxSize: 100,
+  },
+});
+```
+
+Awaiting `useMicrosoftOpenTelemetry()` means collection is ready; it does not wait for the
+connection string. Only the Azure Monitor branches buffer while the destination is pending.
+Custom processors continue receiving telemetry immediately. The queue belongs to the handle and
+counts items, not bytes, across both signals before normal batching. It is not persisted.
+Overflow drops new items and emits one diagnostic. A valid resolution releases retained items
+in arrival order into the normal batch processors; normal batching and sampling still apply.
+
+Timeout, rejection, or an invalid resolved string clears the queue, emits a diagnostic without
+including the connection string or rejection reason, and stops Azure Monitor delivery for that
+handle. Late resolution is ignored. Other handles and custom destinations are unaffected.
+The two initialization limits apply only when the connection string is asynchronous.
+
+While pending, `forceFlush()` and page-hide flushes do not wait for the promise and do not discard
+the startup queue. They cannot send its contents until the destination is known. Call `forceFlush()`
+again after resolution if immediate delivery is needed. Shutdown cancels pending startup and
+discards buffered items; it does not wait for the connection-string promise.
+
+Standalone `AzureMonitorSpanExporter` and `AzureMonitorLogRecordExporter` still require an
+already-resolved string. Startup buffering is owned by the distribution, not the exporters.
 
 When Azure Monitor is configured, its processor is added before non-empty custom processor lists
 for each signal. They are independent processor branches, not a chain: filtering within the Azure
@@ -69,14 +122,46 @@ automatically inherit Azure Monitor's log percentage filtering; supply any requi
 yourself. This includes built-in page-view logs: their operation's sampled flag does not itself
 prevent emission to custom log processors. There is no `traces.sampler` option.
 
+### Runtime sampling updates
+
+The returned handle exposes
+`updateCfg(patch: { samplingPercentage?: number }, mergeExisting = true)` returning
+`Promise<MicrosoftOpenTelemetryBrowserConfigurationUpdateResult>`. The frozen result contains
+readonly `revision` and `changedPaths`. A changed value increments the per-instance revision and
+returns `["samplingPercentage"]`; a no-op retains the revision and returns `[]`.
+
+Only finite percentages from `0` through `100`, inclusive, or explicit `undefined` are accepted.
+Merge mode retains the current value when the field is omitted. Explicit `undefined`, or omission
+with `mergeExisting: false`, restores default parent-based trace sampling and removes Azure Monitor
+log percentage filtering; it does **not** restore the startup percentage or mean numeric `100`.
+
+Updates affect subsequent span starts, default Azure Monitor log emissions and new page operations.
+Existing span/page decisions and queued logs are not resampled. A later correlated log can use a
+newer policy than its span; custom log processors still need their own filtering. Providers and
+already acquired tracers/loggers remain bound to the same instance. Updates serialize per instance,
+and input is validated and captured before queueing. Invalid values, accessors, non-plain objects
+and every other update path reject without changing configuration or revision. Queued and new
+updates reject once shutdown starts.
+
+```typescript
+const result = await telemetry.updateCfg({ samplingPercentage: 25 });
+await telemetry.updateCfg({}); // Retain the current percentage.
+await telemetry.updateCfg({ samplingPercentage: undefined }); // Restore default sampling.
+await telemetry.updateCfg({}, false); // Also restore default sampling.
+```
+
+Session, beacon and network policy updates, runtime instrumentation registry operations and
+configuration synchronization are deferred. No root `connectionString` alias or other initializer
+aliases are added.
+
 ## Session and identity
 
 ### Browser storage
 
-| Option               | Type      | Default | Behavior                                                                                                                                                                    |
-| -------------------- | --------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `storage.enabled`    | `boolean` | `true`  | `false` blocks all SDK-managed browser storage access for this handle, including later identity-control calls. Sessions use memory; managed anonymous identity is disabled. |
-| `storage.namePrefix` | `string`  | `""`    | Literal prefix for both `opentelemetry-session` and `opentelemetry-user`. For example, `"shop-"` produces `shop-opentelemetry-session` and `shop-opentelemetry-user`.       |
+| Option               | Type      | Default | Behavior                                                                                                                                                                                                    |
+| -------------------- | --------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `storage.enabled`    | `boolean` | `true`  | `false` blocks all SDK-managed browser storage access for this handle, including later identity-control calls and the unsent telemetry buffer. Sessions use memory; managed anonymous identity is disabled. |
+| `storage.namePrefix` | `string`  | `""`    | Literal prefix for `opentelemetry-session`, `opentelemetry-user` and unsent telemetry buffer keys. For example, `"shop-"` produces `shop-opentelemetry-session` and `shop-opentelemetry-user`.              |
 
 Settings are captured at initialization and apply independently to each handle. A prefix isolates
 stored sessions and identities for applications on the same origin; it is not a security boundary.
@@ -89,10 +174,11 @@ change another handle's policy. Setting it to `false` takes precedence over `ses
 still be set and cleared in memory. Disabling storage does not erase existing data, disable telemetry
 collection or stop network requests. Custom processors/exporters must enforce their own storage policy.
 
-This first increment uses localStorage only: no cookies are created and no unsent telemetry is
-persisted. Application Insights `cookieCfg` and cookie domain/path settings are separate cookie
-controls, not localStorage settings. Its `enableSessionStorageBuffer` persists **unsent telemetry**,
-not session identity; that delivery/replay capability is not implemented here.
+Sessions and identities use localStorage; unsent Azure Monitor telemetry uses sessionStorage. No
+cookies are created. Application Insights `cookieCfg` and cookie domain/path settings are separate
+cookie controls, not Web Storage settings. Its `enableSessionStorageBuffer` corresponds to the
+unsent telemetry buffer described under Azure Monitor, which is always on here unless
+`storage.enabled` is false.
 
 Implementation references: Application Insights JavaScript's
 [cookie manager](https://github.com/microsoft/ApplicationInsights-JS/blob/main/shared/AppInsightsCore/src/core/CookieMgr.ts),
@@ -241,7 +327,8 @@ or acquire tracers/loggers after initialization. Iframes and workers have indepe
 
 Both methods return `Promise<void>` and can reject; multiple failures are reported with
 `AggregateError`. Other instances keep running after one handle shuts down. Automatic flushing on
-page hide/hidden visibility is best effort, not offline persistence or guaranteed delivery.
+page hide/hidden visibility is best effort, not guaranteed delivery; Azure Monitor telemetry left
+unsent is retried by the next page load in the same tab through the `sessionStorage` buffer.
 
 ## CDN loader configuration
 

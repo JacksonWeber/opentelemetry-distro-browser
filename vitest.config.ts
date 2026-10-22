@@ -42,7 +42,7 @@ export default defineConfig({
     ],
   },
   test: {
-    setupFiles: ["./test/fixtures/sdkStatsSetup.ts"],
+    setupFiles: ["./test/fixtures/sdkStatsSetup.ts", "./test/fixtures/sessionStorageSetup.ts"],
     include: ["test/internal/unit/**/*.test.ts"],
     reporters: ["default"],
     browser: {

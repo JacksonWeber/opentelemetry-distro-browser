@@ -797,7 +797,7 @@ it("keeps an active session beyond 24 hours with maxDuration explicitly set to z
   }
 });
 
-it.each(["getter", "read", "write", "missing"])(
+it.each(["getter", "read", "write", "missing", "unexpected"])(
   "warns once and retains an in-memory session when storage is unavailable (%s)",
   async (failure) => {
     const warn = vi.spyOn(diag, "warn").mockImplementation(() => {});
@@ -805,6 +805,10 @@ it.each(["getter", "read", "write", "missing"])(
     else if (failure === "getter") {
       vi.spyOn(window, "localStorage", "get").mockImplementation(() => {
         throw new DOMException("denied", "SecurityError");
+      });
+    } else if (failure === "unexpected") {
+      vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+        throw new Error("unexpected storage failure");
       });
     } else {
       vi.spyOn(Storage.prototype, failure === "read" ? "getItem" : "setItem").mockImplementation(
@@ -825,18 +829,6 @@ it.each(["getter", "read", "write", "missing"])(
     expect(warn).toHaveBeenCalledExactlyOnceWith(
       "Session storage unavailable; using an in-memory session.",
     );
-  },
-);
-
-it.each(["getItem", "setItem"] as const)(
-  "does not mask unexpected storage errors or start providers on %s failure",
-  async (operation) => {
-    const failure = new Error("unexpected storage failure");
-    vi.spyOn(Storage.prototype, operation).mockImplementation(() => {
-      throw failure;
-    });
-    await expect(useMicrosoftOpenTelemetry({ session: { enabled: true } })).rejects.toBe(failure);
-    expect(startTelemetryInstance).not.toHaveBeenCalled();
   },
 );
 

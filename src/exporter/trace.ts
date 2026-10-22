@@ -21,6 +21,7 @@ import { customerSdkStats, spanItemType } from "./customerSdkStats.js";
 export class AzureMonitorSpanExporter implements SpanExporter {
   readonly #client: AzureMonitorExportClient;
 
+  /** Standalone export requires a resolved string; the distribution owns startup buffering. */
   public constructor(options: AzureMonitorOptions) {
     this.#client = new AzureMonitorExportClient(options);
     if (this.#client.itemStats) customerSdkStats.set(this, this.#client.itemStats);

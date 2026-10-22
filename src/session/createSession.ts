@@ -7,10 +7,7 @@ import {
   createSessionManager,
 } from "@opentelemetry/browser-sdk/session";
 import type { Session, SessionStore } from "@opentelemetry/browser-sdk/session";
-import {
-  createLocalStorageKeyValueStorage,
-  type KeyValueStorage,
-} from "../storage/keyValueStorage.js";
+import { createKeyValueStorage, type KeyValueStorage } from "../storage/keyValueStorage.js";
 import type { MicrosoftOpenTelemetryBrowserSessionOptions } from "../types.js";
 
 const storageKey = "opentelemetry-session";
@@ -25,7 +22,8 @@ function lifetimeSeconds(value: number | undefined, fallback: number, name: stri
 
 export function createSession(
   options: MicrosoftOpenTelemetryBrowserSessionOptions,
-  storage: KeyValueStorage = createLocalStorageKeyValueStorage(
+  storage: KeyValueStorage = createKeyValueStorage(
+    "localStorage",
     "Session storage unavailable; using an in-memory session.",
   ),
 ) {

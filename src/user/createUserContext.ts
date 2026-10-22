@@ -3,10 +3,7 @@
 
 import { diag } from "@opentelemetry/api";
 import { createDefaultSessionIdGenerator } from "@opentelemetry/browser-sdk/session";
-import {
-  createLocalStorageKeyValueStorage,
-  type KeyValueStorage,
-} from "../storage/keyValueStorage.js";
+import { createKeyValueStorage, type KeyValueStorage } from "../storage/keyValueStorage.js";
 import { isNonEmptyString } from "../shared/isNonEmptyString.js";
 import type { MicrosoftOpenTelemetryBrowserUserContext } from "../types.js";
 import { USER_STORAGE_KEY } from "./constants.js";
@@ -81,7 +78,8 @@ export interface UserContextProvider {
 
 export function createUserContext(
   initialEnabled: boolean | undefined,
-  storage: KeyValueStorage = createLocalStorageKeyValueStorage(
+  storage: KeyValueStorage = createKeyValueStorage(
+    "localStorage",
     "User storage unavailable; anonymous ID disabled.",
   ),
   storageEnabled = true,
@@ -137,7 +135,14 @@ export function createUserContext(
     }
   }
 
-  function requireIdentityPersisted(persisted: boolean): void {
+  // Anonymous identity stays enabled only while it is persisted.
+  function persistIdentity(): void {
+    let persisted = false;
+    try {
+      persisted = persist();
+    } finally {
+      anonymousIdentityEnabled = persisted;
+    }
     if (!persisted) {
       throw new Error("Unable to persist user identity.");
     }
@@ -215,13 +220,7 @@ export function createUserContext(
       if (!authenticatedPersistenceEnabled && (!persistenceEnabled || anonymousIdentityEnabled)) {
         return;
       }
-      try {
-        requireIdentityPersisted(persist());
-        anonymousIdentityEnabled = true;
-      } catch (error) {
-        anonymousIdentityEnabled = false;
-        throw error;
-      }
+      persistIdentity();
     },
     clearAuthenticatedUserContext() {
       authenticatedUserId = undefined;
@@ -242,13 +241,7 @@ export function createUserContext(
       if (newEnabled) {
         persistenceEnabled = true;
         authenticatedPersistenceEnabled = true;
-        try {
-          requireIdentityPersisted(persist());
-          anonymousIdentityEnabled = true;
-        } catch (error) {
-          anonymousIdentityEnabled = false;
-          throw error;
-        }
+        persistIdentity();
       } else {
         const mustClearPersistedIdentity = persistedIdentityMayExist;
         const removed = removePersistedIdentity();

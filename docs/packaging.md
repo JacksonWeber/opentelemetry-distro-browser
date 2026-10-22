@@ -40,12 +40,15 @@ AMD loaders.
 consumption with TypeScript Node16, NodeNext, and Bundler resolution, source maps, minification,
 and tree shaking. `npm run test:integration` imports the ESM bundles and loads every minified and
 unminified UMD and IIFE artifact in Chromium, Firefox, and WebKit. It exercises both global and AMD
-loading.
+loading. `npm run test:e2e` sends page views, spans, logs and exceptions from the ESM build and the
+minified CDN bundle to the real Azure Monitor ingestion service in all three engines and requires
+every item to be accepted. It uses the public test resource that the Application Insights
+JavaScript SDK end-to-end tests use and needs network access.
 The `sideEffects: false` contract remains in place; importing the package does not initialize
 telemetry.
 
-Minified ESM, UMD, and IIFE artifacts use three Terser compression passes without property mangling
-or unsafe compression options.
+The minified ESM artifact uses three Terser compression passes without property mangling or unsafe
+compression options. The self-contained UMD and IIFE bundles use SWC as described below.
 
 `npm run size` bundles real consumers of every published JavaScript entry point with Rollup,
 tree-shakes and minifies each scenario, and reports gzip and Brotli transfer sizes. It measures the
@@ -61,11 +64,11 @@ in each Node job's check summary and uploads all three files as build artifacts.
 
 Every executable published entry point has absolute minified, gzip and Brotli budgets:
 
-| Entry point          |  Minified |     Gzip |   Brotli |
-| -------------------- | --------: | -------: | -------: |
-| `.`                  | 124.50 kB | 39.00 kB | 34.50 kB |
-| `./instrumentations` |     64 kB |    24 kB |    22 kB |
-| `./snippet`          |   6.25 kB |  2.75 kB |   2.5 kB |
+| Entry point          | Minified |     Gzip |   Brotli |
+| -------------------- | -------: | -------: | -------: |
+| `.`                  |   137 kB | 43.25 kB | 38.25 kB |
+| `./instrumentations` |    64 kB |    24 kB |    22 kB |
+| `./snippet`          |   6.5 kB |  2.85 kB |   2.5 kB |
 
 The generated JSON and Markdown reports show the measured values, ceilings and result for each
 entry point. During alpha releases, violations are report-only so the baselines can stabilize.
@@ -77,15 +80,23 @@ comparison remains informational and does not replace the absolute gate.
 emits them, so it must run after a production build. Their budgets block in every release channel,
 including alpha:
 
-| Artifact                                                   |  Minified |     Gzip |   Brotli |
-| ---------------------------------------------------------- | --------: | -------: | -------: |
-| `opentelemetry-browser.{iife,umd}.min.js`                  | 165.50 kB | 50.75 kB | 44.25 kB |
-| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |     63 kB |    19 kB |    17 kB |
+| Artifact                                                   | Minified |  Gzip |   Brotli |
+| ---------------------------------------------------------- | -------: | ----: | -------: |
+| `opentelemetry-browser.{iife,umd}.min.js`                  | 171.5 kB | 53 kB | 46.25 kB |
+| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |    63 kB | 19 kB |    17 kB |
+
+SWC minifies the browser bundles and shortens `_`-prefixed properties, the TypeScript `private`
+convention used by OpenTelemetry, so source code keeps descriptive names. Members that
+`sharedBrowserPatches.ts` reads on instrumentations from another bundle keep their names; add any
+new cross-bundle `_` member to `crossBundleProperties` in `rollup.config.mjs`. An integration test
+passes instrumentations from the minified instrumentation bundle to the minified SDK bundle.
 
 The browser bundles contain only ES2022 syntax. `npm run test:build` parses every emitted UMD and
-IIFE file as an ES2022 script and requires a budget for every minified browser bundle. This check
-sets a syntax ceiling; it does not validate specific browser versions, which remain provisional
-until exact supported versions are declared and tested.
+IIFE file as an ES2022 script and requires a budget for every minified browser bundle. It also scans
+each bundle for post-ES2022 built-ins such as `Array.prototype.toSorted` or `Object.groupBy`;
+the only allowed exception is ES2023 `Array.prototype.findLast`, which the upstream web-vitals code
+uses. These checks set a language ceiling; they do not validate specific browser versions, which
+remain provisional until exact supported versions are declared and tested.
 
 ## CDN and loader snippet
 
@@ -109,6 +120,12 @@ the Azure CLI, using Entra ID login unless `AZURE_STORAGE_SAS_TOKEN` is set, wit
 `public, max-age=31536000, immutable, no-transform` caching. It uploads the integrity files last,
 never overwrites a published file, skips files that are already published with identical content,
 and fails if a published file differs. Use `--dry-run` to list the URLs without uploading.
+
+After uploading, `cdn:publish` runs `npm run cdn:verify`, which fetches every public URL and fails
+unless each returns 200 with the expected `Content-Type`, the immutable `Cache-Control` directives,
+`Access-Control-Allow-Origin: *`, bytes identical to `cdn/`, and integrity files whose hashes match
+the served bundles. `npm run cdn:verify -- --remote-only` skips the local comparison to audit an
+earlier release.
 
 The `./snippet` helper generates the copy/paste loader. Without `src`, it loads the `min.js` IIFE
 bundle for the package version, so the snippet and the bundle versions always match. It enables the
