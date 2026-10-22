@@ -16,6 +16,10 @@ export {
   userAgentDetector,
 } from "./resource/index.js";
 export type { AzureMonitorOptions } from "./exporter/base.js";
+export type {
+  MicrosoftOpenTelemetryBrowserConfigurationUpdate,
+  MicrosoftOpenTelemetryBrowserConfigurationUpdateResult,
+} from "./configuration/runtimeConfiguration.js";
 export { AzureMonitorLogRecordExporter } from "./exporter/log.js";
 export { AzureMonitorSpanExporter } from "./exporter/trace.js";
 export type {

@@ -22,6 +22,7 @@ import {
   claimInstrumentations,
   isNetworkInstrumentation,
 } from "./instrumentation/sharedBrowserPatches.js";
+import { createRuntimeConfiguration } from "./configuration/runtimeConfiguration.js";
 import {
   ATTR_TELEMETRY_DISTRO_NAME,
   ATTR_TELEMETRY_DISTRO_VERSION,
@@ -35,7 +36,7 @@ import {
   isPageContextRegistered,
 } from "./routing/pageContext.js";
 import { startTelemetryInstance, type TelemetryInstance } from "./routing/telemetryInstance.js";
-import { ApplicationInsightsSampler, isTraceSampled, PageOperationSampler } from "./sampling.js";
+import { isTraceSampled, RuntimeSampler } from "./sampling.js";
 import { DEFAULT_QUERY_STRINGS_TO_REDACT } from "./shared/urlRedaction.js";
 import type {
   MicrosoftOpenTelemetryBrowser,
@@ -60,7 +61,7 @@ import type {
 function createOwnedInstrumentations(
   options: MicrosoftOpenTelemetryBrowserOptions,
   sharedOperation: () => SpanContext | undefined,
-  samplingPercentage: number,
+  samplingPercentage: () => number,
 ): PageViewInstrumentation[] {
   if (typeof document === "undefined" || typeof location === "undefined") return [];
 
@@ -71,7 +72,7 @@ function createOwnedInstrumentations(
       new PageViewInstrumentation(
         { ...pageView, enabled: false, sharedOperation },
         options.traces?.contextManager?.active() ?? context.active(),
-        (traceId) => isTraceSampled(traceId, samplingPercentage),
+        (traceId) => isTraceSampled(traceId, samplingPercentage()),
       ),
     );
   }
@@ -98,6 +99,11 @@ function createOwnedInstrumentations(
 export async function useMicrosoftOpenTelemetry(
   options: MicrosoftOpenTelemetryBrowserOptions = {},
 ): Promise<MicrosoftOpenTelemetryBrowser> {
+  let stopping = false;
+  const configuration = createRuntimeConfiguration(
+    { samplingPercentage: options.samplingPercentage },
+    () => stopping,
+  );
   const redactedQueryParams: readonly string[] = [
     ...DEFAULT_QUERY_STRINGS_TO_REDACT,
     ...(options.redactQueryParams ?? []),
@@ -130,11 +136,8 @@ export async function useMicrosoftOpenTelemetry(
         )
       : undefined;
   getSharedRegistry();
-  const samplingPercentage = options.samplingPercentage ?? 100;
-  const sampler =
-    options.samplingPercentage === undefined
-      ? new PageOperationSampler()
-      : new ApplicationInsightsSampler(options.samplingPercentage);
+  const readSamplingPercentage = () => configuration.snapshot().samplingPercentage;
+  const sampler = new RuntimeSampler(readSamplingPercentage);
   const userContext = createUserContext(
     options.userContext?.enabled,
     createKeyValueStorage(
@@ -175,7 +178,7 @@ export async function useMicrosoftOpenTelemetry(
   const owned = createOwnedInstrumentations(
     { ...options, pageView },
     () => getPageOperation(correlationState.current),
-    samplingPercentage,
+    () => readSamplingPercentage() ?? 100,
   );
   const pageViewInstrumentation = owned[0];
   const correlation = pageViewInstrumentation
@@ -191,7 +194,6 @@ export async function useMicrosoftOpenTelemetry(
   let instance: TelemetryInstance | undefined;
   let processorsTransferred = false;
   let initialized = false;
-  let stopping = false;
   // Upstream stale tracers can still call processors after provider shutdown.
   const sessionProvider = {
     getSessionId: () => (stopping ? null : (session?.getSessionId() ?? null)),
@@ -324,7 +326,12 @@ export async function useMicrosoftOpenTelemetry(
     return shutdownPromise;
   }
 
-  const handle = { forceFlush, shutdown, userContext: userContext.context };
+  const handle: MicrosoftOpenTelemetryBrowser = {
+    forceFlush,
+    shutdown,
+    userContext: userContext.context,
+    updateCfg: (patch, mergeExisting) => configuration.updateCfg(patch, mergeExisting),
+  };
 
   try {
     if (azureMonitor) {
@@ -332,7 +339,7 @@ export async function useMicrosoftOpenTelemetry(
         azureMonitor,
         spanProcessors?.length !== 0,
         logRecordProcessors?.length !== 0,
-        options.samplingPercentage,
+        readSamplingPercentage,
         azureMonitorExporters,
       );
       stopAzureMonitorStartup = stop;

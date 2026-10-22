@@ -9,8 +9,9 @@ and [loader options](../src/snippet.ts).
 ## Initialization options
 
 Pass these options to `await useMicrosoftOpenTelemetry(options)`. Options are captured at startup;
-there is no general runtime configuration-update API. Importing the package has no initialization
-side effects. Initialize only in client-side code, before importing application code to instrument.
+the [runtime update API](#runtime-sampling-updates) changes sampling only. Native
+initialization options are unchanged. Importing the package has no initialization side effects.
+Initialize only in client-side code, before importing application code to instrument.
 
 | Option                | Type                                          | Default and behavior                                                                                                                                                                                  |
 | --------------------- | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -120,6 +121,38 @@ Custom trace processors receive the distribution's sampled spans. Custom log pro
 automatically inherit Azure Monitor's log percentage filtering; supply any required log filtering
 yourself. This includes built-in page-view logs: their operation's sampled flag does not itself
 prevent emission to custom log processors. There is no `traces.sampler` option.
+
+### Runtime sampling updates
+
+The returned handle exposes
+`updateCfg(patch: { samplingPercentage?: number }, mergeExisting = true)` returning
+`Promise<MicrosoftOpenTelemetryBrowserConfigurationUpdateResult>`. The frozen result contains
+readonly `revision` and `changedPaths`. A changed value increments the per-instance revision and
+returns `["samplingPercentage"]`; a no-op retains the revision and returns `[]`.
+
+Only finite percentages from `0` through `100`, inclusive, or explicit `undefined` are accepted.
+Merge mode retains the current value when the field is omitted. Explicit `undefined`, or omission
+with `mergeExisting: false`, restores default parent-based trace sampling and removes Azure Monitor
+log percentage filtering; it does **not** restore the startup percentage or mean numeric `100`.
+
+Updates affect subsequent span starts, default Azure Monitor log emissions and new page operations.
+Existing span/page decisions and queued logs are not resampled. A later correlated log can use a
+newer policy than its span; custom log processors still need their own filtering. Providers and
+already acquired tracers/loggers remain bound to the same instance. Updates serialize per instance,
+and input is validated and captured before queueing. Invalid values, accessors, non-plain objects
+and every other update path reject without changing configuration or revision. Queued and new
+updates reject once shutdown starts.
+
+```typescript
+const result = await telemetry.updateCfg({ samplingPercentage: 25 });
+await telemetry.updateCfg({}); // Retain the current percentage.
+await telemetry.updateCfg({ samplingPercentage: undefined }); // Restore default sampling.
+await telemetry.updateCfg({}, false); // Also restore default sampling.
+```
+
+Session, beacon and network policy updates, runtime instrumentation registry operations and
+configuration synchronization are deferred. No root `connectionString` alias or other initializer
+aliases are added.
 
 ## Session and identity
 

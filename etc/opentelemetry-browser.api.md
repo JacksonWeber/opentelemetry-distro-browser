@@ -73,7 +73,21 @@ export interface BrowserInstrumentation {
 export interface MicrosoftOpenTelemetryBrowser {
     forceFlush(): Promise<void>;
     shutdown(): Promise<void>;
+    updateCfg(patch: MicrosoftOpenTelemetryBrowserConfigurationUpdate, mergeExisting?: boolean): Promise<MicrosoftOpenTelemetryBrowserConfigurationUpdateResult>;
     readonly userContext: MicrosoftOpenTelemetryBrowserUserContext;
+}
+
+// @public
+export interface MicrosoftOpenTelemetryBrowserConfigurationUpdate {
+    samplingPercentage?: number | undefined;
+}
+
+// @public
+export interface MicrosoftOpenTelemetryBrowserConfigurationUpdateResult {
+    // (undocumented)
+    readonly changedPaths: readonly string[];
+    // (undocumented)
+    readonly revision: number;
 }
 
 // @public

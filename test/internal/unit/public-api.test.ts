@@ -15,6 +15,8 @@ import {
   type AzureMonitorOptions,
   type BrowserInstrumentation,
   type MicrosoftOpenTelemetryBrowser,
+  type MicrosoftOpenTelemetryBrowserConfigurationUpdate,
+  type MicrosoftOpenTelemetryBrowserConfigurationUpdateResult,
   type MicrosoftOpenTelemetryBrowserOptions,
   type MicrosoftOpenTelemetryBrowserSessionOptions,
   type MicrosoftOpenTelemetryBrowserTraceOptions,
@@ -106,4 +108,26 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
   expectTypeOf<
     MicrosoftOpenTelemetryBrowser["userContext"]
   >().toEqualTypeOf<MicrosoftOpenTelemetryBrowserUserContext>();
+});
+
+it("exposes only sampling updates on the runtime configuration API", () => {
+  expectTypeOf<keyof MicrosoftOpenTelemetryBrowser>().toEqualTypeOf<
+    "updateCfg" | "userContext" | "forceFlush" | "shutdown"
+  >();
+  expectTypeOf<
+    keyof MicrosoftOpenTelemetryBrowserConfigurationUpdate
+  >().toEqualTypeOf<"samplingPercentage">();
+  expectTypeOf<MicrosoftOpenTelemetryBrowserConfigurationUpdate>().toEqualTypeOf<{
+    samplingPercentage?: number | undefined;
+  }>();
+  expectTypeOf<MicrosoftOpenTelemetryBrowser["updateCfg"]>().toEqualTypeOf<
+    (
+      patch: MicrosoftOpenTelemetryBrowserConfigurationUpdate,
+      mergeExisting?: boolean,
+    ) => Promise<MicrosoftOpenTelemetryBrowserConfigurationUpdateResult>
+  >();
+  expectTypeOf<MicrosoftOpenTelemetryBrowserConfigurationUpdateResult>().toEqualTypeOf<{
+    readonly revision: number;
+    readonly changedPaths: readonly string[];
+  }>();
 });

@@ -4,7 +4,6 @@
 import { diag } from "@opentelemetry/api";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { BatchSpanProcessor, type SpanProcessor } from "@opentelemetry/sdk-trace-base";
-import { BrowserBatchLogRecordProcessor } from "../browserBatchLogRecordProcessor.js";
 import { AzureMonitorSamplingLogRecordProcessor } from "../samplingLogRecordProcessor.js";
 import { StartupQueue } from "../shared/startupQueue.js";
 import type { AzureMonitorOptions } from "./base.js";
@@ -17,7 +16,7 @@ export function createAzureMonitorProcessors(
   options: AzureMonitorOptions<string | Promise<string>>,
   tracesEnabled: boolean,
   logsEnabled: boolean,
-  samplingPercentage: number | undefined,
+  readSamplingPercentage: () => number | undefined,
   exporters: (AzureMonitorSpanExporter | AzureMonitorLogRecordExporter)[],
 ): {
   span?: SpanProcessor;
@@ -26,7 +25,7 @@ export function createAzureMonitorProcessors(
   startDiagnostics: () => void;
 } {
   let span: SpanProcessor | undefined;
-  let log: LogRecordProcessor | undefined;
+  let log: AzureMonitorSamplingLogRecordProcessor | undefined;
 
   function initialize(connectionString: string): void {
     const resolved = { ...options, connectionString };
@@ -44,10 +43,10 @@ export function createAzureMonitorProcessors(
     if (logsEnabled) {
       const exporter = new AzureMonitorLogRecordExporter(resolved);
       exporters.push(exporter);
-      log =
-        samplingPercentage === undefined
-          ? new BrowserBatchLogRecordProcessor({ exporter })
-          : new AzureMonitorSamplingLogRecordProcessor({ exporter, samplingPercentage });
+      log = new AzureMonitorSamplingLogRecordProcessor({
+        exporter,
+        samplingPercentage: readSamplingPercentage,
+      });
     }
   }
 
@@ -103,7 +102,10 @@ export function createAzureMonitorProcessors(
       : undefined,
     log: logsEnabled
       ? {
-          onEmit: (record, ctx) => queue.track(() => log?.onEmit(record, ctx)),
+          onEmit: (record) => {
+            const percentage = readSamplingPercentage();
+            queue.track(() => log?.onEmitWithSamplingPercentage(record, percentage));
+          },
           forceFlush: async () => {
             await log?.forceFlush();
           },

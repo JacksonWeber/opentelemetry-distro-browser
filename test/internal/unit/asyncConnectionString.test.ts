@@ -290,6 +290,44 @@ it.each([0, 100])(
   },
 );
 
+it.each([undefined, 100])(
+  "preserves emission-time sampling across updates while a destination is pending: %s",
+  async (samplingPercentage) => {
+    const pending = deferred();
+    const result = await start({
+      azureMonitor: { connectionString: pending.promise },
+      samplingPercentage,
+    });
+    const tracer = trace.getTracer("dynamic-startup");
+    const logger = logs.getLogger("dynamic-startup");
+    tracer.startSpan("before update").end();
+    logger.emit({ body: "before update" });
+    await result.handle.updateCfg({ samplingPercentage: 0 });
+    tracer.startSpan("disabled while pending").end();
+    logger.emit({ body: "disabled while pending" });
+
+    pending.resolve(connectionString);
+    await Promise.resolve();
+    await result.handle.forceFlush();
+    expect((await result.envelopes()).map((envelope) => envelope.data.baseData)).toEqual([
+      expect.objectContaining({ name: "before update" }),
+      expect.objectContaining({ message: "before update" }),
+    ]);
+
+    logger.emit({ body: "disabled after resolution" });
+    await result.handle.updateCfg({ samplingPercentage: 100 });
+    tracer.startSpan("enabled after resolution").end();
+    logger.emit({ body: "enabled after resolution" });
+    await result.handle.forceFlush();
+    expect((await result.envelopes()).map((envelope) => envelope.data.baseData)).toEqual([
+      expect.objectContaining({ name: "before update" }),
+      expect.objectContaining({ message: "before update" }),
+      expect.objectContaining({ name: "enabled after resolution" }),
+      expect.objectContaining({ message: "enabled after resolution" }),
+    ]);
+  },
+);
+
 it("flushes resolved processors during idempotent shutdown", async () => {
   installFakeClock();
   const result = await start({

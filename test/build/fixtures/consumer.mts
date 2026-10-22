@@ -6,6 +6,7 @@ import {
   type AzureMonitorOptions,
   type BrowserInstrumentation,
   type MicrosoftOpenTelemetryBrowser,
+  type MicrosoftOpenTelemetryBrowserConfigurationUpdate,
   type MicrosoftOpenTelemetryBrowserOptions,
   type MicrosoftOpenTelemetryBrowserSessionOptions,
 } from "@microsoft/opentelemetry-browser";
@@ -104,6 +105,16 @@ useMicrosoftOpenTelemetry({ traces: { processors: [] } });
 useMicrosoftOpenTelemetry({ logs: { processors: [] } });
 // @ts-expect-error Azure Monitor connection strings belong to its exporters, not the initializer.
 useMicrosoftOpenTelemetry({ connectionString: "InstrumentationKey=00000000" });
+
+export async function updateSampling(handle: MicrosoftOpenTelemetryBrowser): Promise<void> {
+  const reset: MicrosoftOpenTelemetryBrowserConfigurationUpdate = {
+    samplingPercentage: undefined,
+  };
+  await handle.updateCfg({});
+  await handle.updateCfg({ samplingPercentage: 25 });
+  await handle.updateCfg({ samplingPercentage: undefined });
+  await handle.updateCfg(reset);
+}
 
 export async function shutdown(handle: MicrosoftOpenTelemetryBrowser): Promise<void> {
   await handle.forceFlush();

@@ -4,7 +4,7 @@
 import { TraceFlags, type SpanContext } from "@opentelemetry/api";
 import { InMemoryLogRecordExporter, type ReadWriteLogRecord } from "@opentelemetry/sdk-logs";
 import { resourceFromAttributes } from "@opentelemetry/resources";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   getManagedOperationName,
   setManagedOperationName,
@@ -78,6 +78,71 @@ async function exportRecords(
 }
 
 describe("AzureMonitorSamplingLogRecordProcessor", () => {
+  it.each([sampledContext, unsampledContext, undefined])(
+    "reads sampling once per emit and forwards undefined policy unchanged (%j)",
+    async (spanContext) => {
+      let percentage: number | undefined;
+      const read = vi.fn(() => percentage);
+      const random = vi.fn(() => 0);
+      const exporter = new InMemoryLogRecordExporter();
+      const processor = new AzureMonitorSamplingLogRecordProcessor(
+        { exporter, samplingPercentage: read },
+        random,
+      );
+      const unfiltered = makeRecord(spanContext);
+      const preserved = makeRecord(spanContext);
+      preserved.setAttribute(AZURE_MONITOR_SAMPLE_RATE, 20);
+      const accepted = makeRecord(spanContext);
+      try {
+        expect(read).not.toHaveBeenCalled();
+        processor.onEmit(unfiltered);
+        processor.onEmit(preserved);
+        expect(random).not.toHaveBeenCalled();
+        percentage = 0;
+        processor.onEmit(makeRecord(spanContext));
+        percentage = 50;
+        processor.onEmit(accepted);
+        percentage = undefined;
+        const reset = makeRecord(spanContext);
+        processor.onEmit(reset);
+        await processor.forceFlush();
+        const records = exporter.getFinishedLogRecords();
+        expect(read).toHaveBeenCalledTimes(5);
+        expect(records).toHaveLength(4);
+        expect(records[0]).toBe(unfiltered);
+        expect(records[0].attributes[AZURE_MONITOR_SAMPLE_RATE]).toBeUndefined();
+        expect(records[1]).toBe(preserved);
+        expect(records[1].attributes[AZURE_MONITOR_SAMPLE_RATE]).toBe(20);
+        expect(records[2].attributes[AZURE_MONITOR_SAMPLE_RATE]).toBe(50);
+        expect(accepted.attributes[AZURE_MONITOR_SAMPLE_RATE]).toBeUndefined();
+        expect(records[3]).toBe(reset);
+      } finally {
+        await processor.shutdown();
+      }
+    },
+  );
+
+  it.each([-1, 101, Number.NaN, Infinity, -Infinity])(
+    "rejects invalid runtime percentage %s on emit",
+    async (invalid) => {
+      const exporter = new InMemoryLogRecordExporter();
+      let percentage: number | undefined = invalid;
+      const processor = new AzureMonitorSamplingLogRecordProcessor({
+        exporter,
+        samplingPercentage: () => percentage,
+      });
+      try {
+        expect(() => processor.onEmit(makeRecord())).toThrow(RangeError);
+        percentage = undefined;
+        processor.onEmit(makeRecord());
+        await processor.forceFlush();
+        expect(exporter.getFinishedLogRecords()).toHaveLength(1);
+      } finally {
+        await processor.shutdown();
+      }
+    },
+  );
+
   it.each([-1, 101, Number.NaN, Number.POSITIVE_INFINITY])(
     "rejects invalid percentage %s",
     (samplingPercentage) => {

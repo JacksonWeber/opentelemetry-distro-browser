@@ -4,6 +4,8 @@ import {
   OPENTELEMETRY_BROWSER_VERSION,
   useMicrosoftOpenTelemetry,
   type AzureMonitorOptions,
+  type MicrosoftOpenTelemetryBrowser,
+  type MicrosoftOpenTelemetryBrowserConfigurationUpdate,
 } from "@microsoft/opentelemetry-browser";
 import { getInstrumentations } from "@microsoft/opentelemetry-browser/instrumentations";
 // @ts-expect-error SDK stats types are internal.
@@ -29,3 +31,13 @@ useMicrosoftOpenTelemetry({ azureMonitor: asynchronousOptions });
 new AzureMonitorSpanExporter(asynchronousOptions);
 // @ts-expect-error Standalone log exporters require a resolved connection string.
 new AzureMonitorLogRecordExporter(asynchronousOptions);
+
+export async function updateSampling(handle: MicrosoftOpenTelemetryBrowser): Promise<void> {
+  const reset: MicrosoftOpenTelemetryBrowserConfigurationUpdate = {
+    samplingPercentage: undefined,
+  };
+  await handle.updateCfg({});
+  await handle.updateCfg({ samplingPercentage: 25 });
+  await handle.updateCfg({ samplingPercentage: undefined });
+  await handle.updateCfg(reset);
+}
