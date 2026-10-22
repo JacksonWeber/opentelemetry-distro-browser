@@ -50,7 +50,7 @@ const globalBundle = (input, module, name) => ({
       exports: "named",
       inlineDynamicImports: true,
       sourcemap: true,
-      ...(minify ? { plugins: [terser()] } : {}),
+      ...(minify ? { plugins: [terser({ compress: { passes: 3 } })] } : {}),
     })),
   ),
 });
@@ -119,7 +119,7 @@ export default [
       ...esmOutput,
       file: "dist/esm/index.min.js",
       plugins: [
-        terser(),
+        terser({ compress: { passes: 3 } }),
         visualizer({
           filename: "reports/bundle-stats.html",
           title: "OpenTelemetry browser ESM bundle",

@@ -44,6 +44,9 @@ loading.
 The `sideEffects: false` contract remains in place; importing the package does not initialize
 telemetry.
 
+Minified ESM, UMD, and IIFE artifacts use three Terser compression passes without property mangling
+or unsafe compression options.
+
 `npm run size` bundles real consumers of every published JavaScript entry point with Rollup,
 tree-shakes and minifies each scenario, and reports gzip and Brotli transfer sizes. It measures the
 API, SDK, distribution, Azure Monitor exporters, instrumentation loader, each selectable

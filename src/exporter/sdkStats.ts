@@ -166,21 +166,16 @@ export function createInternalSdkStats(
       if (value < 0 || (sampleRate < 100 && Math.random() * 100 >= sampleRate)) return;
       const [name, code] = key.split(":");
       envelopes.push(
-        createEnvelope(
+        createSdkStatsEnvelope(
           currentRoute.instrumentationKey,
-          "Microsoft.ApplicationInsights.Metric",
           time,
-          { "ai.internal.sdkVersion": getSdkVersion() },
-          "MetricData",
+          name,
+          value,
           {
-            ver: 2,
-            metrics: [{ name, kind: 0, value }],
-            properties: {
-              ...properties,
-              ...(code === undefined
-                ? {}
-                : { [name === "Exception_Count" ? "exceptionType" : "statusCode"]: code }),
-            },
+            ...properties,
+            ...(code === undefined
+              ? {}
+              : { [name === "Exception_Count" ? "exceptionType" : "statusCode"]: code }),
           },
           sampleRate,
         ),
@@ -205,6 +200,25 @@ export function createInternalSdkStats(
   }
 
   return { updateEndpoint, countResponse, countException, forceFlush, shutdown };
+}
+
+export function createSdkStatsEnvelope(
+  instrumentationKey: string,
+  time: string,
+  name: string,
+  value: number,
+  properties: Record<string, string>,
+  sampleRate?: number,
+): AzureMonitorEnvelope<MetricData> {
+  return createEnvelope(
+    instrumentationKey,
+    "Microsoft.ApplicationInsights.Metric",
+    time,
+    { "ai.internal.sdkVersion": getSdkVersion() },
+    "MetricData",
+    { ver: 2, metrics: [{ name, kind: 0, value }], properties },
+    sampleRate,
+  );
 }
 
 /** Sends stats outside customer pipelines and counters. */

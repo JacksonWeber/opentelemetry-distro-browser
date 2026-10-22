@@ -357,6 +357,36 @@ it("counts actual retry subsets, permanent failures and server sampling without 
   });
 });
 
+it("replaces per-item retry codes after a later transport failure", async () => {
+  const stats = create();
+  const sender = new Sender({ endpoint, itemStats: stats, delay: async () => {} });
+  fetch
+    .mockResolvedValueOnce(
+      Response.json(
+        {
+          itemsReceived: 3,
+          itemsAccepted: 1,
+          errors: [
+            { index: 1, statusCode: 503, message: "retry" },
+            { index: 2, statusCode: 429, message: "retry" },
+          ],
+        },
+        { status: 206 },
+      ),
+    )
+    .mockRejectedValueOnce(new TypeError("offline"));
+  await sender.send(request([SpanKind.CLIENT, SpanKind.SERVER, SpanKind.CLIENT]));
+  await stats.forceFlush();
+  expect(totals()).toEqual({
+    "Item_Success_Count:DEPENDENCY": 2,
+    "Item_Success_Count:REQUEST": 1,
+    "Item_Retry_Count:REQUEST:503": 1,
+    "Item_Retry_Count:DEPENDENCY:429": 1,
+    "Item_Retry_Count:REQUEST:CLIENT_EXCEPTION": 1,
+    "Item_Retry_Count:DEPENDENCY:CLIENT_EXCEPTION": 1,
+  });
+});
+
 it.each(["HTTP", "network"] as const)(
   "counts exhausted %s retries and the final drop exactly once",
   async (failure) => {

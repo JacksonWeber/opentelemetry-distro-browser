@@ -106,8 +106,7 @@ export class Sender {
 
   public async send(request: SendRequest): Promise<SenderResultType> {
     let pending = request.envelopes;
-    let retryCode = "CLIENT_EXCEPTION";
-    let retryCodes: readonly string[] | undefined;
+    let retryCodes: string | readonly string[] = "CLIENT_EXCEPTION";
     try {
       if (this.#maxPayloadSize !== undefined && request.body.byteLength > this.#maxPayloadSize) {
         throw new RangeError(
@@ -126,20 +125,18 @@ export class Sender {
       const permanentErrors: BreezeError[] = [];
       for (let attempt = 1; ; attempt++) {
         remainingRetryWaitMs = await this.#waitForThrottle(remainingRetryWaitMs);
-        if (attempt > 1) this.#itemStats?.countEnvelopes("Retry", pending, retryCodes ?? retryCode);
+        if (attempt > 1) this.#itemStats?.countEnvelopes("Retry", pending, retryCodes);
 
         let result: SenderResultType;
         try {
           result = await this.#sendOnce(currentRequest);
         } catch (error) {
           if (!(error instanceof BrowserTransportError)) {
-            retryCode = "CLIENT_EXCEPTION";
-            retryCodes = undefined;
+            retryCodes = "CLIENT_EXCEPTION";
             throw error;
           }
-          retryCode =
+          retryCodes =
             error.statusCode === undefined ? "CLIENT_EXCEPTION" : String(error.statusCode);
-          retryCodes = undefined;
           if (error.statusCode !== undefined && !isRetriable(error.statusCode)) {
             throw error.cause;
           }
@@ -182,13 +179,12 @@ export class Sender {
         }
 
         currentRequest = retryRequest;
-        retryCode = String(result.statusCode);
         retryCodes =
           this.#itemStats && result.statusCode === 206
             ? breezeErrors
                 .filter((error) => isRetriable(error.statusCode) && !isSamplingRejection(error))
                 .map((error) => String(error.statusCode))
-            : undefined;
+            : String(result.statusCode);
         if (result.retryAfterMs === undefined) {
           remainingRetryWaitMs = await this.#waitForRetry(
             getRetryDelay(attempt - 1, this.#random()),
@@ -197,7 +193,7 @@ export class Sender {
         }
       }
     } catch (error) {
-      this.#itemStats?.countEnvelopes("Dropped", pending, retryCodes ?? retryCode);
+      this.#itemStats?.countEnvelopes("Dropped", pending, retryCodes);
       throw error;
     }
   }

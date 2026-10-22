@@ -4,9 +4,9 @@
 import { SpanKind } from "@opentelemetry/api";
 import type { LogRecordExporter, ReadableLogRecord } from "@opentelemetry/sdk-logs";
 import type { SpanExporter } from "@opentelemetry/sdk-trace-base";
-import { createEnvelope, getSdkVersion, isUnloading } from "./common.js";
+import { getSdkVersion, isUnloading } from "./common.js";
 import { getTrustedIngestionEndpoint, Sender } from "./sender.js";
-import { reportFailure, sendSdkStats } from "./sdkStats.js";
+import { createSdkStatsEnvelope, reportFailure, sendSdkStats } from "./sdkStats.js";
 import { getInternalSdkStatsConfiguration } from "./sdkStatsConfiguration.js";
 import type { AzureMonitorEnvelope, MetricData } from "./telemetryModels.js";
 
@@ -99,7 +99,8 @@ export function createCustomerSdkStats(
   if (options?.enabled !== true) return undefined;
   const interval = options.collectionIntervalMillis ?? 900_000;
   const counts = new Map<string, number>();
-  const sender = new Sender({ endpoint: `${endpoint}/v2/track`, disableBeacon: true });
+  const ingestionEndpoint = `${endpoint}/v2/track`;
+  const sender = new Sender({ endpoint: ingestionEndpoint, disableBeacon: true });
   const internalEndpoint = getInternalSdkStatsConfiguration(endpoint)?.endpoint;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let flushing: Promise<void> | undefined;
@@ -119,8 +120,8 @@ export function createCustomerSdkStats(
       typeof url === "string" &&
       /\/v2\/track(?:[?#]|$)/.test(url) &&
       (url === internalEndpoint ||
-        url === `${endpoint}/v2/track` ||
-        getTrustedIngestionEndpoint(`${endpoint}/v2/track`, url))
+        url === ingestionEndpoint ||
+        getTrustedIngestionEndpoint(ingestionEndpoint, url))
     );
   }
 
@@ -155,26 +156,14 @@ export function createCustomerSdkStats(
     const envelopes: AzureMonitorEnvelope<MetricData>[] = [];
     for (const [key, value] of counts) {
       const [outcome, telemetryType, code] = key.split(":");
-      const name = `Item_${outcome}_Count`;
       envelopes.push(
-        createEnvelope(
-          instrumentationKey,
-          "Microsoft.ApplicationInsights.Metric",
-          time,
-          { "ai.internal.sdkVersion": getSdkVersion() },
-          "MetricData",
-          {
-            ver: 2,
-            metrics: [{ name, kind: 0, value }],
-            properties: {
-              telemetryType,
-              language: "JavaScript",
-              version: getSdkVersion(),
-              computeType: "unknown",
-              ...(code ? { [outcome === "Retry" ? "retryCode" : "dropCode"]: code } : {}),
-            },
-          },
-        ),
+        createSdkStatsEnvelope(instrumentationKey, time, `Item_${outcome}_Count`, value, {
+          telemetryType,
+          language: "JavaScript",
+          version: getSdkVersion(),
+          computeType: "unknown",
+          ...(code ? { [outcome === "Retry" ? "retryCode" : "dropCode"]: code } : {}),
+        }),
       );
     }
     counts.clear();
