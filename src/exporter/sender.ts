@@ -121,6 +121,12 @@ export class Sender {
   public async send(request: SendRequest): Promise<SenderResultType> {
     let pending = request.envelopes;
     let retryCodes: string | readonly string[] = "CLIENT_EXCEPTION";
+    const onBodyError = (statusCode: number): void => {
+      if (!isRetriable(statusCode)) {
+        this.#countItems(pending, { transport: "fetch", statusCode, result: "" });
+        pending = undefined;
+      }
+    };
     try {
       if (this.#maxPayloadSize !== undefined && request.body.byteLength > this.#maxPayloadSize) {
         throw new RangeError(
@@ -128,7 +134,7 @@ export class Sender {
         );
       }
       if (request.unloading === true || request.retry === false) {
-        const result = await this.#sendOnce(request);
+        const result = await this.#sendOnce(request, onBodyError);
         if (result.transport === "fetch" && result.statusCode === 206) {
           reportPartial(
             request,
@@ -137,7 +143,7 @@ export class Sender {
           );
         }
         this.#rememberThrottleDeadline(result);
-        this.#countItems(request, result);
+        this.#countItems(request.envelopes, result);
         return result;
       }
 
@@ -146,11 +152,13 @@ export class Sender {
       const permanentErrors: BreezeError[] = [];
       for (let attempt = 1; ; attempt++) {
         remainingRetryWaitMs = await this.#waitForThrottle(remainingRetryWaitMs);
-        if (attempt > 1) this.#itemStats?.countEnvelopes("Retry", pending, retryCodes);
-
         let result: SenderResultType;
         try {
-          result = await this.#sendOnce(currentRequest);
+          result = await this.#sendOnce(
+            currentRequest,
+            onBodyError,
+            attempt > 1 ? retryCodes : undefined,
+          );
         } catch (error) {
           if (!(error instanceof BrowserTransportError)) {
             retryCodes = "CLIENT_EXCEPTION";
@@ -193,7 +201,7 @@ export class Sender {
         );
         const retryRequest = reportPartial(currentRequest, result, response);
         const willRetry = !!retryRequest && attempt < MAX_SEND_ATTEMPTS;
-        this.#countItems(currentRequest, result, willRetry);
+        this.#countItems(currentRequest.envelopes, result, willRetry);
         pending = willRetry ? retryRequest.envelopes : undefined;
         this.#rememberThrottleDeadline(result);
         if (!retryRequest || attempt >= MAX_SEND_ATTEMPTS) {
@@ -220,9 +228,12 @@ export class Sender {
     }
   }
 
-  #countItems(request: SendRequest, result: SenderResultType, willRetry = false): void {
+  #countItems(
+    envelopes: readonly AzureMonitorEnvelope[] | undefined,
+    result: SenderResultType,
+    willRetry = false,
+  ): void {
     const stats = this.#itemStats;
-    const envelopes = request.envelopes;
     if (!stats || !envelopes) return;
     if (
       result.transport === "beacon" ||
@@ -291,8 +302,11 @@ export class Sender {
     return remainingRetryWaitMs - delayMs;
   }
 
-  async #sendOnce(request: SendRequest): Promise<SenderResultType> {
-    if (request.signal?.aborted) throw new DOMException("Request aborted", "AbortError");
+  async #sendOnce(
+    request: SendRequest,
+    onBodyError: (statusCode: number) => void,
+    retryCodes?: string | readonly string[],
+  ): Promise<SenderResultType> {
     assertActive(request);
     const unloading = request.unloading === true;
     const keepaliveAvailable =
@@ -320,6 +334,9 @@ export class Sender {
         try {
           // Browser context may not survive compression or retry awaits, so suppress at the call.
           response = await context.with(suppressTracing(context.active()), () => {
+            if (retryCodes) {
+              this.#itemStats?.countEnvelopes("Retry", request.envelopes, retryCodes);
+            }
             const pending = this.#fetch(endpoint, {
               method: "POST",
               headers: {
@@ -361,6 +378,7 @@ export class Sender {
         result = await response.text();
       } catch (error) {
         this.#stats?.countException(error, endpoint);
+        onBodyError(response.status);
         if (!isBrowserTransportFailure(error)) {
           throw error;
         }
@@ -535,6 +553,7 @@ function getRetryRequest(
 }
 
 function assertActive(request: SendRequest): void {
+  if (request.signal?.aborted) throw new DOMException("Request aborted", "AbortError");
   if (request.active?.() === false) throw new Error("Telemetry was handed off to another page.");
 }
 

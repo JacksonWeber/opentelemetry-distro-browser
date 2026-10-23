@@ -435,6 +435,102 @@ it("does not count a retry that the wait budget prevents and retains prior parti
   });
 });
 
+it.each(["handoff", "abort"] as const)(
+  "does not count a retry cancelled by %s during compression",
+  async (cancellation) => {
+    const stats = create();
+    let active = true;
+    let compressions = 0;
+    const controller = new AbortController();
+    vi.stubGlobal(
+      "CompressionStream",
+      class extends TransformStream<Uint8Array, Uint8Array> {
+        constructor() {
+          super({
+            transform(chunk, stream) {
+              if (++compressions === 2) {
+                if (cancellation === "abort") controller.abort();
+                else active = false;
+              }
+              stream.enqueue(chunk);
+            },
+          });
+        }
+      },
+    );
+    const transport = vi.fn<typeof globalThis.fetch>(
+      async () => new Response(null, { status: 503 }),
+    );
+    const sender = new Sender({
+      endpoint: "https://dc.services.visualstudio.com/v2/track",
+      fetch: transport,
+      itemStats: stats,
+      delay: async () => {},
+    });
+    await expect(
+      sender.send({ ...request(), active: () => active, signal: controller.signal }),
+    ).rejects.toThrow(cancellation === "abort" ? "Request aborted" : "handed off");
+    expect(compressions).toBe(2);
+    expect(transport).toHaveBeenCalledOnce();
+    await stats.forceFlush();
+    expect(Object.keys(totals()).some((key) => key.startsWith("Item_Retry_Count"))).toBe(false);
+  },
+);
+
+it.each(
+  [200, 400].flatMap((status) =>
+    ["retry", "once", "unload"].flatMap((mode) =>
+      [Error, TypeError].map((ErrorType) => ({ status, mode, ErrorType, error: ErrorType.name })),
+    ),
+  ),
+)(
+  "preserves HTTP $status item outcomes after a body $error in $mode mode",
+  async ({ status, mode, ErrorType }) => {
+    const stats = create();
+    const failure = new ErrorType("body failed");
+    const response = new Response(null, { status });
+    vi.spyOn(response, "text").mockRejectedValue(failure);
+    fetch.mockResolvedValueOnce(response);
+    const sender = new Sender({ endpoint, itemStats: stats, delay: async () => {} });
+    await expect(
+      sender.send({ ...request(), retry: mode !== "once", unloading: mode === "unload" }),
+    ).rejects.toBe(failure);
+    expect(fetch).toHaveBeenCalledOnce();
+    await stats.forceFlush();
+    expect(totals()).toEqual({
+      [status === 200 ? "Item_Success_Count:DEPENDENCY" : "Item_Dropped_Count:DEPENDENCY:400"]: 1,
+    });
+  },
+);
+
+it("counts only the retry subset when its successful response body fails", async () => {
+  const stats = create();
+  const response = new Response(null);
+  vi.spyOn(response, "text").mockRejectedValue(new TypeError("body failed"));
+  fetch
+    .mockResolvedValueOnce(
+      Response.json(
+        {
+          itemsReceived: 2,
+          itemsAccepted: 1,
+          errors: [{ index: 1, statusCode: 503, message: "retry" }],
+        },
+        { status: 206 },
+      ),
+    )
+    .mockResolvedValueOnce(response);
+  const sender = new Sender({ endpoint, itemStats: stats, delay: async () => {} });
+  await expect(sender.send(request([SpanKind.CLIENT, SpanKind.SERVER]))).rejects.toThrow(
+    "body failed",
+  );
+  await stats.forceFlush();
+  expect(totals()).toEqual({
+    "Item_Success_Count:DEPENDENCY": 1,
+    "Item_Success_Count:REQUEST": 1,
+    "Item_Retry_Count:REQUEST:503": 1,
+  });
+});
+
 it.each([
   {
     itemsReceived: 2,

@@ -269,6 +269,9 @@ To prevent feedback, stats-enabled Azure Monitor branches exclude resource-timin
 known SDK ingestion URLs across instances, including remembered redirects. Custom processor
 branches still receive those records. Stats failure warnings bypass OpenTelemetry console
 wrappers while being logged, including with standalone exporters and no context manager.
+Retry counts include only dispatched transport attempts. If a response body cannot be read,
+item counters preserve any known final HTTP success or permanent rejection, while the export
+callback still reports the body-read failure.
 
 ## Azure Monitor mapping
 
