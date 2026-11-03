@@ -42,7 +42,6 @@ export const instrumentation: BrowserInstrumentation = {
 export const options: MicrosoftOpenTelemetryBrowserOptions = {
   samplingPercentage: 25,
   session,
-  traces: { distributedTracingMode: 17, appId: "frontend" },
   instrumentations: Object.freeze([instrumentation]),
   resource: resourceFromAttributes({
     "service.name": "consumer",
@@ -123,10 +122,6 @@ useMicrosoftOpenTelemetry({ serviceName: "consumer" });
 useMicrosoftOpenTelemetry({ disabled: true });
 useMicrosoftOpenTelemetry({ session: { enabled: false } });
 useMicrosoftOpenTelemetry({ session: { enabled: true, inactivityTimeout: 60 } });
-// @ts-expect-error Tracing modes use the supported Application Insights numeric values.
-useMicrosoftOpenTelemetry({ traces: { distributedTracingMode: "AI_AND_W3C" } });
-// @ts-expect-error Application IDs must be strings.
-useMicrosoftOpenTelemetry({ traces: { appId: 123 } });
 useMicrosoftOpenTelemetry({ sessionRenewalMs: 60000, sessionExpirationMs: 120000 });
 useMicrosoftOpenTelemetry({ sessionRenewalMs: undefined, sessionExpirationMs: undefined });
 // @ts-expect-error Native initializer inactivity timeouts do not accept explicit undefined.

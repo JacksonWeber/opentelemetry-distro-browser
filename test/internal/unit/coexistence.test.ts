@@ -394,57 +394,6 @@ it("preserves a manager that registers itself from enable()", async () => {
   expect(getRegisteredGlobal("context")).toBe(manager);
 });
 
-it.each([
-  ["context", "context-manager-conflict"],
-  ["propagation", "propagator-conflict"],
-  ["trace", "tracer-provider-conflict"],
-  ["logs", "logger-provider-conflict"],
-] as const)("rejects a %s change during propagation registration", async (signal, code) => {
-  const pipeline = createInMemoryPipeline();
-  const spanShutdown = vi.spyOn(pipeline.spanProcessor, "shutdown");
-  const logShutdown = vi.spyOn(pipeline.logProcessor, "shutdown");
-  const foreignManager = new StackContextManager().enable();
-  const foreignTrace = new BasicTracerProvider();
-  const foreignLogs = new LoggerProvider();
-  cleanup.push(
-    () => foreignTrace.shutdown(),
-    () => foreignLogs.shutdown(),
-    async () => {
-      foreignManager.disable();
-    },
-  );
-  const register = propagation.setGlobalPropagator.bind(propagation);
-  let foreignRegistration: unknown;
-  vi.spyOn(propagation, "setGlobalPropagator").mockImplementationOnce((propagator) => {
-    const registered = register(propagator);
-    if (signal === "context") {
-      context.disable();
-      context.setGlobalContextManager(foreignManager);
-    }
-    if (signal === "propagation") {
-      propagation.disable();
-      register(new W3CTraceContextPropagator());
-    }
-    if (signal === "trace") trace.setGlobalTracerProvider(foreignTrace);
-    if (signal === "logs") logs.setGlobalLoggerProvider(foreignLogs);
-    foreignRegistration = getRegisteredGlobal(signal);
-    return registered;
-  });
-
-  await expect(
-    useMicrosoftOpenTelemetry({
-      ...pipeline.options,
-      pageView: { enabled: false },
-      traces: { distributedTracingMode: 17, appId: "frontend" },
-    }),
-  ).rejects.toMatchObject({ code });
-  expect(spanShutdown).toHaveBeenCalledOnce();
-  expect(logShutdown).toHaveBeenCalledOnce();
-  for (const key of ["trace", "context", "propagation", "logs"] as const) {
-    expect(getRegisteredGlobal(key)).toBe(key === signal ? foreignRegistration : undefined);
-  }
-});
-
 it("cleans up both pipelines when enable throws and allows retry", async () => {
   const pipeline = createInMemoryPipeline();
   const spanShutdown = vi.spyOn(pipeline.spanProcessor, "shutdown");

@@ -3,7 +3,6 @@ import {
   AzureMonitorSpanExporter,
   OPENTELEMETRY_BROWSER_VERSION,
   useMicrosoftOpenTelemetry,
-  type MicrosoftOpenTelemetryBrowserTraceOptions,
   type AzureMonitorOptions,
   type MicrosoftOpenTelemetryBrowser,
   type MicrosoftOpenTelemetryBrowserConfigurationUpdate,
@@ -16,14 +15,6 @@ import type { AzureMonitorSdkStatsOptions } from "@microsoft/opentelemetry-brows
 void OPENTELEMETRY_BROWSER_VERSION;
 void useMicrosoftOpenTelemetry;
 void getInstrumentations;
-
-const traces: MicrosoftOpenTelemetryBrowserTraceOptions = {
-  distributedTracingMode: 17,
-  appId: "frontend",
-};
-void useMicrosoftOpenTelemetry({ traces });
-// @ts-expect-error Unsupported tracing modes must be rejected by declarations too.
-void useMicrosoftOpenTelemetry({ traces: { distributedTracingMode: 3 } });
 
 export const options: AzureMonitorOptions = {
   connectionString: "InstrumentationKey=00000000-0000-0000-0000-000000000000",

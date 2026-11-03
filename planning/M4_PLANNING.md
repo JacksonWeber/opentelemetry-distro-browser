@@ -29,15 +29,19 @@ Status: not started.
 
 ## Migration from ApplicationInsights-JS
 
-GA means existing Application Insights JavaScript customers can move to the distribution without
-losing data or experiences. Compared against ApplicationInsights-JS 3.4.5. The distribution does not
+GA requires validated migration paths for the supported Application Insights JavaScript use cases,
+with intentional exclusions and data differences documented before cutover. Compared against
+ApplicationInsights-JS 3.4.5. The distribution does not
 provide `track*` APIs or a `track*` compatibility package, the same as the other Microsoft
-OpenTelemetry distributions; applications move to the OpenTelemetry APIs.
+OpenTelemetry distributions. Applications move to the OpenTelemetry APIs. Legacy `Request-Id` and
+`Request-Context` correlation are not migration requirements. Backends must support W3C Trace
+Context for the default end-to-end propagation path. The initial repository
+[migration guide](../APPINSIGHTS_MIGRATION.md) distinguishes these exclusions from remaining gaps.
 
 | Item | M4 outcome | Status |
 | --- | --- | --- |
-| Configuration mapping | Document the distribution option, or the OpenTelemetry way to get the same result, for the ApplicationInsights-JS settings most customers use. This is not a one-to-one mapping of every option: start small and add settings only when customers need them. | Not started |
-| API migration guide | Show the OpenTelemetry replacement for each `track*` call, `setAuthenticatedUserContext`, `flush`, `unload`, `addTelemetryInitializer` and `getPlugin`. `trackMetric` has no replacement until metrics export ships, and there is no manual page-view timing API equivalent to `startTrackPage` and `stopTrackPage`. | Not started |
+| Configuration mapping | Document the distribution option, or the OpenTelemetry way to get the same result, for the ApplicationInsights-JS settings most customers use. This is not a one-to-one mapping of every option: start small and add settings only when customers need them. | Partial. The repository migration guide covers common configuration differences and intentional exclusions. Customer-driven mapping remains. |
+| API migration guide | Show the OpenTelemetry replacement for each supported telemetry use case behind `track*` calls, `setAuthenticatedUserContext`, `flush`, `unload`, `addTelemetryInitializer` and `getPlugin`. `trackMetric` has no replacement until metrics export ships, and there is no manual page-view timing API equivalent to `startTrackPage` and `stopTrackPage`. | Partial. Initial API replacements and limitations are documented in the repository migration guide. End-to-end migration validation remains. |
 | User and session continuity | Reuse the existing `ai_user` and `ai_session` values on first load so returning visitors keep their user and session IDs and the Users and Sessions counts do not reset at cutover. | Not started |
 | Coexistence on one page | Run alongside ApplicationInsights-JS 2.x and 3.x, loaded through the snippet or npm, without duplicate `fetch` and XHR collection, double `traceparent` injection, duplicate page views or broken correlation. | Not started |
 | Snippet conversion | Convert an ApplicationInsights-JS snippet configuration to the distribution loader's JSON settings. | Not started |

@@ -4,7 +4,6 @@
 import {
   ROOT_CONTEXT,
   context,
-  createTraceState,
   diag,
   propagation,
   trace,
@@ -37,8 +36,6 @@ const CROSS_ORIGIN_HEADERS_URL = new URL("/headers", inject("redirectEndpoint"))
 interface PropagationHeaders {
   baggage?: string;
   custom?: string;
-  requestId?: string;
-  requestContext?: string;
   traceparent?: string;
   tracestate?: string;
 }
@@ -133,7 +130,6 @@ function urlsOf(spans: readonly ReadableSpan[]): string[] {
 afterEach(async () => {
   await handle?.shutdown();
   handle = undefined;
-  vi.restoreAllMocks();
   trace.disable();
   logs.disable();
   propagation.disable();
@@ -329,7 +325,7 @@ describe("configured instrumentations in a browser", () => {
           fetch: { propagateTraceHeaderCorsUrls: allowedOrigins },
           xhr: { propagateTraceHeaderCorsUrls: allowedOrigins },
         },
-        { propagators: [customPropagator], distributedTracingMode: 17, appId: "unused" },
+        { propagators: [customPropagator] },
       );
 
       const [fetchRequest, xhrRequest] = await Promise.all([
@@ -348,7 +344,7 @@ describe("configured instrumentations in a browser", () => {
           fetch: { propagateTraceHeaderCorsUrls: allowedOrigins },
           xhr: { propagateTraceHeaderCorsUrls: allowedOrigins },
         },
-        { propagators: [], distributedTracingMode: 17, appId: "unused" },
+        { propagators: [] },
       );
 
       const [fetchRequest, xhrRequest] = await withBaggage(() =>
@@ -360,153 +356,6 @@ describe("configured instrumentations in a browser", () => {
 
       expect(fetchRequest).toEqual({});
       expect(xhrRequest).toEqual({});
-    });
-  });
-
-  describe("Application Insights correlation", () => {
-    it.each([
-      { mode: undefined, legacy: false, w3c: true, state: true },
-      { mode: 0, legacy: true, w3c: false, state: false },
-      { mode: 1, legacy: true, w3c: true, state: false },
-      { mode: 2, legacy: false, w3c: true, state: false },
-      { mode: 17, legacy: true, w3c: true, state: true },
-      { mode: 18, legacy: false, w3c: true, state: true },
-    ] as const)(
-      "sends mode $mode headers from each dependency span on allowed Fetch and XHR requests",
-      async ({ mode, legacy, w3c, state }) => {
-        await start(
-          {
-            fetch: { propagateTraceHeaderCorsUrls: [CROSS_ORIGIN_HEADERS_URL] },
-            xhr: { propagateTraceHeaderCorsUrls: [CROSS_ORIGIN_HEADERS_URL] },
-          },
-          { distributedTracingMode: mode, appId: "frontend" },
-        );
-        const parent = {
-          traceId: "1234567890abcdef1234567890abcdef",
-          spanId: "1234567890abcdef",
-          traceFlags: 1,
-          traceState: createTraceState("vendor=state"),
-        };
-        const headers = await context.with(trace.setSpanContext(ROOT_CONTEXT, parent), () =>
-          withBaggage(() =>
-            Promise.all([
-              fetchHeaders(CROSS_ORIGIN_HEADERS_URL),
-              sendXhrForHeaders(CROSS_ORIGIN_HEADERS_URL),
-            ]),
-          ),
-        );
-        const spans = await captured(2);
-        for (const [index, transport] of ["fetch", "xhr"].entries()) {
-          const dependency = spans.find((span) =>
-            span.instrumentationScope.name.endsWith(`/${transport}`),
-          )!;
-          expect(dependency.parentSpanContext).toEqual(parent);
-          const { traceId, spanId } = dependency.spanContext();
-          expect(headers[index]).toEqual({
-            ...(w3c ? { traceparent: `00-${traceId}-${spanId}-01` } : {}),
-            ...(state ? { tracestate: "vendor=state" } : {}),
-            ...(legacy ? { requestId: `|${traceId}.${spanId}` } : {}),
-            requestContext: "appId=cid-v1:frontend",
-            baggage: "tenant.id=contoso",
-          });
-        }
-      },
-    );
-
-    it("uses page correlation and omits Request-Context when no appId was supplied", async () => {
-      await start(
-        {
-          fetch: { propagateTraceHeaderCorsUrls: [CROSS_ORIGIN_HEADERS_URL] },
-          xhr: { propagateTraceHeaderCorsUrls: [CROSS_ORIGIN_HEADERS_URL] },
-        },
-        { distributedTracingMode: 17 },
-      );
-      const operation = trace.getSpanContext(context.active())!;
-      const headers = await Promise.all([
-        fetchHeaders(CROSS_ORIGIN_HEADERS_URL),
-        sendXhrForHeaders(CROSS_ORIGIN_HEADERS_URL),
-      ]);
-      for (const value of headers) {
-        expect(value.requestId).toBe(`|${operation.traceId}.${value.traceparent?.split("-")[2]}`);
-        expect(value.requestContext).toBeUndefined();
-      }
-    });
-
-    it.each([undefined, ["https://allowed.example.test"]])(
-      "does not send any correlation outside the explicit CORS allow list %j",
-      async (propagateTraceHeaderCorsUrls) => {
-        await start(
-          {
-            fetch: { propagateTraceHeaderCorsUrls },
-            xhr: { propagateTraceHeaderCorsUrls },
-          },
-          { distributedTracingMode: 17, appId: "frontend" },
-        );
-        expect(
-          await Promise.all([
-            fetchHeaders(CROSS_ORIGIN_HEADERS_URL),
-            sendXhrForHeaders(CROSS_ORIGIN_HEADERS_URL),
-          ]),
-        ).toEqual([{}, {}]);
-        await captured(2);
-      },
-    );
-
-    it("does not add correlation or spans to ignored requests", async () => {
-      const config = {
-        propagateTraceHeaderCorsUrls: [CROSS_ORIGIN_HEADERS_URL],
-        ignoreUrls: [CROSS_ORIGIN_HEADERS_URL],
-      };
-      await start(
-        { fetch: config, xhr: config },
-        { distributedTracingMode: 17, appId: "frontend" },
-      );
-      expect(
-        await Promise.all([
-          fetchHeaders(CROSS_ORIGIN_HEADERS_URL),
-          sendXhrForHeaders(CROSS_ORIGIN_HEADERS_URL),
-        ]),
-      ).toEqual([{}, {}]);
-      await captured(0);
-    });
-
-    it("adds legacy headers to same-origin requests without a CORS opt-in", async () => {
-      const originalFetch = globalThis.fetch;
-      const fetchRequest = vi.spyOn(globalThis, "fetch").mockImplementation(originalFetch);
-      const setHeader = vi.spyOn(XMLHttpRequest.prototype, "setRequestHeader");
-      await start({}, { distributedTracingMode: 17, appId: "frontend" });
-      await request(APPLICATION_URL);
-      await sendXhr(APPLICATION_URL);
-      const spans = await captured(2);
-      const fetchSpan = spans.find((span) => span.instrumentationScope.name.endsWith("/fetch"))!;
-      const xhrSpan = spans.find((span) => span.instrumentationScope.name.endsWith("/xhr"))!;
-      const headers = new Headers(fetchRequest.mock.calls[0][1]?.headers);
-      expect(headers.get("request-id")).toBe(
-        `|${fetchSpan.spanContext().traceId}.${fetchSpan.spanContext().spanId}`,
-      );
-      expect(headers.get("request-context")).toBe("appId=cid-v1:frontend");
-      expect(setHeader).toHaveBeenCalledWith(
-        "Request-Id",
-        `|${xhrSpan.spanContext().traceId}.${xhrSpan.spanContext().spanId}`,
-      );
-      expect(setHeader).toHaveBeenCalledWith("Request-Context", "appId=cid-v1:frontend");
-    });
-
-    it("stops automatic legacy headers when the owning instrumentations shut down", async () => {
-      await start(
-        {
-          fetch: { propagateTraceHeaderCorsUrls: [CROSS_ORIGIN_HEADERS_URL] },
-          xhr: { propagateTraceHeaderCorsUrls: [CROSS_ORIGIN_HEADERS_URL] },
-        },
-        { distributedTracingMode: 17, appId: "frontend" },
-      );
-      await handle?.shutdown();
-      expect(
-        await Promise.all([
-          fetchHeaders(CROSS_ORIGIN_HEADERS_URL),
-          sendXhrForHeaders(CROSS_ORIGIN_HEADERS_URL),
-        ]),
-      ).toEqual([{}, {}]);
     });
   });
 

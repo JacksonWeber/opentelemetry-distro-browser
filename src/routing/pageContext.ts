@@ -119,25 +119,25 @@ export function registerPageContext(
       manager.disable();
     }
   };
-  const verifyGlobals = (expected = before): void => {
+  const verifyUnchanged = (): void => {
     for (const [key, code] of [
       ["context", "context-manager-conflict"],
       ["propagation", "propagator-conflict"],
       ["trace", "tracer-provider-conflict"],
       ["logs", "logger-provider-conflict"],
     ] as const) {
-      if (getRegisteredGlobal(key) !== expected[key])
+      if (getRegisteredGlobal(key) !== before[key])
         conflict(code, "OpenTelemetry globals changed during startup");
     }
   };
   try {
     propagator = before.propagation ? undefined : createPropagator();
-    verifyGlobals();
+    verifyUnchanged();
     if (!before.context || (before.context === state.manager && !state.storage)) {
       manager = supplied ?? createDefault();
       enabled = true;
       manager.enable();
-      verifyGlobals();
+      verifyUnchanged();
       state.storage = manager;
       stored = true;
       if (!before.context && !context.setGlobalContextManager(state.manager)) {
@@ -161,11 +161,21 @@ export function registerPageContext(
       state.foreignPropagator = before.propagation;
       diag.warn("[propagator-conflict] Using the application's global propagator.");
     }
-    verifyGlobals({
-      ...before,
-      context: registeredContext ? state.manager : before.context,
-      propagation: registeredPropagation ? propagator : before.propagation,
-    });
+    if (getRegisteredGlobal("context") !== (registeredContext ? state.manager : before.context)) {
+      conflict("context-manager-conflict", "OpenTelemetry context changed during registration");
+    }
+    if (
+      getRegisteredGlobal("propagation") !==
+      (registeredPropagation ? propagator : before.propagation)
+    ) {
+      conflict("propagator-conflict", "OpenTelemetry propagation changed during registration");
+    }
+    if (getRegisteredGlobal("trace") !== before.trace) {
+      conflict("tracer-provider-conflict", "OpenTelemetry traces changed during registration");
+    }
+    if (getRegisteredGlobal("logs") !== before.logs) {
+      conflict("logger-provider-conflict", "OpenTelemetry logs changed during registration");
+    }
     if (enabled || registeredPropagation) deferGlobalRollback("trace", rollback);
   } catch (error) {
     try {

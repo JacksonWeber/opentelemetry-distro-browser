@@ -7,16 +7,21 @@ import {
   DiagLogLevel,
   SpanKind,
   type Attributes,
+  type ContextManager,
+  type TextMapPropagator,
   type TracerProvider as TracerProviderApi,
 } from "@opentelemetry/api";
 import type { LoggerProvider as LoggerProviderApi } from "@opentelemetry/api-logs";
+import {
+  CompositePropagator,
+  W3CBaggagePropagator,
+  W3CTraceContextPropagator,
+} from "@opentelemetry/core";
 import { defaultResource, resourceFromAttributes } from "@opentelemetry/resources";
 import { LoggerProvider, type LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import type { Sampler } from "@opentelemetry/sdk-trace-base";
 import { TracerProvider, type SpanProcessor } from "@opentelemetry/sdk-trace";
 import { StackContextManager } from "@opentelemetry/sdk-trace-web";
-import { createPropagator } from "../propagation.js";
-import type { MicrosoftOpenTelemetryBrowserTraceOptions } from "../types.js";
 import { redactUrl } from "../shared/urlRedaction.js";
 import { addInstance, noopLoggerProvider, noopTracerProvider } from "./instanceRouter.js";
 import {
@@ -35,7 +40,7 @@ import {
 } from "../shared/globalOwnership.js";
 
 /** Resolved pipeline configuration for one distribution instance. */
-export interface TelemetryInstanceOptions extends Readonly<MicrosoftOpenTelemetryBrowserTraceOptions> {
+export interface TelemetryInstanceOptions {
   readonly redactedQueryParams?: readonly string[];
   readonly resourceAttributes: Attributes;
   readonly sampler?: Sampler;
@@ -43,8 +48,10 @@ export interface TelemetryInstanceOptions extends Readonly<MicrosoftOpenTelemetr
   readonly spanProcessors: readonly SpanProcessor[];
   /** An empty list leaves logs off for this instance. */
   readonly logRecordProcessors: readonly LogRecordProcessor[];
+  readonly contextManager?: ContextManager;
   /** Page correlation shared with other instances while this is the earliest with page views. */
   readonly correlation?: PageCorrelation;
+  readonly propagators?: readonly TextMapPropagator[];
 }
 
 /** One instance's isolated providers, which its instrumentations bind to directly. */
@@ -185,7 +192,13 @@ export async function startTelemetryInstance(
       registerPageContext(
         options.contextManager,
         () => new StackContextManager(),
-        () => createPropagator(options),
+        () =>
+          new CompositePropagator({
+            propagators: options.propagators?.slice() ?? [
+              new W3CTraceContextPropagator(),
+              new W3CBaggagePropagator(),
+            ],
+          }),
       );
     }
     removeCorrelation = options.correlation && addPageCorrelation(options.correlation);

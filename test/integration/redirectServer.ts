@@ -137,8 +137,6 @@ export default async function setup(project: TestProject): Promise<() => Promise
         JSON.stringify({
           baggage: request.headers.baggage,
           custom: request.headers["x-test-context"],
-          requestId: request.headers["request-id"],
-          requestContext: request.headers["request-context"],
           traceparent: request.headers.traceparent,
           tracestate: request.headers.tracestate,
         }),
@@ -168,7 +166,7 @@ function setCorsHeaders(response: ServerResponse): void {
   response.setHeader("access-control-allow-methods", "GET, POST, OPTIONS");
   response.setHeader(
     "access-control-allow-headers",
-    "baggage, content-type, content-encoding, traceparent, tracestate, x-test-context, request-id, request-context",
+    "baggage, content-type, content-encoding, traceparent, tracestate, x-test-context",
   );
 }
 

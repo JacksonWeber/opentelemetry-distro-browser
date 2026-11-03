@@ -417,15 +417,6 @@ export async function useMicrosoftOpenTelemetry(
     return shutdownPromise;
   }
 
-  function updateInstrumentation(
-    update: (registry: NonNullable<typeof instrumentationRegistry>) => void,
-  ): Promise<void> {
-    return configuration.enqueue(() => {
-      if (!instrumentationRegistry) throw new Error("Instrumentation registry is unavailable.");
-      update(instrumentationRegistry);
-    });
-  }
-
   const handle: MicrosoftOpenTelemetryBrowser = {
     forceFlush,
     shutdown,
@@ -434,12 +425,25 @@ export async function useMicrosoftOpenTelemetry(
     instrumentations: {
       get: (id) => instrumentationRegistry?.get(id),
       add: (id, instrumentation) =>
-        updateInstrumentation((registry) => registry.add(id, instrumentation)),
-      remove: (id) => updateInstrumentation((registry) => registry.remove(id)),
+        configuration.enqueue(() => {
+          if (!instrumentationRegistry) throw new Error("Instrumentation registry is unavailable.");
+          instrumentationRegistry.add(id, instrumentation);
+        }),
+      remove: (id) =>
+        configuration.enqueue(() => {
+          if (!instrumentationRegistry) throw new Error("Instrumentation registry is unavailable.");
+          instrumentationRegistry.remove(id);
+        }),
       replace: (id, instrumentation) =>
-        updateInstrumentation((registry) => registry.replace(id, instrumentation)),
+        configuration.enqueue(() => {
+          if (!instrumentationRegistry) throw new Error("Instrumentation registry is unavailable.");
+          instrumentationRegistry.replace(id, instrumentation);
+        }),
       setEnabled: (id, enabled) =>
-        updateInstrumentation((registry) => registry.setEnabled(id, enabled)),
+        configuration.enqueue(() => {
+          if (!instrumentationRegistry) throw new Error("Instrumentation registry is unavailable.");
+          instrumentationRegistry.setEnabled(id, enabled);
+        }),
     },
   };
 
@@ -503,17 +507,13 @@ export async function useMicrosoftOpenTelemetry(
     logRecordProcessors ??= [];
     await options.resource?.waitForAsyncAttributes?.();
     if (
-      (traceOptions?.contextManager ||
-        traceOptions?.propagators ||
-        traceOptions?.distributedTracingMode !== undefined ||
-        traceOptions?.appId !== undefined) &&
+      (traceOptions?.contextManager || traceOptions?.propagators) &&
       spanProcessors.length !== 0 &&
       isPageContextRegistered()
     ) {
       diag.warn("Trace context options ignored; page context already registered");
     }
     const instanceOptions = {
-      ...traceOptions,
       redactedQueryParams,
       // Spread last: the caller's attributes win.
       resourceAttributes: {

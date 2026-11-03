@@ -39,13 +39,16 @@ release are owned by [M4](M4_PLANNING.md).
 | Deferred connection string | Accept the connection string as a promise and buffer telemetry in memory, bounded by size and time, until it resolves. Telemetry is dropped with a diagnostic if it never resolves. | `initTimeOut`, `initInMemoMaxSize` | Done (#135) |
 | Ingestion request customization | Custom ingestion request headers, a Cross-Origin Resource Policy setting, and a pluggable HTTP transport. | `customHeaders`, `corsPolicy`, `httpXHROverride` | Not started |
 | High-entropy OS version | Use `navigator.userAgentData.getHighEntropyValues` for the platform version, cached, so OS versions such as Windows 11 are reported correctly. | `applicationinsights-osplugin-js` | Done (#122) |
-| Legacy correlation headers | Opt-in `Request-Id` and `Request-Context` headers for backends on classic Application Insights SDKs that do not read W3C Trace Context. W3C Trace Context remains the default. | `distributedTracingMode`, `appId`, `enableCorsCorrelation` | Not started |
 | Metrics export | Export the OpenTelemetry Metrics API to Azure Monitor `MetricData`, gated on the upstream browser metrics decision. | `trackMetric` | Not started |
 | In-page debug tooling | An optional package that shows emitted and sent telemetry in the page during development, and optionally records SDK timings as `performance` marks and measures. | `applicationinsights-debugplugin-js`, `chrome-debug-extension`, `applicationinsights-perfmarkmeasure-js` | Not started |
 
 React Native, the 1DS channel and the Application Insights Light SKU are out of scope. Legacy
 Application Insights `track*` APIs are not supported, in the core package or a separate package,
-the same as the other Microsoft OpenTelemetry distributions; [M4](M4_PLANNING.md) owns
+the same as the other Microsoft OpenTelemetry distributions. Legacy `Request-Id` and
+`Request-Context` correlation headers are also out of scope, not deferred work. Use W3C Trace
+Context and migrate backends that require the classic headers. See
+[Application Insights migration](../APPINSIGHTS_MIGRATION.md) for intentional exclusions and
+current gaps. [M4](M4_PLANNING.md) owns
 coexistence with and migration from ApplicationInsights-JS. Sending to several destinations, which
 ApplicationInsights-JS does with `tee-channel-js`, is already covered by configuring more than one
 span or log record processor.

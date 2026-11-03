@@ -6,10 +6,8 @@ All notable changes to this package are documented in this file.
 
 ### Added
 
-- Add opt-in Application Insights `Request-Id` and `Request-Context` propagation through
-  `traces.distributedTracingMode` and `traces.appId`, preserving W3C defaults and explicit
-  cross-origin allow lists. Deduplicate startup checks and queued instrumentation controls
-  to limit bundle growth, with small measured increases to the root and SDK browser budgets.
+- Document ApplicationInsights-JS migration paths, intentional exclusions and current gaps.
+  Remove legacy correlation headers from the planned scope and retain W3C propagation.
 - Support instance-local runtime instrumentation add/remove/replace with explicit IDs,
   provider binding, ownership transfer, network-gate preservation and best-effort rollback.
 - Add instance-local `instrumentations.get(id)` and supported pause/resume via

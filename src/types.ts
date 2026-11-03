@@ -103,10 +103,8 @@ export interface BrowserInstrumentation {
  * first active instance that collects traces supplies context. Its delegate is disabled when the
  * last instance stops. Implicit context tracking then stops until a later initialization supplies
  * a new delegate. Application-registered context managers are never disabled. Propagators remain
- * page-lifetime registrations, so later propagator, tracing-mode and app-ID options are unused.
- * The first registration's app ID applies to requests from every instance in this realm.
- * Propagation is registered even when the application already registered a context manager.
- * Instances with page views share
+ * page-lifetime registrations, so later propagator options are unused. Propagation is registered
+ * even when the application already registered a context manager. Instances with page views share
  * one page operation per navigation, so their page-view IDs and correlated spans and logs match.
  *
  * @public
@@ -119,46 +117,9 @@ export interface MicrosoftOpenTelemetryBrowserTraceOptions {
   contextManager?: ContextManager;
   /**
    * Propagators combined for extraction and injection.
-   * Overrides `distributedTracingMode` and `appId`, including their validation.
-   * Omit this setting for the configured trace headers and W3C Baggage.
-   * Use an empty array to disable propagation.
+   * Omit this setting for W3C Trace Context and Baggage; use an empty array to disable propagation.
    */
   propagators?: readonly TextMapPropagator[];
-  /**
-   * Outgoing trace-header mode, using Application Insights JavaScript's numeric values:
-   * `0` (AI) sends Request-Id, `1` (AI_AND_W3C) adds traceparent,
-   * `2` (W3C) sends only traceparent, `17` (AI_AND_W3C_TRACE) adds tracestate to mode 1,
-   * and `18` (W3C_TRACE) adds tracestate to mode 2.
-   *
-   * @remarks
-   * Defaults to `18`, preserving W3C Trace Context without legacy headers. Baggage remains
-   * enabled in every mode. Request-Id is `|traceId.spanId` from the outgoing dependency span,
-   * including unsampled spans. Legacy headers are injection-only. Modes other than `0`
-   * extract W3C Trace Context through the upstream propagator.
-   *
-   * Fetch and XHR only send these headers to same-origin URLs or URLs explicitly allowed by
-   * each instrumentation's `propagateTraceHeaderCorsUrls`. Use those allow lists instead of
-   * Application Insights JavaScript's broad `enableCorsCorrelation` switch. The server must
-   * allow the selected headers in its CORS policy.
-   *
-   * @example
-   * ```ts
-   * traces: { distributedTracingMode: 17, appId: "your-application-id" }
-   * ```
-   *
-   * @throws TypeError for an unsupported mode when registering default propagation.
-   */
-  distributedTracingMode?: 0 | 1 | 2 | 17 | 18;
-  /**
-   * Application Insights application ID, without the `cid-v1:` prefix.
-   * Opts into `Request-Context: appId=cid-v1:<appId>` in every tracing mode, matching
-   * Application Insights JavaScript. Omitted by default and never discovered from ingestion.
-   * This is the application ID, not the instrumentation key or connection string.
-   *
-   * @throws TypeError unless the ID is non-empty printable ASCII without spaces, commas,
-   * semicolons or equals signs, when registering default propagation.
-   */
-  appId?: string;
 }
 
 /**

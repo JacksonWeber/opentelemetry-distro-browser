@@ -19,6 +19,7 @@ This document holds the *why*. Everything else has its own document.
 | [`M2_PLANNING.md`](M2_PLANNING.md) | Supported browser bundle, CDN publishing and initialization snippet |
 | [`M3_PLANNING.md`](M3_PLANNING.md) | Advanced configuration, optional integrations, loader and delivery parity, and remaining Application Insights JavaScript feature gaps |
 | [`M4_PLANNING.md`](M4_PLANNING.md) | General availability of `1.0.0` by February 2027 and migration from ApplicationInsights-JS |
+| [`../APPINSIGHTS_MIGRATION.md`](../APPINSIGHTS_MIGRATION.md) | ApplicationInsights-JS migration paths, intentional exclusions and current gaps |
 | [`../poc/SIZE_REPORT.md`](../poc/SIZE_REPORT.md) | Generated bundle size measurements |
 
 ## 1. Goal
@@ -138,7 +139,8 @@ aggregation, cardinality and export semantics. Advanced ApplicationInsights-JS p
 [M4](M4_PLANNING.md).
 
 **Non-goals.** Reimplementing the OTel API or SDK. Building an Application
-Insights SDK, or making a legacy AI API the primary surface. Coupling core
+Insights SDK, or making a legacy AI API the primary surface. Supporting legacy
+`Request-Id` or `Request-Context` correlation instead of W3C Trace Context. Coupling core
 routing to a backend or wire format. Transparently supporting every browser
 instrumentation in the first release, or claiming arbitrary multi-instance
 auto-instrumentation is safe before shared patch behavior is proven. Hiding

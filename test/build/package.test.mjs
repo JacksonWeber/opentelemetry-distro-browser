@@ -333,20 +333,10 @@ async function exerciseNpmPackage(distro) {
   const options = {
     spanProcessors: [new SimpleSpanProcessor(spans)],
     logRecordProcessors: [new SimpleLogRecordProcessor({ exporter: records })],
-    traces: { distributedTracingMode: 17, appId: "package-consumer" },
   };
   const telemetry = await distro.useMicrosoftOpenTelemetry(options);
   try {
-    const span = tracer.startSpan("manual");
-    const headers = {};
-    propagation.inject(trace.setSpan(context.active(), span), headers);
-    const { traceId, spanId } = span.spanContext();
-    assert.deepEqual(headers, {
-      traceparent: `00-${traceId}-${spanId}-01`,
-      "Request-Id": `|${traceId}.${spanId}`,
-      "Request-Context": "appId=cid-v1:package-consumer",
-    });
-    span.end();
+    tracer.startSpan("manual").end();
     logger.emit({ eventName: "manual" });
     await telemetry.forceFlush();
     assert.equal(spans.getFinishedSpans()[0]?.name, "manual");

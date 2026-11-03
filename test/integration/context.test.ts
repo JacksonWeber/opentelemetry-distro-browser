@@ -347,101 +347,6 @@ describe("propagation", () => {
 });
 
 describe("context lifecycle", () => {
-  it("keeps the first legacy configuration across concurrent instances and restart", async () => {
-    const options = { distributedTracingMode: 17 as const, appId: "first" };
-    await start({ traces: options });
-    options.appId = "mutated";
-    const extracted = propagation.extract(ROOT_CONTEXT, incomingHeaders);
-    const expected = {
-      ...incomingHeaders,
-      "Request-Id": `|${TRACE_ID}.${PARENT_ID}`,
-      "Request-Context": "appId=cid-v1:first",
-    };
-    const verifyHeaders = () => {
-      const injected = {};
-      propagation.inject(extracted, injected);
-      expect(injected).toEqual(expected);
-    };
-    const second = await useMicrosoftOpenTelemetry({
-      ...createInMemoryPipeline().options,
-      pageView: { enabled: false },
-      traces: { distributedTracingMode: 0, appId: "second" },
-    });
-    try {
-      verifyHeaders();
-      await handle?.shutdown();
-      verifyHeaders();
-    } finally {
-      await second.shutdown();
-    }
-    verifyHeaders();
-    await start({ traces: { distributedTracingMode: 2, appId: "third" } });
-    verifyHeaders();
-  });
-
-  it("leaves application propagation in control even when legacy headers are requested", async () => {
-    propagation.setGlobalPropagator(new W3CTraceContextPropagator());
-    await start({ traces: { distributedTracingMode: 0, appId: "unused" } });
-    const extracted = propagation.extract(ROOT_CONTEXT, incomingHeaders);
-    const injected = {};
-    propagation.inject(extracted, injected);
-    expect(injected).toEqual({
-      traceparent: incomingHeaders.traceparent,
-      tracestate: incomingHeaders.tracestate,
-    });
-  });
-
-  it("rejects invalid app IDs at startup and releases the owned processors", async () => {
-    const failed = createInMemoryPipeline();
-    const shutdownSpans = vi.spyOn(failed.spanProcessor, "shutdown");
-    const shutdownLogs = vi.spyOn(failed.logProcessor, "shutdown");
-    await expect(
-      useMicrosoftOpenTelemetry({
-        ...failed.options,
-        pageView: { enabled: false },
-        traces: { distributedTracingMode: 17, appId: "invalid\r\nheader" },
-      }),
-    ).rejects.toThrow("appId must be non-empty printable ASCII");
-    expect(shutdownSpans).toHaveBeenCalledOnce();
-    expect(shutdownLogs).toHaveBeenCalledOnce();
-    expect(propagation.fields()).toEqual([]);
-    await start({ traces: { distributedTracingMode: 0, appId: "valid" } });
-    const injected = {};
-    propagation.inject(
-      trace.setSpanContext(ROOT_CONTEXT, { traceId: TRACE_ID, spanId: PARENT_ID, traceFlags: 1 }),
-      injected,
-    );
-    expect(injected).toEqual({
-      "Request-Id": `|${TRACE_ID}.${PARENT_ID}`,
-      "Request-Context": "appId=cid-v1:valid",
-    });
-  });
-
-  it("rolls back legacy propagation if instrumentation startup fails", async () => {
-    await expect(
-      useMicrosoftOpenTelemetry({
-        ...createInMemoryPipeline().options,
-        pageView: { enabled: false },
-        traces: { distributedTracingMode: 17, appId: "failed" },
-        instrumentations: [
-          {
-            setTracerProvider() {},
-            getConfig: () => ({ enabled: false }),
-            enable() {
-              throw new Error("instrumentation startup failed");
-            },
-            disable() {},
-          },
-        ],
-      }),
-    ).rejects.toThrow("instrumentation startup failed");
-    expect(propagation.fields()).toEqual([]);
-    await start();
-    const injected = {};
-    propagation.inject(propagation.extract(ROOT_CONTEXT, incomingHeaders), injected);
-    expect(injected).toEqual(incomingHeaders);
-  });
-
   it.each([false, true])(
     "does not replace existing context APIs when traces are disabled (session=%s)",
     async (enabled) => {
@@ -457,8 +362,6 @@ describe("context lifecycle", () => {
         traces: {
           contextManager: customManager,
           propagators: [{ fields, inject() {}, extract: (ctx) => ctx }],
-          distributedTracingMode: 17,
-          appId: "unused",
         },
       });
 
