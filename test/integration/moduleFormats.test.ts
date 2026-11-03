@@ -86,6 +86,14 @@ function captureAmdDefine<T>(): { define: AmdDefine; getRegistration: (file: str
 }
 
 async function exercise(bundle: BrowserBundle): Promise<void> {
+  await expect(
+    bundle.useMicrosoftOpenTelemetry({
+      azureMonitor: {
+        connectionString: "InstrumentationKey=00000000-0000-0000-0000-000000000000",
+        sdkStats: { enabled: true },
+      },
+    }),
+  ).rejects.toThrow("Customer SDK Stats is only available through the npm package.");
   // The opt-in resource detectors are npm-only.
   for (const name of [
     "BrowserDetector",

@@ -23,6 +23,7 @@ import {
 import type { AzureMonitorEnvelope } from "./telemetryModels.js";
 import type { InternalSdkStats } from "./sdkStats.js";
 import type { CustomerSdkStats } from "./customerSdkStats.js";
+import { CUSTOMER_SDK_STATS_ENABLED } from "../shared/buildFeatures.js";
 import {
   getKeepaliveReservations,
   registerSdkIngestionUrl,
@@ -223,7 +224,7 @@ export class Sender {
 
         currentRequest = retryRequest;
         retryCodes =
-          this.#itemStats && result.statusCode === 206
+          CUSTOMER_SDK_STATS_ENABLED && this.#itemStats && result.statusCode === 206
             ? retriableErrors(breezeErrors).map((error) => String(error.statusCode))
             : String(result.statusCode);
         if (result.retryAfterMs === undefined) {
@@ -241,6 +242,7 @@ export class Sender {
   }
 
   #countItems(request: SendRequest, result: SenderResultType, willRetry = false): void {
+    if (!CUSTOMER_SDK_STATS_ENABLED) return;
     const stats = this.#itemStats;
     const envelopes = request.envelopes;
     if (!stats || !envelopes || request.active?.() === false) return;
@@ -259,11 +261,7 @@ export class Sender {
           const error = errors.get(index);
           if (!error) stats.countEnvelopes("Success", [envelope]);
           else if (isSamplingRejection(error) || !isRetriable(error.statusCode)) {
-            stats.countEnvelopes(
-              "Dropped",
-              [envelope],
-              isSamplingRejection(error) ? "SAMPLING" : String(error.statusCode),
-            );
+            stats.countEnvelopes("Dropped", [envelope], String(error.statusCode));
           }
         }
         if (!willRetry) {
@@ -293,7 +291,13 @@ export class Sender {
     codes: string | readonly string[],
     retain: boolean,
   ): void {
-    if (!this.#itemStats || !envelopes?.length || request.active?.() === false) return;
+    if (
+      !CUSTOMER_SDK_STATS_ENABLED ||
+      !this.#itemStats ||
+      !envelopes?.length ||
+      request.active?.() === false
+    )
+      return;
     if (!retain || !request.retain?.()) this.#itemStats.countEnvelopes("Dropped", envelopes, codes);
   }
 
@@ -394,7 +398,8 @@ export class Sender {
               });
               transport = pending;
               if (retryCodes) {
-                this.#itemStats?.countEnvelopes("Retry", request.envelopes, retryCodes);
+                if (CUSTOMER_SDK_STATS_ENABLED)
+                  this.#itemStats?.countEnvelopes("Retry", request.envelopes, retryCodes);
               }
               if (useKeepalive) request.onDispatch?.();
               return pending;

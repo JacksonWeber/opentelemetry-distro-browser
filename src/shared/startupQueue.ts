@@ -47,18 +47,22 @@ export class StartupQueue<T> {
     return this.#status === "pending";
   }
 
-  public track(item: T): void {
+  public track(item: T): "QUEUE_FULL" | undefined {
     this.#checkTimeout();
     if (this.#status === "active") {
       this.#send(item);
     } else if (this.#status === "pending") {
       if (this.#queue.length < this.#capacity) {
         this.#queue.push(item);
-      } else if (!this.#queueFullReported) {
-        this.#queueFullReported = true;
-        this.#warn("Telemetry startup queue full; dropping new items");
+      } else {
+        if (!this.#queueFullReported) {
+          this.#queueFullReported = true;
+          this.#warn("Telemetry startup queue full; dropping new items");
+        }
+        return "QUEUE_FULL";
       }
     }
+    return undefined;
   }
 
   /** Activates once and releases buffered items in arrival order. Late activation is ignored. */

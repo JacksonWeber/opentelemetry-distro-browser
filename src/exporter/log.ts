@@ -6,6 +6,7 @@ import type { LogRecordExporter, ReadableLogRecord } from "@opentelemetry/sdk-lo
 import { AzureMonitorExportClient, type AzureMonitorOptions } from "./base.js";
 import { logItemType, appendLogEnvelopes } from "./logUtils.js";
 import { customerSdkStats } from "./customerSdkStats.js";
+import { CUSTOMER_SDK_STATS_ENABLED } from "../shared/buildFeatures.js";
 
 /**
  * Exports OpenTelemetry log records to Azure Monitor.
@@ -26,16 +27,17 @@ export class AzureMonitorLogRecordExporter implements LogRecordExporter {
   /** Standalone export requires a resolved string; the distribution owns startup buffering. */
   public constructor(options: AzureMonitorOptions) {
     this.#client = new AzureMonitorExportClient(options);
-    if (this.#client.itemStats) customerSdkStats.set(this, this.#client.itemStats);
+    if (CUSTOMER_SDK_STATS_ENABLED && this.#client.itemStats)
+      customerSdkStats.set(this, this.#client.itemStats);
   }
 
   public export(logs: ReadableLogRecord[], callback: (result: ExportResult) => void): void {
     this.#client.exportRecords(
       logs,
       (log, envelopes) => appendLogEnvelopes(log, this.#client.instrumentationKey, envelopes),
-      logItemType,
+      CUSTOMER_SDK_STATS_ENABLED ? logItemType : undefined,
       callback,
-      this.#client.itemStats?.shouldCollectLog,
+      CUSTOMER_SDK_STATS_ENABLED ? this.#client.itemStats?.shouldCollectLog : undefined,
     );
   }
 

@@ -5,8 +5,8 @@ Deliver advanced parity with capabilities that already exist in
 where applicable.
 
 Status: in progress. The advanced loader, high-entropy OS version, envelope context tags, URL
-redaction, the unsent telemetry buffer and the deferred connection string have shipped; SDK health
-statistics and storage configuration are partly done. Gaps were last compared against
+redaction, the unsent telemetry buffer and the deferred connection string have shipped; customer SDK
+Stats and storage configuration are partly done. Gaps were last compared against
 ApplicationInsights-JS 3.4.5. Migration from ApplicationInsights-JS and the general availability
 release are owned by [M4](M4_PLANNING.md).
 
@@ -14,7 +14,7 @@ release are owned by [M4](M4_PLANNING.md).
 
 | Item | M3 outcome | ApplicationInsights-JS reference | Status |
 | --- | --- | --- | --- |
-| SDK health statistics | Pipeline counters for sent, dropped, retried and throttled telemetry, reported through a path that cannot collect itself. | `sdkStats`, `stats` | Partial. Request-level success, failure, retry, throttle, exception and duration counters are sent hourly to the internal stats endpoint, with no public option (#121). Item-level `Item_Success_Count`, `Item_Dropped_Count` and `Item_Retry_Count`, including drops from queue limits and sampling, remain. |
+| Customer SDK Stats | Pipeline counters for sent, dropped, retried and throttled telemetry, reported through a path that cannot collect itself. | `sdkStats`, `stats` | Partial. Request-level success, failure, retry, throttle, exception and duration counters are sent hourly to the internal stats endpoint, with no public option (#121). Item-level `Item_Success_Count`, `Item_Dropped_Count` and `Item_Retry_Count`, including drops from queue limits and sampling, remain. |
 | Diagnostics settings | Counterparts of the console and telemetry logging levels and debug mode, built on OpenTelemetry `diag` and isolated from customer telemetry. | `loggingLevelConsole`, `loggingLevelTelemetry`, `enableDebug` | Not started |
 | Dynamic configuration | Runtime configuration updates and remote configuration sync, including instrumentation replacement and a telemetry kill switch, limited to options that can be updated atomically. | `updateCfg`, `disableTelemetry`, `applicationinsights-cfgsync-js` | Not started |
 | Enrichment and filtering with OpenTelemetry processors | No `addTelemetryInitializer` or `getPlugin`, the same as the other Microsoft OpenTelemetry distributions. Applications enrich telemetry with span and log record processors, instrumentation hooks and the `resource` option, filter it through instrumentation options and sampling, and keep references to the instrumentations they pass in. Supplied processors run before Azure Monitor export, as in the JavaScript distribution, so their attributes are exported with sampling on. Processors are fixed at startup; instrumentation replacement belongs to Dynamic configuration. | `addTelemetryInitializer`, `getPlugin` | Done. Processors run before Azure Monitor export, and the mapping is in the configuration reference. |

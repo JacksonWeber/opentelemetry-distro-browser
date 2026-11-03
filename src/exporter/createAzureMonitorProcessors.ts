@@ -3,13 +3,19 @@
 
 import { diag } from "@opentelemetry/api";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
-import { BatchSpanProcessor, type SpanProcessor } from "@opentelemetry/sdk-trace-base";
+import {
+  BatchSpanProcessor,
+  type BatchSpanProcessorBrowserOptions,
+  type SpanProcessor,
+} from "@opentelemetry/sdk-trace";
 import { AzureMonitorSamplingLogRecordProcessor } from "../samplingLogRecordProcessor.js";
 import { StartupQueue } from "../shared/startupQueue.js";
+import { CUSTOMER_SDK_STATS_ENABLED } from "../shared/buildFeatures.js";
 import { unloadBeaconPolicies, type AzureMonitorOptions } from "./base.js";
 import { AzureMonitorLogRecordExporter } from "./log.js";
 import { AzureMonitorSpanExporter } from "./trace.js";
 import { sessionBufferStorage } from "./sessionBuffer.js";
+import { customerSdkStats, shouldCollectSdkStatsLog } from "./customerSdkStats.js";
 
 /** Creates only the Azure Monitor branches; custom processors never pass through this queue. */
 export function createAzureMonitorProcessors(
@@ -27,7 +33,6 @@ export function createAzureMonitorProcessors(
 } {
   let span: SpanProcessor | undefined;
   let log: AzureMonitorSamplingLogRecordProcessor | undefined;
-
   function initialize(connectionString: string): void {
     const resolved = { ...options, connectionString };
     unloadBeaconPolicies.set(resolved, readDisableBeacon);
@@ -40,14 +45,20 @@ export function createAzureMonitorProcessors(
       const exporter = new AzureMonitorSpanExporter(resolved);
       exporters.push(exporter);
       // The distribution already flushes on page hide.
-      span = new BatchSpanProcessor(exporter, { disableAutoFlushOnDocumentHide: true });
+      const processorOptions: BatchSpanProcessorBrowserOptions = {
+        exporter,
+        disableAutoFlushOnDocumentHide: true,
+      };
+      span = new BatchSpanProcessor(processorOptions);
     }
     if (logsEnabled) {
       const exporter = new AzureMonitorLogRecordExporter(resolved);
       exporters.push(exporter);
+      const stats = CUSTOMER_SDK_STATS_ENABLED ? customerSdkStats.get(exporter) : undefined;
       log = new AzureMonitorSamplingLogRecordProcessor({
         exporter,
         samplingPercentage: readSamplingPercentage,
+        shouldCollect: stats?.shouldCollectLog,
       });
     }
   }
@@ -79,11 +90,12 @@ export function createAzureMonitorProcessors(
     () => queue.fail(),
   );
 
+  const stop = (): void => {
+    queue.shutdown();
+    warnings = undefined;
+  };
   return {
-    stop: () => {
-      queue.shutdown();
-      warnings = undefined;
-    },
+    stop,
     startDiagnostics: () => {
       const buffered = warnings ?? [];
       warnings = undefined;
@@ -92,12 +104,14 @@ export function createAzureMonitorProcessors(
     span: tracesEnabled
       ? {
           onStart() {},
-          onEnd: (record) => queue.track(() => span?.onEnd(record)),
+          onEnd: (record) => {
+            queue.track(() => span?.onEnd(record));
+          },
           forceFlush: async () => {
             await span?.forceFlush();
           },
           shutdown: async () => {
-            queue.shutdown();
+            stop();
             await span?.shutdown();
           },
         }
@@ -105,6 +119,12 @@ export function createAzureMonitorProcessors(
     log: logsEnabled
       ? {
           onEmit: (record) => {
+            if (
+              CUSTOMER_SDK_STATS_ENABLED &&
+              options.sdkStats?.enabled &&
+              !shouldCollectSdkStatsLog(record)
+            )
+              return;
             const percentage = readSamplingPercentage();
             queue.track(() => log?.onEmitWithSamplingPercentage(record, percentage));
           },
@@ -112,7 +132,7 @@ export function createAzureMonitorProcessors(
             await log?.forceFlush();
           },
           shutdown: async () => {
-            queue.shutdown();
+            stop();
             await log?.shutdown();
           },
         }

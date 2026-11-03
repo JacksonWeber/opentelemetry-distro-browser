@@ -8,9 +8,9 @@ import {
 } from "./context/contextProcessors.js";
 import { createSession } from "./session/createSession.js";
 import { createUserContext } from "./user/createUserContext.js";
+import { snapshotSdkStatsOptions } from "./exporter/customerSdkStats.js";
 import { createKeyValueStorage } from "./storage/keyValueStorage.js";
 import { createSessionBufferStorage, sessionBufferStorage } from "./exporter/sessionBuffer.js";
-import { validateSdkStatsOptions } from "./exporter/customerSdkStats.js";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import type { SpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { beginUnloading, endUnloading } from "./exporter/common.js";
@@ -165,7 +165,7 @@ function createOwnedInstrumentations(
 export async function useMicrosoftOpenTelemetry(
   options: MicrosoftOpenTelemetryBrowserOptions = {},
 ): Promise<MicrosoftOpenTelemetryBrowser> {
-  validateSdkStatsOptions(options.azureMonitor?.sdkStats);
+  const sdkStats = snapshotSdkStatsOptions(options.azureMonitor?.sdkStats);
   let stopping = false;
   let instrumentationRegistry: ReturnType<typeof createInstrumentationRegistry> | undefined;
   const sessionOptions = options.session;
@@ -173,7 +173,12 @@ export async function useMicrosoftOpenTelemetry(
   const maxDuration = sessionOptions?.maxDuration;
   const sessionRenewalMs = options.sessionRenewalMs;
   const sessionExpirationMs = options.sessionExpirationMs;
-  const azureMonitor = options.azureMonitor ? { ...options.azureMonitor } : undefined;
+  const azureMonitor = options.azureMonitor
+    ? {
+        ...options.azureMonitor,
+        sdkStats,
+      }
+    : undefined;
   const configuration = createRuntimeConfiguration(
     {
       samplingPercentage: options.samplingPercentage,

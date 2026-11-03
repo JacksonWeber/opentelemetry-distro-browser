@@ -14,7 +14,7 @@ import { logs, SeverityNumber } from "@opentelemetry/api-logs";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { detectResources, resourceFromAttributes } from "@opentelemetry/resources";
 import { BrowserBatchLogRecordProcessor } from "../../../src/browserBatchLogRecordProcessor.js";
-import { BatchSpanProcessor, SamplingDecision } from "@opentelemetry/sdk-trace-base";
+import { BatchSpanProcessor, SamplingDecision } from "@opentelemetry/sdk-trace";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   browserDetector,

@@ -2,7 +2,8 @@
 // Licensed under the MIT License.
 
 // The default CDN and global bundle. A script tag cannot tree-shake, so this lists the root exports
-// explicitly and leaves out the opt-in resource detectors, which only npm consumers can use. Keep this
+// explicitly and leaves out the opt-in resource detectors. Customer SDK Stats is also stripped at
+// build time. Both features are npm-only. Keep this
 // in sync with `index.ts`; `test/build/cdn.test.mjs` compares them.
 export { context, diag, metrics, propagation, trace } from "@opentelemetry/api";
 export { logs } from "@opentelemetry/api-logs";

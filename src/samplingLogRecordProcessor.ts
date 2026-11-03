@@ -47,6 +47,7 @@ export class AzureMonitorSamplingLogRecordProcessor extends BrowserBatchLogRecor
     record: ReadWriteLogRecord,
     percentage: number | undefined,
   ): void {
+    if (!this.accepts(record)) return;
     if (percentage === undefined) {
       super.onEmit(record);
       return;
