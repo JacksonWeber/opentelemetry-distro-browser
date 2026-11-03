@@ -3,11 +3,13 @@
 
 import { context, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
+import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { afterEach, expect, it, vi } from "vitest";
 import type { AzureMonitorEnvelope } from "../../src/exporter/telemetryModels.js";
 import { AZURE_MONITOR_SAMPLE_RATE, getSamplingScore, isTraceSampled } from "../../src/sampling.js";
 import { useMicrosoftOpenTelemetry, type MicrosoftOpenTelemetryBrowser } from "../../src/index.js";
 import { createInMemoryPipeline } from "../fixtures/telemetry.js";
+import { withoutSdkStats } from "../fixtures/sdkStats.js";
 
 const connectionString =
   "InstrumentationKey=00000000-0000-0000-0000-000000000000;" +
@@ -65,7 +67,7 @@ it("retains a page view, child span, and correlated log with one effective rate"
     requests.push(decodeRequest(init));
     return Promise.resolve(new Response(null, { status: 200 }));
   });
-  vi.stubGlobal("fetch", fetch);
+  vi.stubGlobal("fetch", withoutSdkStats(fetch));
   let pageReady!: () => void;
   const emitted = new Promise<void>((resolve) => {
     pageReady = resolve;
@@ -103,12 +105,46 @@ it("retains a page view, child span, and correlated log with one effective rate"
   expect(callerLog?.attributes[AZURE_MONITOR_SAMPLE_RATE]).toBeUndefined();
 });
 
+it.each([undefined, 50])(
+  "exports attributes added by caller log processors to Azure Monitor (sampling %s)",
+  async (samplingPercentage) => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const requests: Promise<AzureMonitorEnvelope[]>[] = [];
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation((_input, init) => {
+      requests.push(decodeRequest(init));
+      return Promise.resolve(new Response(null, { status: 200 }));
+    });
+    vi.stubGlobal("fetch", withoutSdkStats(fetch));
+    const enrich: LogRecordProcessor = {
+      onEmit: (record) => record.setAttribute("app.tenant", "contoso"),
+      forceFlush: () => Promise.resolve(),
+      shutdown: () => Promise.resolve(),
+    };
+
+    handle = await useMicrosoftOpenTelemetry({
+      ...(samplingPercentage === undefined ? {} : { samplingPercentage }),
+      azureMonitor: { connectionString },
+      logRecordProcessors: [enrich],
+      spanProcessors: [],
+      pageView: { enabled: false },
+    });
+    logs.getLogger("sampling-integration").emit({ eventName: "enriched-log" });
+    await handle.forceFlush();
+
+    const envelopes = (await Promise.all(requests)).flat();
+    const event = envelopes.find((envelope) => envelope.data.baseType === "EventData");
+    expect(event?.data.baseData?.["properties"]).toEqual(
+      expect.objectContaining({ "app.tenant": "contoso" }),
+    );
+  },
+);
+
 it("rejects an unsampled page group only from Azure Monitor log export", async () => {
   const pipeline = createInMemoryPipeline();
   const fetch = vi
     .fn<typeof globalThis.fetch>()
     .mockResolvedValue(new Response(null, { status: 200 }));
-  vi.stubGlobal("fetch", fetch);
+  vi.stubGlobal("fetch", withoutSdkStats(fetch));
   let pageReady!: () => void;
   const emitted = new Promise<void>((resolve) => {
     pageReady = resolve;

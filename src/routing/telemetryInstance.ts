@@ -5,6 +5,7 @@ import {
   diag,
   DiagConsoleLogger,
   DiagLogLevel,
+  SpanKind,
   type Attributes,
   type TracerProvider as TracerProviderApi,
 } from "@opentelemetry/api";
@@ -16,6 +17,7 @@ import { TracerProvider, type SpanProcessor } from "@opentelemetry/sdk-trace";
 import { StackContextManager } from "@opentelemetry/sdk-trace-web";
 import { createPropagator } from "../propagation.js";
 import type { MicrosoftOpenTelemetryBrowserTraceOptions } from "../types.js";
+import { redactUrl } from "../shared/urlRedaction.js";
 import { addInstance, noopLoggerProvider, noopTracerProvider } from "./instanceRouter.js";
 import {
   addPageCorrelation,
@@ -27,12 +29,14 @@ import { runLifecycleTasks } from "../shared/lifecycle.js";
 import {
   commitGlobals,
   getSharedRegistry,
+  isReportingSdkStats,
   reportError,
   rollbackGlobals,
 } from "../shared/globalOwnership.js";
 
 /** Resolved pipeline configuration for one distribution instance. */
 export interface TelemetryInstanceOptions extends Readonly<MicrosoftOpenTelemetryBrowserTraceOptions> {
+  readonly redactedQueryParams?: readonly string[];
   readonly resourceAttributes: Attributes;
   readonly sampler?: Sampler;
   /** An empty list leaves traces off for this instance. */
@@ -64,6 +68,7 @@ export interface TelemetryInstance {
 export async function startTelemetryInstance(
   options: TelemetryInstanceOptions,
 ): Promise<TelemetryInstance> {
+  const parameters = options.redactedQueryParams;
   let tracerProvider: TracerProvider | undefined;
   let loggerProvider: LoggerProvider | undefined;
   let stopped = false;
@@ -98,22 +103,69 @@ export async function startTelemetryInstance(
     }
     const resource = defaultResource().merge(resourceFromAttributes(options.resourceAttributes));
     if (options.spanProcessors.length) {
+      const spanProcessors = options.spanProcessors.map((processor): SpanProcessor => ({
+        onStart: (span, ctx) => {
+          if (!stopped) processor.onStart(span, ctx);
+        },
+        onEnding: (span) => {
+          if (!stopped) processor.onEnding?.(span);
+        },
+        onEnd: (span) => {
+          if (!stopped) processor.onEnd(span);
+        },
+        forceFlush: () => processor.forceFlush(),
+        shutdown: shutdownProcessor,
+      }));
+      if (parameters) {
+        // SDK 2.11 runs all onEnding hooks before any onEnd, while setters still work.
+        // Keep redaction last so it also sanitizes attributes added by application hooks.
+        spanProcessors.push({
+          onStart() {},
+          onEnding: (span) => {
+            if (
+              stopped ||
+              (span.instrumentationScope.name !== "@opentelemetry/browser-instrumentation/fetch" &&
+                span.instrumentationScope.name !== "@opentelemetry/browser-instrumentation/xhr") ||
+              span.kind !== SpanKind.CLIENT ||
+              typeof (span.attributes["http.request.method"] ?? span.attributes["http.method"]) !==
+                "string"
+            ) {
+              return;
+            }
+            for (const name of ["url.full", "http.url"]) {
+              const url = span.attributes[name];
+              if (typeof url !== "string" || !url.trim()) continue;
+              try {
+                span.setAttribute(name, redactUrl(url, parameters));
+              } catch {
+                try {
+                  // Resolve relative sanitizer output only; absolute URLs need no browser globals.
+                  const base =
+                    (typeof document !== "undefined" && document.baseURI) ||
+                    (typeof location !== "undefined" ? location.href : undefined);
+                  const baseUrl = base ? new URL(base) : undefined;
+                  if (baseUrl) {
+                    // Never restore page data removed by an application sanitizer.
+                    baseUrl.search = "";
+                    baseUrl.hash = "";
+                  }
+                  span.setAttribute(name, redactUrl(new URL(url, baseUrl).href, parameters));
+                } catch {
+                  // Unparseable sanitizer output may still contain sensitive parameters.
+                  span.setAttribute(name, "");
+                }
+              }
+            }
+          },
+          onEnd() {},
+          async forceFlush() {},
+          shutdown: shutdownProcessor,
+        });
+      }
       tracerProvider = new TracerProvider({
         resource,
         sampler: options.sampler,
-        spanProcessors: options.spanProcessors.map((processor): SpanProcessor => ({
-          onStart: (span, ctx) => {
-            if (!stopped) processor.onStart(span, ctx);
-          },
-          onEnding: (span) => {
-            if (!stopped) processor.onEnding?.(span);
-          },
-          onEnd: (span) => {
-            if (!stopped) processor.onEnd(span);
-          },
-          forceFlush: () => processor.forceFlush(),
-          shutdown: shutdownProcessor,
-        })),
+        spanProcessors,
       });
     }
     if (options.logRecordProcessors.length) {
@@ -122,7 +174,7 @@ export async function startTelemetryInstance(
         processors: options.logRecordProcessors.map((processor): LogRecordProcessor => ({
           enabled: (options) => !stopped && (processor.enabled?.(options) ?? true),
           onEmit: (record, ctx) => {
-            if (!stopped) processor.onEmit(record, ctx);
+            if (!stopped && !isReportingSdkStats()) processor.onEmit(record, ctx);
           },
           forceFlush: (options) => processor.forceFlush(options),
           shutdown: shutdownProcessor,

@@ -3,6 +3,7 @@
 
 import {
   ROOT_CONTEXT,
+  SpanKind,
   context,
   diag,
   propagation,
@@ -11,11 +12,9 @@ import {
 } from "@opentelemetry/api";
 import { logs, SeverityNumber } from "@opentelemetry/api-logs";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
-import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
-import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
-import { resourceFromAttributes } from "@opentelemetry/resources";
-import { BatchLogRecordProcessor } from "@opentelemetry/sdk-logs";
-import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { detectResources, resourceFromAttributes } from "@opentelemetry/resources";
+import { BrowserBatchLogRecordProcessor } from "../../../src/browserBatchLogRecordProcessor.js";
+import { BatchSpanProcessor, SamplingDecision } from "@opentelemetry/sdk-trace-base";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   browserDetector,
@@ -26,15 +25,22 @@ import {
   type MicrosoftOpenTelemetryBrowserOptions,
 } from "../../../src/index.js";
 import { isUnloading } from "../../../src/exporter/common.js";
+import { AzureMonitorLogRecordExporter } from "../../../src/exporter/log.js";
+import { AzureMonitorSpanExporter } from "../../../src/exporter/trace.js";
 import { noopLoggerProvider, noopTracerProvider } from "../../../src/routing/instanceRouter.js";
 import { startTelemetryInstance } from "../../../src/routing/telemetryInstance.js";
+import { getSharedRegistry } from "../../../src/shared/globalOwnership.js";
+import { DEFAULT_QUERY_STRINGS_TO_REDACT } from "../../../src/shared/urlRedaction.js";
 import { createInMemoryPipeline } from "../../fixtures/telemetry.js";
-import { ApplicationInsightsSampler, PageOperationSampler } from "../../../src/sampling.js";
+import { AZURE_MONITOR_SAMPLE_RATE, RuntimeSampler } from "../../../src/sampling.js";
 import { AzureMonitorSamplingLogRecordProcessor } from "../../../src/samplingLogRecordProcessor.js";
 
 vi.mock("../../../src/routing/telemetryInstance.js", { spy: true });
 
 const handles = new Set<MicrosoftOpenTelemetryBrowser>();
+const azureMonitor = {
+  connectionString: "InstrumentationKey=00000000-0000-0000-0000-000000000000",
+};
 
 /** Stands in for an instance's providers so a test controls their shutdown. */
 function fakeInstance() {
@@ -82,11 +88,12 @@ it("prepends session enrichment without changing the caller's processor arrays",
   const handle = await useMicrosoftOpenTelemetry(Object.freeze(options));
   handles.add(handle);
   expect(startTelemetryInstance).toHaveBeenCalledExactlyOnceWith({
+    redactedQueryParams: DEFAULT_QUERY_STRINGS_TO_REDACT,
     resourceAttributes: {
       "telemetry.distro.name": "@microsoft/opentelemetry-browser",
       "telemetry.distro.version": OPENTELEMETRY_BROWSER_VERSION,
     },
-    sampler: expect.any(PageOperationSampler),
+    sampler: expect.any(RuntimeSampler),
     spanProcessors: [
       expect.objectContaining({ onStart: expect.any(Function) }),
       pipeline.spanProcessor,
@@ -106,7 +113,7 @@ it("prepends session enrichment without changing the caller's processor arrays",
   expect(upstreamHandle.shutdown).toHaveBeenCalledOnce();
 });
 
-it("adds Azure Monitor batch exporters after context enrichment and before caller processors", async () => {
+it("adds Azure Monitor batch exporters after context enrichment and caller processors", async () => {
   const pipeline = createInMemoryPipeline();
   const upstreamHandle = fakeInstance();
   vi.mocked(startTelemetryInstance).mockResolvedValueOnce(upstreamHandle);
@@ -122,6 +129,7 @@ it("adds Azure Monitor batch exporters after context enrichment and before calle
     logRecordProcessors: pipeline.options.logRecordProcessors,
     pageView: { enabled: false },
   });
+  handles.add(handle);
 
   expect(startTelemetryInstance).toHaveBeenCalledOnce();
   const sdkOptions = vi.mocked(startTelemetryInstance).mock.calls[0]?.[0];
@@ -130,17 +138,15 @@ it("adds Azure Monitor batch exporters after context enrichment and before calle
   expect(sdkOptions.spanProcessors[0]).toEqual(
     expect.objectContaining({ onStart: expect.any(Function) }),
   );
-  expect(sdkOptions.spanProcessors[1]).toBeInstanceOf(BatchSpanProcessor);
-  expect(sdkOptions.spanProcessors[2]).toBe(pipeline.spanProcessor);
+  expect(sdkOptions.spanProcessors[1]).toBe(pipeline.spanProcessor);
+  expect(sdkOptions.spanProcessors[2]).toBeInstanceOf(BatchSpanProcessor);
   expect(sdkOptions.logRecordProcessors).toHaveLength(3);
   expect(sdkOptions.logRecordProcessors[0]).toEqual(
     expect.objectContaining({ onEmit: expect.any(Function) }),
   );
-  expect(sdkOptions.logRecordProcessors[1]).toBeInstanceOf(BatchLogRecordProcessor);
-  expect(sdkOptions.logRecordProcessors[1]).not.toBeInstanceOf(
-    AzureMonitorSamplingLogRecordProcessor,
-  );
-  expect(sdkOptions.logRecordProcessors[2]).toBe(pipeline.logProcessor);
+  expect(sdkOptions.logRecordProcessors[1]).toBe(pipeline.logProcessor);
+  expect(sdkOptions.logRecordProcessors[2]).toBeInstanceOf(BrowserBatchLogRecordProcessor);
+  expect(sdkOptions.logRecordProcessors[2]).toBeInstanceOf(AzureMonitorSamplingLogRecordProcessor);
   expect(
     addDocumentListener.mock.calls.filter(([eventName]) => eventName === "visibilitychange"),
   ).toHaveLength(1);
@@ -149,24 +155,156 @@ it("adds Azure Monitor batch exporters after context enrichment and before calle
   expect(upstreamHandle.shutdown).toHaveBeenCalledOnce();
 });
 
-it("installs fixed-percentage sampling only when explicitly configured", async () => {
+it("honors an inherited startup sampling getter and captures its value once", async () => {
+  const read = vi.fn(() => 0);
+  class Options {
+    get samplingPercentage() {
+      return read();
+    }
+    pageView = { enabled: false };
+    session = { enabled: false };
+    userContext = { enabled: false };
+  }
   vi.mocked(startTelemetryInstance).mockResolvedValueOnce(fakeInstance());
-
-  const handle = await useMicrosoftOpenTelemetry({
-    samplingPercentage: 25,
-    azureMonitor: {
-      connectionString:
-        "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example.test",
-    },
-    pageView: { enabled: false },
-  });
+  const handle = await useMicrosoftOpenTelemetry(new Options());
   handles.add(handle);
-
-  const sdkOptions = vi.mocked(startTelemetryInstance).mock.calls[0]?.[0];
-  expect(sdkOptions?.sampler).toBeInstanceOf(ApplicationInsightsSampler);
-  expect((sdkOptions?.sampler as ApplicationInsightsSampler).samplingPercentage).toBe(25);
-  expect(sdkOptions?.logRecordProcessors[1]).toBeInstanceOf(AzureMonitorSamplingLogRecordProcessor);
+  const sampler = vi.mocked(startTelemetryInstance).mock.calls[0]?.[0].sampler;
+  if (!sampler) throw new Error("Expected telemetry instance sampler");
+  expect(read).toHaveBeenCalledOnce();
+  const sample = () =>
+    sampler.shouldSample(
+      ROOT_CONTEXT,
+      "00000000000000000000000000000001",
+      "operation",
+      SpanKind.INTERNAL,
+      {},
+      [],
+    );
+  expect(sample().decision).toBe(SamplingDecision.NOT_RECORD);
+  await handle.updateCfg({ samplingPercentage: 100 });
+  expect(sample().decision).toBe(SamplingDecision.RECORD_AND_SAMPLED);
+  expect(read).toHaveBeenCalledOnce();
 });
+
+it("captures an enumerable startup beacon getter once", async () => {
+  const read = vi.fn(() => true);
+  const options: MicrosoftOpenTelemetryBrowserOptions = {
+    azureMonitor: { ...azureMonitor },
+    session: { enabled: false },
+    userContext: { enabled: false },
+    storage: { enabled: false },
+    pageView: { enabled: false },
+  };
+  Object.defineProperty(options.azureMonitor, "disableBeacon", { enumerable: true, get: read });
+  vi.mocked(startTelemetryInstance).mockResolvedValueOnce(fakeInstance());
+  const handle = await useMicrosoftOpenTelemetry(options);
+  handles.add(handle);
+  expect(await handle.updateCfg({ onunloadDisableBeacon: true })).toEqual({
+    revision: 0,
+    changedPaths: [],
+  });
+  expect(read).toHaveBeenCalledOnce();
+  expect(startTelemetryInstance).toHaveBeenCalledOnce();
+});
+
+it.each([false, undefined])(
+  "ignores the runtime-only beacon alias at startup: %s",
+  async (onunloadDisableBeacon) => {
+    const options = {
+      azureMonitor: { ...azureMonitor, disableBeacon: true },
+      onunloadDisableBeacon,
+      pageView: { enabled: false },
+      session: { enabled: false },
+      userContext: { enabled: false },
+      storage: { enabled: false },
+    };
+    vi.mocked(startTelemetryInstance).mockResolvedValueOnce(fakeInstance());
+    const handle = await useMicrosoftOpenTelemetry(options);
+    handles.add(handle);
+    expect(await handle.updateCfg({ onunloadDisableBeacon: true })).toEqual({
+      revision: 0,
+      changedPaths: [],
+    });
+    expect(await handle.updateCfg({ onunloadDisableBeacon: false })).toEqual({
+      revision: 1,
+      changedPaths: ["azureMonitor.disableBeacon"],
+    });
+    expect(startTelemetryInstance).toHaveBeenCalledOnce();
+  },
+);
+
+it.each(["true", null, 1])(
+  "rejects invalid native beacon startup policy before side effects: %s",
+  async (disableBeacon) => {
+    const local = vi.spyOn(window, "localStorage", "get");
+    const session = vi.spyOn(window, "sessionStorage", "get");
+    await expect(
+      useMicrosoftOpenTelemetry({
+        azureMonitor: { ...azureMonitor, disableBeacon },
+      } as unknown as MicrosoftOpenTelemetryBrowserOptions),
+    ).rejects.toThrow();
+    expect(startTelemetryInstance).not.toHaveBeenCalled();
+    expect(local).not.toHaveBeenCalled();
+    expect(session).not.toHaveBeenCalled();
+  },
+);
+
+it.each([undefined, 25])(
+  "keeps a stable runtime sampler with initial percentage %s",
+  async (samplingPercentage) => {
+    vi.mocked(startTelemetryInstance).mockResolvedValueOnce(fakeInstance());
+
+    const handle = await useMicrosoftOpenTelemetry({
+      samplingPercentage,
+      azureMonitor: {
+        connectionString:
+          "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example.test",
+      },
+      pageView: { enabled: false },
+    });
+    handles.add(handle);
+
+    const sdkOptions = vi.mocked(startTelemetryInstance).mock.calls[0]?.[0];
+    const sampler = sdkOptions?.sampler;
+    if (!sampler) throw new Error("Expected telemetry instance sampler");
+    expect(sampler).toBeInstanceOf(RuntimeSampler);
+    expect(sdkOptions?.logRecordProcessors[1]).toBeInstanceOf(
+      AzureMonitorSamplingLogRecordProcessor,
+    );
+    const sampledId = "00000000000000000000000000000001";
+    const droppedId = "ffffffffffffffffffffffffffffffff";
+    const parent = trace.setSpanContext(ROOT_CONTEXT, {
+      traceId: sampledId,
+      spanId: "0000000000000001",
+      traceFlags: 0,
+    });
+    const sample = (traceId: string, parentContext = ROOT_CONTEXT) =>
+      sampler.shouldSample(parentContext, traceId, "operation", SpanKind.INTERNAL, {}, []);
+    expect(sample(sampledId).decision).toBe(SamplingDecision.RECORD_AND_SAMPLED);
+    expect(sample(droppedId).decision).toBe(
+      samplingPercentage === undefined
+        ? SamplingDecision.RECORD_AND_SAMPLED
+        : SamplingDecision.NOT_RECORD,
+    );
+    expect(sample(sampledId).attributes?.[AZURE_MONITOR_SAMPLE_RATE]).toBe(samplingPercentage);
+    expect(sample(sampledId, parent).decision).toBe(
+      samplingPercentage === undefined
+        ? SamplingDecision.NOT_RECORD
+        : SamplingDecision.RECORD_AND_SAMPLED,
+    );
+
+    await handle.updateCfg({ samplingPercentage: 0 });
+    expect(sample(sampledId).decision).toBe(SamplingDecision.NOT_RECORD);
+    await handle.updateCfg({ samplingPercentage: 100 });
+    expect(sample(droppedId, parent).decision).toBe(SamplingDecision.RECORD_AND_SAMPLED);
+    await handle.updateCfg({ samplingPercentage: undefined });
+    expect(sample(droppedId).decision).toBe(SamplingDecision.RECORD_AND_SAMPLED);
+    expect(sample(sampledId, parent).decision).toBe(SamplingDecision.NOT_RECORD);
+    expect(sample(sampledId).attributes?.[AZURE_MONITOR_SAMPLE_RATE]).toBeUndefined();
+    expect(startTelemetryInstance).toHaveBeenCalledOnce();
+    expect(vi.mocked(startTelemetryInstance).mock.calls[0]?.[0]?.sampler).toBe(sampler);
+  },
+);
 
 it("honors explicit per-signal disabling with Azure Monitor configured", async () => {
   vi.mocked(startTelemetryInstance).mockResolvedValueOnce(fakeInstance());
@@ -227,17 +365,19 @@ it.each(["both", "context manager", "propagators", "no propagators"] as const)(
     handles.add(handle);
 
     expect(startTelemetryInstance).toHaveBeenCalledExactlyOnceWith({
+      redactedQueryParams: DEFAULT_QUERY_STRINGS_TO_REDACT,
       resourceAttributes: {
         "telemetry.distro.name": "@microsoft/opentelemetry-browser",
         "telemetry.distro.version": OPENTELEMETRY_BROWSER_VERSION,
       },
-      sampler: expect.any(PageOperationSampler),
+      sampler: expect.any(RuntimeSampler),
       spanProcessors: [
         expect.objectContaining({ onStart: expect.any(Function) }),
         pipeline.spanProcessor,
       ],
       logRecordProcessors: [],
       contextManager: withContextManager ? contextManager : undefined,
+      correlation: undefined,
       propagators: configuration === "context manager" ? undefined : propagators,
     });
     context.active();
@@ -259,6 +399,7 @@ it.each([undefined, {}, { contextManager: undefined, propagators: undefined }])(
   async (traces) => {
     const handle = await useMicrosoftOpenTelemetry({
       traces,
+      azureMonitor,
       pageView: { enabled: false },
       logRecordProcessors: [],
     });
@@ -278,6 +419,59 @@ it.each([undefined, {}, { contextManager: undefined, propagators: undefined }])(
     });
   },
 );
+
+it("warns when another initialization claims page context during resource detection", async () => {
+  const pendingPipeline = createInMemoryPipeline();
+  let resolveAttribute!: (value: string) => void;
+  const resource = detectResources({
+    detectors: [
+      {
+        detect: () => ({
+          attributes: {
+            "service.name": new Promise<string>((resolve) => {
+              resolveAttribute = resolve;
+            }),
+          },
+        }),
+      },
+    ],
+  });
+  let markWaiting!: () => void;
+  const waiting = new Promise<void>((resolve) => {
+    markWaiting = resolve;
+  });
+  const waitForAttributes = resource.waitForAsyncAttributes!.bind(resource);
+  vi.spyOn(resource, "waitForAsyncAttributes").mockImplementation(() => {
+    markWaiting();
+    return waitForAttributes();
+  });
+  const createPropagator = (field: string) => ({
+    fields: () => [field],
+    inject: vi.fn(),
+    extract: vi.fn((ctx) => ctx),
+  });
+  const warn = vi.spyOn(diag, "warn");
+  const pending = useMicrosoftOpenTelemetry({
+    ...pendingPipeline.options,
+    resource,
+    traces: { propagators: [createPropagator("x-pending")] },
+  });
+  await waiting;
+  const ownerPipeline = createInMemoryPipeline();
+  handles.add(
+    await useMicrosoftOpenTelemetry({
+      ...ownerPipeline.options,
+      traces: { propagators: [createPropagator("x-owner")] },
+    }),
+  );
+  resolveAttribute("checkout-web");
+  handles.add(await pending);
+
+  expect(propagation.fields()).toEqual(["x-owner"]);
+  expect(warn).toHaveBeenCalledWith(
+    "Trace context options ignored; page context already registered",
+  );
+});
 
 it("identifies the distribution without displacing the upstream SDK defaults", async () => {
   const pipeline = createInMemoryPipeline();
@@ -320,6 +514,64 @@ it("lets a service.name attribute replace the unknown_service placeholder", asyn
   });
 });
 
+it("resolves asynchronous resource detector attributes before SDK startup", async () => {
+  let resolveOsVersion: ((value: string) => void) | undefined;
+  const osVersion = new Promise<string>((resolve) => {
+    resolveOsVersion = resolve;
+  });
+  const resource = detectResources({
+    detectors: [{ detect: () => ({ attributes: { "user_agent.os.version": osVersion } }) }],
+  });
+  vi.mocked(startTelemetryInstance).mockResolvedValueOnce(fakeInstance());
+
+  const initialization = useMicrosoftOpenTelemetry({ resource });
+  await Promise.resolve();
+  expect(startTelemetryInstance).not.toHaveBeenCalled();
+
+  resolveOsVersion?.("11");
+  const handle = await initialization;
+  handles.add(handle);
+
+  expect(startTelemetryInstance).toHaveBeenCalledWith(
+    expect.objectContaining({
+      resourceAttributes: expect.objectContaining({ "user_agent.os.version": "11" }),
+    }),
+  );
+});
+
+it("preserves asynchronously detected resource attributes in spans and logs", async () => {
+  const pipeline = createInMemoryPipeline();
+  const resource = detectResources({
+    detectors: [
+      {
+        detect: () => ({
+          attributes: {
+            "service.name": new Promise<string>((resolve) => {
+              setTimeout(() => resolve("checkout-web"), 0);
+            }),
+            "service.version": "4.2.1",
+          },
+        }),
+      },
+    ],
+  });
+  const handle = await useMicrosoftOpenTelemetry({ ...pipeline.options, resource });
+  handles.add(handle);
+  await resource.waitForAsyncAttributes?.();
+
+  trace.getTracer("manual").startSpan("checkout").end();
+  logs.getLogger("manual").emit({ body: "checkout completed" });
+  await handle.forceFlush();
+
+  const expected = { "service.name": "checkout-web", "service.version": "4.2.1" };
+  expect(pipeline.spanExporter.getFinishedSpans()).toHaveLength(1);
+  expect(pipeline.logExporter.getFinishedLogRecords()).toHaveLength(1);
+  expect(pipeline.spanExporter.getFinishedSpans()[0].resource.attributes).toMatchObject(expected);
+  expect(pipeline.logExporter.getFinishedLogRecords()[0].resource.attributes).toMatchObject(
+    expected,
+  );
+});
+
 it("does not share one attributes object across initializations", async () => {
   vi.mocked(startTelemetryInstance)
     .mockResolvedValueOnce(fakeInstance())
@@ -345,13 +597,17 @@ it("force flushes both signal processors", async () => {
   expect(logFlush).toHaveBeenCalledOnce();
 });
 
-it("owns and force flushes default OTLP processors without per-processor hide flushing", async () => {
+it("owns and force flushes default Azure Monitor processors without per-processor hide flushing", async () => {
   const succeed = (_items: unknown, done: (result: { code: number }) => void) => done({ code: 0 });
-  const spanExport = vi.spyOn(OTLPTraceExporter.prototype, "export").mockImplementation(succeed);
-  const logExport = vi.spyOn(OTLPLogExporter.prototype, "export").mockImplementation(succeed);
+  const spanExport = vi
+    .spyOn(AzureMonitorSpanExporter.prototype, "export")
+    .mockImplementation(succeed);
+  const logExport = vi
+    .spyOn(AzureMonitorLogRecordExporter.prototype, "export")
+    .mockImplementation(succeed);
   const spanFlush = vi.spyOn(BatchSpanProcessor.prototype, "forceFlush");
-  const logFlush = vi.spyOn(BatchLogRecordProcessor.prototype, "forceFlush");
-  const handle = await useMicrosoftOpenTelemetry({ pageView: { enabled: false } });
+  const logFlush = vi.spyOn(BrowserBatchLogRecordProcessor.prototype, "forceFlush");
+  const handle = await useMicrosoftOpenTelemetry({ azureMonitor, pageView: { enabled: false } });
   handles.add(handle);
 
   const config = vi.mocked(startTelemetryInstance).mock.calls[0]?.[0];
@@ -361,11 +617,11 @@ it("owns and force flushes default OTLP processors without per-processor hide fl
   ]);
   expect(config?.logRecordProcessors).toEqual([
     expect.objectContaining({ onEmit: expect.any(Function) }),
-    expect.any(BatchLogRecordProcessor),
+    expect.any(BrowserBatchLogRecordProcessor),
   ]);
 
-  trace.getTracer("default-otlp").startSpan("operation").end();
-  logs.getLogger("default-otlp").emit({ body: "record" });
+  trace.getTracer("default-export").startSpan("operation").end();
+  logs.getLogger("default-export").emit({ body: "record" });
   await handle.forceFlush();
   expect(spanExport).toHaveBeenCalledOnce();
   expect(logExport).toHaveBeenCalledOnce();
@@ -609,16 +865,23 @@ it("propagates initialization failures without returning a success-shaped handle
 });
 
 it.each([undefined, {}])(
-  "initializes both providers with default configuration %j",
+  "skips both providers without a telemetry destination %j",
   async (options) => {
+    getSharedRegistry().diagInitialized = false;
+    // Capture what reaches the logger the SDK installs, proving the warning follows installation.
+    const installed = { warn: vi.fn(), error() {}, info() {}, debug() {}, verbose() {} };
+    const setLogger = diag.setLogger.bind(diag);
+    vi.spyOn(diag, "setLogger").mockImplementation((_logger, level) => setLogger(installed, level));
+    const warn = installed.warn;
     const registerTrace = vi.spyOn(trace, "setGlobalTracerProvider");
     const registerLogs = vi.spyOn(logs, "setGlobalLoggerProvider");
     const detectBrowser = vi.spyOn(browserDetector, "detect");
     const detectUserAgent = vi.spyOn(userAgentDetector, "detect");
     const handle = await useMicrosoftOpenTelemetry(options);
     handles.add(handle);
-    expect(registerTrace).toHaveBeenCalledOnce();
-    expect(registerLogs).toHaveBeenCalledOnce();
+    expect(registerTrace).not.toHaveBeenCalled();
+    expect(registerLogs).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("No telemetry destination"));
     expect(detectBrowser).not.toHaveBeenCalled();
     expect(detectUserAgent).not.toHaveBeenCalled();
   },
@@ -669,13 +932,14 @@ it.each(
     const registerTrace = vi.spyOn(trace, "setGlobalTracerProvider");
     const registerLogs = vi.spyOn(logs, "setGlobalLoggerProvider");
     const spanExport = vi
-      .spyOn(OTLPTraceExporter.prototype, "export")
+      .spyOn(AzureMonitorSpanExporter.prototype, "export")
       .mockImplementation((_spans, callback) => callback({ code: 0 }));
     const logExport = vi
-      .spyOn(OTLPLogExporter.prototype, "export")
+      .spyOn(AzureMonitorLogRecordExporter.prototype, "export")
       .mockImplementation((_records, callback) => callback({ code: 0 }));
     const handle = await useMicrosoftOpenTelemetry({
       session: { enabled },
+      azureMonitor,
       pageView: { enabled: false },
       spanProcessors,
       logRecordProcessors,

@@ -3,10 +3,17 @@
 
 import { ROOT_CONTEXT, context, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
-import { afterEach, expect, inject, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, inject, it, vi } from "vitest";
+import { resourceFromAttributes } from "@opentelemetry/resources";
 import { version } from "../../package.json";
-import type { AzureMonitorEnvelope } from "../../src/exporter/telemetryModels.js";
+import type { AzureMonitorEnvelope, PageViewData } from "../../src/exporter/telemetryModels.js";
 import { createInMemoryPipeline } from "../fixtures/telemetry.js";
+import { withoutSdkStats } from "../fixtures/sdkStats.js";
+
+beforeEach(() => {
+  const fetch = globalThis.fetch.bind(globalThis);
+  vi.spyOn(globalThis, "fetch").mockImplementation(withoutSdkStats(fetch));
+});
 
 afterEach(() => {
   trace.disable();
@@ -17,9 +24,65 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+it.each(["index.js", "index.min.js"])(
+  "releases async destination telemetry from %s to ingestion",
+  async (file) => {
+    const artifact =
+      file === "index.js"
+        ? new URL("../../dist/esm/index.js", import.meta.url).href
+        : new URL("../../dist/esm/index.min.js", import.meta.url).href;
+    const sdk = await import(/* @vite-ignore */ artifact);
+    const runId = crypto.randomUUID();
+    const ingestionEndpoint = `${inject("ingestionEndpoint")}${encodeURIComponent(runId)}`;
+    const captureUrl = `${new URL(ingestionEndpoint).origin}/captured?runId=${encodeURIComponent(runId)}`;
+    let resolve!: (value: string) => void;
+    const connectionString = new Promise<string>((done) => {
+      resolve = done;
+    });
+    const telemetry = await sdk.useMicrosoftOpenTelemetry({
+      azureMonitor: { connectionString },
+      pageView: { enabled: false },
+      session: { enabled: false },
+      userContext: { enabled: false },
+    });
+    try {
+      trace.getTracer("async-destination").startSpan("buffered span").end();
+      logs.getLogger("async-destination").emit({ body: "buffered log" });
+      await telemetry.forceFlush();
+      expect(await fetch(captureUrl).then((response) => response.json())).toEqual([]);
+      resolve(
+        `InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=${ingestionEndpoint}`,
+      );
+      await Promise.resolve();
+      await telemetry.forceFlush();
+      const captured: AzureMonitorEnvelope[] = await fetch(captureUrl).then((response) =>
+        response.json(),
+      );
+      expect(captured).toHaveLength(2);
+      expect(captured).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            data: expect.objectContaining({
+              baseData: expect.objectContaining({ name: "buffered span" }),
+            }),
+          }),
+          expect.objectContaining({
+            data: expect.objectContaining({
+              baseData: expect.objectContaining({ message: "buffered log" }),
+            }),
+          }),
+        ]),
+      );
+    } finally {
+      await telemetry.shutdown();
+    }
+  },
+);
+
 it("sends telemetry from a browser interaction to Azure Monitor ingestion", async () => {
   const runId = crypto.randomUUID();
   const ingestionEndpoint = `${inject("ingestionEndpoint")}${encodeURIComponent(runId)}`;
+  const pipeline = createInMemoryPipeline();
   let pageReady!: () => void;
   const pageEmitted = new Promise<void>((resolve) => {
     pageReady = resolve;
@@ -27,12 +90,19 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
   const telemetry = await (
     await import(/* @vite-ignore */ new URL("../../dist/esm/index.js", import.meta.url).href)
   ).useMicrosoftOpenTelemetry({
+    ...pipeline.options,
     azureMonitor: {
       connectionString:
         `InstrumentationKey=00000000-0000-0000-0000-000000000000;` +
         `IngestionEndpoint=${ingestionEndpoint}`,
     },
-    pageView: { applyCustomLogRecordData: () => pageReady() },
+    resource: resourceFromAttributes({
+      "service.version": "synthetic-release-42",
+    }),
+    pageView: {
+      routeResolver: () => "Browser integration",
+      applyCustomLogRecordData: () => pageReady(),
+    },
     session: { enabled: true, persist: false, inactivityTimeout: 60, maxDuration: 3600 },
   });
   const button = document.createElement("button");
@@ -67,8 +137,14 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
         "browser.page_view.performance.sent_request": 100.5,
         "browser.page_view.performance.received_response": 50.25,
         "browser.page_view.performance.dom_processing": 249.5,
+        "browser.page_view.index": 1,
+        "browser.page_view.duration_source": "navigation_timing",
+        "browser.page_view.name_source": "explicit",
+        "browser.page_view.same_document": false,
+        "browser.page_view.type": "navigate",
         "url.full": `${location.origin}/checkout`,
         "test.run_id": runId,
+        itemCount: 2,
       },
     });
     logger.emit({
@@ -88,11 +164,54 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
       `${new URL(ingestionEndpoint).origin}/captured?runId=${encodeURIComponent(runId)}`,
     ).then((response) => response.json());
     const sessionId = captured[0].tags["ai.session.id"];
+    const pageViews = captured.filter(
+      (envelope): envelope is AzureMonitorEnvelope<PageViewData> =>
+        envelope.data.baseType === "PageViewData",
+    );
+    const automaticPageView = pageViews.find(
+      (envelope) => envelope.data.baseData.name !== "Checkout",
+    );
+    const operationName = automaticPageView?.data.baseData.name;
+    expect(operationName).toEqual(expect.any(String));
+    expect(automaticPageView?.tags["ai.operation.name"]).toBe(operationName);
     expect(sessionId).toMatch(/^[0-9a-f]{32}$/);
     for (const envelope of captured) {
       expect(envelope.tags["ai.session.id"]).toBe(sessionId);
+      expect(envelope.tags).toMatchObject({
+        "ai.device.type": "Browser",
+        "ai.device.id": "browser",
+        "ai.application.ver": "synthetic-release-42",
+      });
+      expect(envelope).not.toHaveProperty("ver");
+      expect(envelope).not.toHaveProperty("sampleRate");
       expect(envelope.data.baseData.properties?.["session.id"]).toBeUndefined();
+      if (["PageViewData", "PageviewPerformanceData"].includes(envelope.data.baseType)) {
+        for (const key of [
+          "browser.page_view.index",
+          "browser.page_view.duration_source",
+          "browser.page_view.name_source",
+          "browser.page_view.same_document",
+          "browser.page_view.type",
+        ]) {
+          expect(envelope.data.baseData.properties ?? {}).not.toHaveProperty(key);
+          expect(envelope.data.baseData.measurements ?? {}).not.toHaveProperty(key);
+        }
+      }
     }
+    const originalPage = pipeline.logExporter
+      .getFinishedLogRecords()
+      .find(
+        (record) =>
+          record.eventName === "browser.page_view" &&
+          record.attributes["browser.page_view.index"] === 0,
+      );
+    expect(originalPage?.attributes).toMatchObject({
+      "browser.page_view.index": 0,
+      "browser.page_view.duration_source": expect.any(String),
+      "browser.page_view.name_source": expect.any(String),
+      "browser.page_view.same_document": false,
+      "browser.page_view.type": expect.any(String),
+    });
     expect(captured).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -104,7 +223,10 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
         }),
         expect.objectContaining({
           name: "Microsoft.ApplicationInsights.RemoteDependency",
-          tags: expect.objectContaining({ "ai.operation.id": operationId }),
+          tags: expect.objectContaining({
+            "ai.operation.id": operationId,
+            "ai.operation.name": operationName,
+          }),
           data: expect.objectContaining({
             baseType: "RemoteDependencyData",
             baseData: expect.objectContaining({ name: "checkout.click" }),
@@ -112,7 +234,10 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
         }),
         expect.objectContaining({
           name: "Microsoft.ApplicationInsights.Event",
-          tags: expect.objectContaining({ "ai.operation.id": operationId }),
+          tags: expect.objectContaining({
+            "ai.operation.id": operationId,
+            "ai.operation.name": operationName,
+          }),
           data: expect.objectContaining({
             baseType: "EventData",
             baseData: expect.objectContaining({
@@ -123,7 +248,10 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
         }),
         expect.objectContaining({
           name: "Microsoft.ApplicationInsights.PageView",
-          tags: expect.objectContaining({ "ai.operation.id": operationId }),
+          tags: expect.objectContaining({
+            "ai.operation.id": operationId,
+            "ai.operation.name": "Checkout",
+          }),
           data: {
             baseType: "PageViewData",
             baseData: expect.objectContaining({
@@ -132,12 +260,16 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
               url: `${location.origin}/checkout`,
               duration: "00:00:00.4252500",
               properties: expect.objectContaining({ "test.run_id": runId }),
+              measurements: { itemCount: 2 },
             }),
           },
         }),
         expect.objectContaining({
           name: "Microsoft.ApplicationInsights.PageviewPerformance",
-          tags: expect.objectContaining({ "ai.operation.id": operationId }),
+          tags: expect.objectContaining({
+            "ai.operation.id": operationId,
+            "ai.operation.name": "Checkout",
+          }),
           data: {
             baseType: "PageviewPerformanceData",
             baseData: expect.objectContaining({
@@ -150,12 +282,16 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
               receivedResponse: "00:00:00.0502500",
               domProcessing: "00:00:00.2495000",
               properties: expect.objectContaining({ "test.run_id": runId }),
+              measurements: { itemCount: 2 },
             }),
           },
         }),
         expect.objectContaining({
           name: "Microsoft.ApplicationInsights.Event",
-          tags: expect.objectContaining({ "ai.operation.id": operationId }),
+          tags: expect.objectContaining({
+            "ai.operation.id": operationId,
+            "ai.operation.name": operationName,
+          }),
           data: {
             baseType: "EventData",
             baseData: expect.objectContaining({
@@ -194,6 +330,67 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
     await telemetry.shutdown();
   }
 });
+
+it.each([true, false])(
+  "exports application session precedence to Azure Monitor (managed sessions=%s)",
+  async (enabled) => {
+    const runId = crypto.randomUUID();
+    const ingestionEndpoint = `${inject("ingestionEndpoint")}${encodeURIComponent(runId)}`;
+    const telemetry = await (
+      await import(/* @vite-ignore */ new URL("../../dist/esm/index.js", import.meta.url).href)
+    ).useMicrosoftOpenTelemetry({
+      azureMonitor: {
+        connectionString:
+          `InstrumentationKey=00000000-0000-0000-0000-000000000000;` +
+          `IngestionEndpoint=${ingestionEndpoint}`,
+      },
+      resource: resourceFromAttributes({ "session.id": "application-resource" }),
+      session: { enabled, persist: false },
+      pageView: { enabled: false },
+    });
+
+    try {
+      const cases = [
+        { name: "resource-only", attributes: {}, expected: "application-resource" },
+        {
+          name: "empty-record",
+          attributes: { "session.id": "" },
+          expected: "application-resource",
+        },
+        {
+          name: "record-override",
+          attributes: { "session.id": "application-record" },
+          expected: "application-record",
+        },
+      ];
+      for (const { name, attributes } of cases) {
+        trace.getTracer("session-precedence").startSpan(name, { attributes }).end();
+        logs.getLogger("session-precedence").emit({ eventName: name, attributes });
+      }
+      await telemetry.forceFlush();
+
+      const captured: AzureMonitorEnvelope[] = await fetch(
+        `${new URL(ingestionEndpoint).origin}/captured?runId=${encodeURIComponent(runId)}`,
+      ).then((response) => response.json());
+      expect(captured).toHaveLength(cases.length * 2);
+      for (const { name, expected } of cases) {
+        for (const baseType of ["RemoteDependencyData", "EventData"]) {
+          expect(captured).toContainEqual(
+            expect.objectContaining({
+              tags: expect.objectContaining({ "ai.session.id": expected }),
+              data: expect.objectContaining({
+                baseType,
+                baseData: expect.objectContaining({ name }),
+              }),
+            }),
+          );
+        }
+      }
+    } finally {
+      await telemetry.shutdown();
+    }
+  },
+);
 
 it("redacts the default page URL in the Azure Monitor ingestion payload", async () => {
   const runId = crypto.randomUUID();

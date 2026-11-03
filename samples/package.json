@@ -1,10 +1,10 @@
 {
   "name": "@microsoft/opentelemetry-browser-samples",
-  "version": "0.1.0-alpha.3",
+  "version": "0.1.0-beta.1",
   "private": true,
   "type": "module",
   "engines": {
-    "node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+    "node": "^22.23.4 || ^24.22.1 || >=26.12.1",
     "npm": ">=10"
   },
   "scripts": {
@@ -45,6 +45,6 @@
   "devDependencies": {
     "@types/node": "^22.20.2",
     "typescript": "~5.9.3",
-    "vite": "8.2.2"
+    "vite": "8.2.4"
   }
 }

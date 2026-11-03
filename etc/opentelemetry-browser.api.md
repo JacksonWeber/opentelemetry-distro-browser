@@ -32,9 +32,18 @@ export class AzureMonitorLogRecordExporter implements LogRecordExporter {
 }
 
 // @public
-export interface AzureMonitorOptions {
-    readonly connectionString: string;
+export interface AzureMonitorOptions<TConnectionString extends string | Promise<string> = string> {
+    readonly connectionString: TConnectionString;
     readonly disableBeacon?: boolean;
+    readonly initInMemoMaxSize?: number;
+    readonly initTimeOut?: number;
+    readonly sdkStats?: AzureMonitorSdkStatsOptions;
+}
+
+// @public
+export interface AzureMonitorSdkStatsOptions {
+    readonly collectionIntervalMillis?: number;
+    readonly enabled?: boolean;
 }
 
 // @public
@@ -70,20 +79,63 @@ export interface BrowserInstrumentation {
 // @public
 export interface MicrosoftOpenTelemetryBrowser {
     forceFlush(): Promise<void>;
+    readonly instrumentations: MicrosoftOpenTelemetryBrowserInstrumentations;
     shutdown(): Promise<void>;
+    updateCfg(patch: MicrosoftOpenTelemetryBrowserConfigurationUpdate, mergeExisting?: boolean): Promise<MicrosoftOpenTelemetryBrowserConfigurationUpdateResult>;
     readonly userContext: MicrosoftOpenTelemetryBrowserUserContext;
 }
 
 // @public
+export interface MicrosoftOpenTelemetryBrowserConfigurationUpdate {
+    azureMonitor?: {
+        disableBeacon?: boolean | undefined;
+    } | undefined;
+    disableAjaxTracking?: boolean | undefined;
+    disableFetchTracking?: boolean | undefined;
+    onunloadDisableBeacon?: boolean | undefined;
+    samplingPercentage?: number | undefined;
+    session?: {
+        inactivityTimeout?: number | undefined;
+        maxDuration?: number | undefined;
+    } | undefined;
+    sessionExpirationMs?: number | undefined;
+    sessionRenewalMs?: number | undefined;
+}
+
+// @public
+export interface MicrosoftOpenTelemetryBrowserConfigurationUpdateResult {
+    // (undocumented)
+    readonly changedPaths: readonly string[];
+    // (undocumented)
+    readonly revision: number;
+}
+
+// @public
+export interface MicrosoftOpenTelemetryBrowserInstrumentations {
+    add(id: string, instrumentation: BrowserInstrumentation): Promise<void>;
+    get(id: string): BrowserInstrumentation | undefined;
+    remove(id: string): Promise<void>;
+    replace(id: string, instrumentation: BrowserInstrumentation): Promise<void>;
+    setEnabled(id: string, enabled: boolean): Promise<void>;
+}
+
+// @public
 export interface MicrosoftOpenTelemetryBrowserOptions {
-    azureMonitor?: AzureMonitorOptions;
+    azureMonitor?: AzureMonitorOptions<string | Promise<string>>;
     instrumentations?: readonly BrowserInstrumentation[];
     logRecordProcessors?: LogRecordProcessor[];
     pageView?: PageViewInstrumentationConfig;
+    redactQueryParams?: readonly string[];
     resource?: Resource;
     samplingPercentage?: number;
     session?: MicrosoftOpenTelemetryBrowserSessionOptions;
+    sessionExpirationMs?: number | undefined;
+    sessionRenewalMs?: number | undefined;
     spanProcessors?: SpanProcessor[];
+    storage?: {
+        enabled?: boolean;
+        namePrefix?: string;
+    };
     traces?: MicrosoftOpenTelemetryBrowserTraceOptions;
     userContext?: {
         enabled?: boolean;
@@ -119,6 +171,7 @@ export const OPENTELEMETRY_BROWSER_VERSION: string;
 // @public
 export interface PageViewInstrumentationConfig {
     readonly applyCustomLogRecordData?: (logRecord: LogRecord) => void;
+    readonly autoTrackPageVisitTime?: boolean;
     readonly enabled?: boolean;
     readonly redactedQueryParams?: readonly string[];
     readonly routeResolver?: () => string | undefined;

@@ -7,6 +7,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { measureBrowser } from "./browser.mjs";
+import { measureCdn } from "./cdn.mjs";
 import {
   artifactPath,
   createBundleScenarioResults,
@@ -18,7 +19,10 @@ import {
 } from "./results.mjs";
 
 const { values } = parseArgs({
-  options: { output: { type: "string", default: "artifacts/performance" } },
+  options: {
+    output: { type: "string", default: "artifacts/performance" },
+    cdn: { type: "boolean", default: false },
+  },
 });
 const git = (...args) => execFileSync("git", args, { encoding: "utf8" }).trim();
 const revision = git("rev-parse", "HEAD");
@@ -87,6 +91,18 @@ const browser = await measureBrowser();
 if (browser.packageVersion !== packageJson.version) {
   throw new Error("Built SDK version does not match the measured package");
 }
+let cdn;
+if (values.cdn) {
+  cdn = await measureCdn(packageJson.version);
+  await writeJson("cdn.json", cdn);
+  for (const result of cdn.observations) {
+    const detail =
+      result.status === "ok"
+        ? `${result.bytes} bytes`
+        : `${result.stage}: ${result.reason} (${result.message})`;
+    console.log(`CDN ${result.format}/${result.encoding} ${result.status}: ${detail}`);
+  }
+}
 const run = {
   runId,
   revision,
@@ -107,6 +123,7 @@ const run = {
   bundleSizeReport,
   provenance,
   workload: { startedSpans: browser.started, endedSpans: browser.ended },
+  ...(cdn ? { cdn } : {}),
   results: [
     ...sizeResults,
     ...browser.results.map((result) => ({ ...result, metric: metricPrefix + result.metric })),

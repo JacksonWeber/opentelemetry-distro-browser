@@ -15,6 +15,7 @@ export default defineConfig([
     "reports/",
     "cdn/",
     "artifacts/",
+    "docs/api/",
     "temp/api/",
     "poc/",
   ]),

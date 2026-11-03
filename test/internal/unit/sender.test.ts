@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MAX_RETRY_WAIT_MS } from "../../../src/exporter/constants.js";
+import { MAX_BEACON_BODY_SIZE, MAX_RETRY_WAIT_MS } from "../../../src/exporter/constants.js";
 import { Sender } from "../../../src/exporter/sender.js";
 import type { AzureMonitorEnvelope } from "../../../src/exporter/telemetryModels.js";
 import { installFakeClock } from "../../fixtures/clock.js";
@@ -13,6 +13,88 @@ afterEach(() => {
 });
 
 describe("Sender", () => {
+  it.each([536, 537, 3000])(
+    "keeps the application unload allowance when a %i-byte stats report starts first",
+    async (size) => {
+      const releases: Array<() => void> = [];
+      let pendingBytes = 0;
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(null));
+      const hold: typeof globalThis.fetch = (_url, init) => {
+        const bytes = init?.keepalive && init.body instanceof Uint8Array ? init.body.byteLength : 0;
+        pendingBytes += bytes;
+        return new Promise((resolve) =>
+          releases.push(() => {
+            pendingBytes -= bytes;
+            resolve(new Response(null));
+          }),
+        );
+      };
+      fetch.mockImplementationOnce(hold).mockImplementationOnce(hold);
+      const beacon = vi.fn(
+        (_url: string | URL, body?: BodyInit | null) =>
+          body instanceof Blob && pendingBytes + body.size <= 65536,
+      );
+      const sender = new Sender({
+        endpoint: "https://example.test/v2/track",
+        fetch,
+        sendBeacon: beacon,
+      });
+      const request = { contentType: "application/json", unloading: true };
+      const stats = sender.send({ ...request, sdkStats: true, body: new Uint8Array(size) });
+      const application = sender.send({ ...request, body: new Uint8Array(300) });
+      try {
+        await sender.send({ ...request, sdkStats: true, body: new Uint8Array(size) });
+        expect(fetch.mock.calls.map(([, init]) => init?.keepalive)).toEqual([false, true, false]);
+        await expect(
+          sender.send({ ...request, body: new Uint8Array(MAX_BEACON_BODY_SIZE) }),
+        ).resolves.toEqual({ transport: "beacon" });
+        expect(beacon).toHaveBeenCalledOnce();
+      } finally {
+        for (const release of releases) release();
+        await Promise.all([stats, application]);
+        sender.dispose();
+      }
+    },
+  );
+
+  it("keeps a cancelled wait's reservation until the underlying request settles", async () => {
+    let release!: () => void;
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(null));
+    fetch.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(new Response(null));
+        }),
+    );
+    const sender = new Sender({
+      endpoint: "https://example.test/v2/track",
+      fetch,
+      disableBeacon: true,
+    });
+    const controller = new AbortController();
+    const request = {
+      contentType: "application/json",
+      unloading: true,
+      body: new Uint8Array(60 * 1024),
+    };
+    const pending = expect(
+      sender.send({ ...request, signal: controller.signal }),
+    ).rejects.toThrow();
+    try {
+      controller.abort();
+      await pending;
+      await expect(sender.send(request)).rejects.toThrow("sendBeacon fallback is unavailable");
+      expect(fetch).toHaveBeenCalledOnce();
+      release();
+      await Promise.resolve();
+      await sender.send(request);
+      expect(fetch.mock.calls[1][1]?.keepalive).toBe(true);
+    } finally {
+      release();
+      sender.dispose();
+    }
+  });
+
   it.each([
     ["Wed, 01 Jan 2025 00:00:02 GMT", 2_000],
     ["Fri, 03 Jan 2025 00:00:00 GMT", 86_400_000],
@@ -49,7 +131,7 @@ describe("Sender", () => {
     });
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response);
     const sender = new Sender({
-      endpoint: "https://example.test/v2.1/track",
+      endpoint: "https://dc.services.visualstudio.com/v2.1/track",
       fetch,
     });
     const body = new TextEncoder().encode("telemetry");
@@ -62,13 +144,79 @@ describe("Sender", () => {
     });
     expect(fetch).toHaveBeenCalledOnce();
     const [endpoint, init] = fetch.mock.calls[0];
-    expect(endpoint).toBe("https://example.test/v2.1/track");
+    expect(endpoint).toBe("https://dc.services.visualstudio.com/v2.1/track");
     expect(init).toMatchObject({
       method: "POST",
       headers: { "content-type": "application/json", "content-encoding": "gzip" },
       keepalive: false,
     });
     await expect(decompress(init?.body as Uint8Array<ArrayBuffer>)).resolves.toEqual(body);
+  });
+
+  it.each([
+    "https://dc.services.visualstudio.com/v2/track",
+    "https://eastus-8.in.applicationinsights.azure.com/v2/track",
+    "https://dc.applicationinsights.microsoft.com/v2/track",
+    "https://WestUS.Monitor.Azure.com./v2/track",
+    "https://usgovvirginia.in.applicationinsights.azure.us/v2/track",
+    "https://dc.applicationinsights.us/v2/track",
+    "https://chinaeast2.in.applicationinsights.azure.cn/v2/track",
+    "https://dc.services.visualstudio.com:443/v2/track",
+  ])("compresses payloads for Azure Monitor ingestion endpoint %s", async (endpoint) => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(new Response(null, { status: 200 }));
+    const sender = new Sender({ endpoint, fetch });
+
+    await sender.send({ body: new TextEncoder().encode("telemetry"), contentType: "text/plain" });
+
+    expect(fetch.mock.calls[0][1]?.headers).toEqual({
+      "content-type": "text/plain",
+      "content-encoding": "gzip",
+    });
+  });
+
+  it.each([
+    "https://example.test/v2/track",
+    "https://proxy.contoso.com/v2/track",
+    "http://dc.services.visualstudio.com/v2/track",
+    "https://dc.services.visualstudio.com:8443/v2/track",
+    "https://applicationinsights.azure.com.example.test/v2/track",
+    "https://evilapplicationinsights.azure.com/v2/track",
+    "https://dc.services.visualstudio.com@proxy.contoso.com/v2/track",
+    "http://localhost:3000/v2/track",
+  ])("sends uncompressed JSON to custom endpoint %s", async (endpoint) => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(new Response(null, { status: 200 }));
+    const sender = new Sender({ endpoint, fetch });
+    const body = new TextEncoder().encode("telemetry");
+
+    await sender.send({ body, contentType: "application/json" });
+
+    expect(fetch.mock.calls[0][1]).toMatchObject({
+      headers: { "content-type": "application/json" },
+      body,
+    });
+  });
+
+  it("keeps compressing after a trusted redirect", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(
+        redirectedResponse("https://eastus-8.in.applicationinsights.azure.com/v2/track"),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+    const sender = new Sender({ endpoint: "https://dc.services.visualstudio.com/v2/track", fetch });
+    const request = { body: new TextEncoder().encode("telemetry"), contentType: "text/plain" };
+
+    await sender.send(request);
+    await sender.send(request);
+
+    expect(fetch.mock.calls[1][1]?.headers).toEqual({
+      "content-type": "text/plain",
+      "content-encoding": "gzip",
+    });
   });
 
   it.each([
@@ -83,6 +231,18 @@ describe("Sender", () => {
     [
       "https://usgovvirginia.monitor.azure.us/v2.1/track",
       "https://usgovvirginia.dc.applicationinsights.azure.us/v2.1/track",
+    ],
+    [
+      "https://dc.applicationinsights.microsoft.com/v2.1/track",
+      "https://eastus-8.in.applicationinsights.azure.com/v2.1/track",
+    ],
+    [
+      "https://dc.applicationinsights.us/v2.1/track",
+      "https://usgovvirginia.in.applicationinsights.azure.us/v2.1/track",
+    ],
+    [
+      "https://usgovvirginia.in.applicationinsights.azure.us/v2.1/track",
+      "https://dc.applicationinsights.us/v2.1/track",
     ],
     [
       "https://chinaeast2.monitor.azure.cn/v2.1/track",
@@ -215,14 +375,14 @@ describe("Sender", () => {
         .fn<typeof globalThis.fetch>()
         .mockResolvedValue(new Response(null, { status: 200 }));
       const sender = new Sender({
-        endpoint: "https://example.test/v2.1/track",
+        endpoint: "https://dc.services.visualstudio.com/v2.1/track",
         fetch,
       });
       const body = new TextEncoder().encode("telemetry");
 
       await sender.send({ body, contentType: "application/json" });
 
-      expect(fetch).toHaveBeenCalledWith("https://example.test/v2.1/track", {
+      expect(fetch).toHaveBeenCalledWith("https://dc.services.visualstudio.com/v2.1/track", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body,
@@ -556,6 +716,169 @@ describe("Sender", () => {
     expect(fetch).not.toHaveBeenCalled();
     expect(sendBeacon).not.toHaveBeenCalled();
   });
+
+  it.each([
+    { failure: "fetch", initiallyDisabled: false },
+    { failure: "fetch", initiallyDisabled: true },
+    { failure: "response text", initiallyDisabled: false },
+    { failure: "response text", initiallyDisabled: true },
+  ] as const)(
+    "reads the current policy after pending $failure fails, initially disabled=$initiallyDisabled",
+    async ({ failure, initiallyDisabled }) => {
+      let disabled: boolean = initiallyDisabled;
+      const readDisableBeacon = vi.fn(() => disabled);
+      let rejectTransport!: (error: Error) => void;
+      let markPending!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        markPending = resolve;
+      });
+      const transport = new Promise<never>((_resolve, reject) => {
+        rejectTransport = reject;
+      });
+      const response = new Response(null, { status: 503 });
+      if (failure === "response text") {
+        vi.spyOn(response, "text").mockImplementation(() => {
+          markPending();
+          return transport;
+        });
+      }
+      const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(() => {
+        if (failure === "response text") return Promise.resolve(response);
+        markPending();
+        return transport;
+      });
+      const sendBeacon = vi.fn<typeof globalThis.navigator.sendBeacon>().mockReturnValue(true);
+      const sender = new Sender({
+        endpoint: "https://example.test/v2.1/track",
+        fetch,
+        sendBeacon,
+        disableBeacon: readDisableBeacon,
+      });
+      const send = sender.send({
+        body: new TextEncoder().encode("telemetry"),
+        contentType: "application/json",
+        unloading: true,
+      });
+      // Attach a handler before deliberately rejecting the pending transport.
+      const settled = send.catch((error: unknown) => error);
+      try {
+        await pending;
+        expect(readDisableBeacon).not.toHaveBeenCalled();
+        expect(sendBeacon).not.toHaveBeenCalled();
+        disabled = !initiallyDisabled;
+        rejectTransport(new TypeError("network error"));
+        if (disabled) {
+          await expect(send).rejects.toThrow("sendBeacon fallback is unavailable");
+          expect(sendBeacon).not.toHaveBeenCalled();
+        } else {
+          await expect(send).resolves.toEqual({ transport: "beacon" });
+          expect(sendBeacon).toHaveBeenCalledOnce();
+        }
+        expect(readDisableBeacon).toHaveBeenCalledOnce();
+        expect(fetch).toHaveBeenCalledExactlyOnceWith(
+          "https://example.test/v2.1/track",
+          expect.objectContaining({ keepalive: true }),
+        );
+      } finally {
+        rejectTransport(new TypeError("test cleanup"));
+        await settled;
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "reads changes to an initially %s disabled policy on capacity fallback",
+    async (initiallyDisabled) => {
+      let disabled = initiallyDisabled;
+      const readDisableBeacon = vi.fn(() => disabled);
+      const fetch = vi.fn<typeof globalThis.fetch>();
+      const sendBeacon = vi.fn<typeof globalThis.navigator.sendBeacon>().mockReturnValue(true);
+      const sender = new Sender({
+        endpoint: "https://example.test/v2.1/track",
+        fetch,
+        sendBeacon,
+        disableBeacon: readDisableBeacon,
+      });
+      const request = {
+        body: new Uint8Array(60 * 1024 + 1),
+        contentType: "application/json",
+        unloading: true,
+      };
+      expect(readDisableBeacon).not.toHaveBeenCalled();
+      for (const current of [!initiallyDisabled, initiallyDisabled]) {
+        disabled = current;
+        if (disabled) {
+          await expect(sender.send(request)).rejects.toThrow("sendBeacon fallback is unavailable");
+        } else {
+          await expect(sender.send(request)).resolves.toEqual({ transport: "beacon" });
+        }
+      }
+      expect(readDisableBeacon).toHaveBeenCalledTimes(2);
+      expect(sendBeacon).toHaveBeenCalledOnce();
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([false, true])(
+    "does not consult beacon policy for successful fetch sends with unloading=%s",
+    async (unloading) => {
+      let disabled = true;
+      const readDisableBeacon = vi.fn(() => disabled);
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockImplementation(async () => new Response(null, { status: 200 }));
+      const sendBeacon = vi.fn<typeof globalThis.navigator.sendBeacon>().mockReturnValue(true);
+      const sender = new Sender({
+        endpoint: "https://example.test/v2.1/track",
+        fetch,
+        sendBeacon,
+        disableBeacon: readDisableBeacon,
+      });
+      for (const current of [true, false]) {
+        disabled = current;
+        await expect(
+          sender.send({
+            body: new TextEncoder().encode("telemetry"),
+            contentType: "application/json",
+            unloading,
+          }),
+        ).resolves.toEqual({ transport: "fetch", statusCode: 200, result: "" });
+      }
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(fetch.mock.calls.every(([, init]) => init?.keepalive === unloading)).toBe(true);
+      expect(readDisableBeacon).not.toHaveBeenCalled();
+      expect(sendBeacon).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([false, true])(
+    "still captures a static disableBeacon=%s option at construction",
+    async (disableBeacon) => {
+      const fetch = vi.fn<typeof globalThis.fetch>();
+      const sendBeacon = vi.fn<typeof globalThis.navigator.sendBeacon>().mockReturnValue(true);
+      const options = {
+        endpoint: "https://example.test/v2.1/track",
+        fetch,
+        sendBeacon,
+        disableBeacon,
+      };
+      const sender = new Sender(options);
+      options.disableBeacon = !disableBeacon;
+      const send = sender.send({
+        body: new Uint8Array(60 * 1024 + 1),
+        contentType: "application/json",
+        unloading: true,
+      });
+      if (disableBeacon) {
+        await expect(send).rejects.toThrow("sendBeacon fallback is unavailable");
+        expect(sendBeacon).not.toHaveBeenCalled();
+      } else {
+        await expect(send).resolves.toEqual({ transport: "beacon" });
+        expect(sendBeacon).toHaveBeenCalledOnce();
+      }
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
 
   it("fails cleanly when the browser does not support sendBeacon", async () => {
     const sendBeaconDescriptor = Object.getOwnPropertyDescriptor(navigator, "sendBeacon");
@@ -1058,7 +1381,7 @@ describe("Sender", () => {
       )
       .mockResolvedValueOnce(new Response(null, { status: 200 }));
     const sender = new Sender({
-      endpoint: "https://example.test/v2.1/track",
+      endpoint: "https://dc.services.visualstudio.com/v2.1/track",
       fetch,
       delay: () => Promise.resolve(),
       random: () => 0,

@@ -2,19 +2,29 @@
 // Licensed under the MIT License.
 
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import { readFile, readdir } from "node:fs/promises";
-import { resolve } from "node:path";
+import { createServer } from "node:http";
+import { basename, resolve } from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
+import vm from "node:vm";
 import {
   cacheControl,
   cdnDirectory,
   getCdnArtifacts,
+  getCdnBadges,
   getCdnChannel,
   getCdnUrl,
+  getSizeBadgeMessage,
+  modules,
+  renderBadge,
   root,
 } from "../../scripts/cdn.mjs";
 import { getCdnUploads, publishCdn } from "../../scripts/publish-cdn.mjs";
+import { verifyCdn } from "../../scripts/verify-cdn.mjs";
 
 const { version } = JSON.parse(await readFile(resolve(root, "package.json"), "utf8"));
 const sha = (algorithm, bytes) => createHash(algorithm).update(bytes).digest("base64");
@@ -39,15 +49,17 @@ test("the snippet loads this version's CDN bundle by default", async () => {
   assert.equal(src, getCdnUrl(version, `opentelemetry-browser.${version}.min.js`));
 });
 
-test("the documented snippet matches the generated loader", async () => {
+test("the documented snippets match the generated loader", async () => {
   const { getSdkLoaderScript } = await import("../../dist/esm/snippet.js");
-  const docs = await readFile(resolve(root, "docs/packaging.md"), "utf8");
   const script = getSdkLoaderScript({
     src: "https://js.monitor.azure.com/scripts/otel/CHANNEL/opentelemetry-browser.VERSION.min.js",
     connectionString: "YOUR_CONNECTION_STRING",
     integrity: "YOUR_INTEGRITY",
   });
-  assert.ok(docs.replaceAll("\r\n", "\n").includes(`<script>\n${script}\n</script>`));
+  for (const file of ["README.md", "docs/packaging.md"]) {
+    const docs = await readFile(resolve(root, file), "utf8");
+    assert.ok(docs.replaceAll("\r\n", "\n").includes(`<script>\n${script}\n</script>`), file);
+  }
 });
 
 test("the build prepares versioned CDN files with source maps and integrity", async () => {
@@ -58,7 +70,11 @@ test("the build prepares versioned CDN files with source maps and integrity", as
   ];
   assert.deepEqual(
     (await readdir(cdnDirectory)).sort(),
-    [...artifacts.flatMap(({ file }) => [file, `${file}.map`]), ...integrityFiles].sort(),
+    [
+      ...artifacts.flatMap(({ file }) => [file, `${file}.map`]),
+      ...getCdnBadges(version).map(({ file }) => file),
+      ...integrityFiles,
+    ].sort(),
   );
 
   for (const integrityFile of integrityFiles) {
@@ -100,11 +116,121 @@ test("the build prepares versioned CDN files with source maps and integrity", as
   }
 });
 
+test("publishes a size badge for each default CDN bundle", async () => {
+  for (const badge of getCdnBadges(version)) {
+    const bytes = await readFile(resolve(cdnDirectory, badge.bundle));
+    const message = getSizeBadgeMessage(bytes);
+    assert.match(message, /^\d+\.\d KiB \/ \d+\.\d KiB gzip$/);
+    assert.equal(
+      await readFile(resolve(cdnDirectory, badge.file), "utf8"),
+      renderBadge("size", message),
+    );
+  }
+  assert.match(renderBadge("a&b", "<1>"), /aria-label="a&#38;b: &#60;1&#62;"/);
+});
+
+/** Evaluates a CDN script in a worker-like realm: browser APIs a worker has, but no window or DOM. */
+function loadInWorkerRealm(code, file) {
+  const realm = vm.createContext({
+    console,
+    setTimeout,
+    clearTimeout,
+    setInterval,
+    clearInterval,
+    queueMicrotask,
+    performance,
+    URL,
+    TextEncoder,
+    TextDecoder,
+    navigator: { userAgent: "worker", language: "en-US" },
+    location: new URL("https://example.test/worker.js"),
+  });
+  vm.runInContext("self = globalThis;", realm);
+  vm.runInContext(code, realm, { filename: file });
+  return vm.runInContext("globalThis.Microsoft", realm);
+}
+
+const runtimeKeys = async (entry) =>
+  Object.keys(await import(pathToFileURL(resolve(root, "dist", "esm", entry)).href));
+
+test("every CDN bundle loads without window and exposes its documented npm API", async () => {
+  const otelApi = ["context", "diag", "logs", "metrics", "propagation", "trace"];
+  // The loader snippet builds its resource with this; npm consumers import it themselves.
+  const loaderApi = ["resourceFromAttributes"];
+  const resourceDetectors = [
+    "BrowserDetector",
+    "browserDetector",
+    "UserAgentDetector",
+    "userAgentDetector",
+  ];
+  const npmKeys = [
+    ...new Set([
+      ...(await runtimeKeys("index.js")),
+      ...(await runtimeKeys("instrumentations.js")),
+      ...otelApi,
+      ...loaderApi,
+    ]),
+  ];
+  // The opt-in resource detectors are npm-only; no CDN bundle carries them.
+  const sdkKeys = npmKeys.filter((key) => !resourceDetectors.includes(key)).sort();
+  const instrumentationKeys = (await runtimeKeys("instrumentations.js")).sort();
+  assert.ok(sdkKeys.includes("useMicrosoftOpenTelemetry"));
+  assert.ok(sdkKeys.includes("getInstrumentations"));
+  assert.ok(resourceDetectors.every((key) => npmKeys.includes(key)));
+
+  for (const artifact of getCdnArtifacts(version)) {
+    const code = await readFile(resolve(cdnDirectory, artifact.file), "utf8");
+    const microsoft = loadInWorkerRealm(code, artifact.file);
+    if (artifact.module === "opentelemetry-browser") {
+      assert.deepEqual(Object.keys(microsoft.OpenTelemetry).sort(), sdkKeys, artifact.file);
+      assert.doesNotMatch(code, /user_agent\.original/, artifact.file);
+    } else {
+      assert.deepEqual(
+        Object.keys(microsoft.OpenTelemetryInstrumentations).sort(),
+        instrumentationKeys,
+        artifact.file,
+      );
+    }
+  }
+});
+
+test("the default CDN bundle carries every instrumentation without loading other files", async () => {
+  const code = await readFile(
+    resolve(cdnDirectory, `opentelemetry-browser.${version}.min.js`),
+    "utf8",
+  );
+  // Inlined, not code-split: a CDN script cannot load sibling chunks.
+  assert.doesNotMatch(code, /\bimport\(/);
+  const { getInstrumentations } = loadInWorkerRealm(code, "min.js").OpenTelemetry;
+  const all = Object.fromEntries(
+    [
+      "fetch",
+      "xhr",
+      "console",
+      "errors",
+      "navigation",
+      "navigationTiming",
+      "resourceTiming",
+      "userAction",
+      "webVitals",
+    ].map((name) => [name, { enabled: true }]),
+  );
+  const instrumentations = await getInstrumentations(all);
+  assert.equal(instrumentations.length, Object.keys(all).length);
+  assert.equal(new Set(instrumentations.map((i) => i.instrumentationName)).size, 9);
+  assert.equal((await getInstrumentations()).length, 2, "fetch and xhr are on by default");
+});
+
 test("publishes immutable files without overwriting and uploads integrity files last", async () => {
   const uploads = getCdnUploads(version);
-  assert.equal(uploads.length, getCdnArtifacts(version).length * 2 + 2);
-  assert.match(uploads.at(-1).file, /\.integrity\.json$/);
-  assert.match(uploads.at(-2).file, /\.integrity\.json$/);
+  assert.equal(uploads.length, getCdnArtifacts(version).length * 2 + modules.length * 2);
+  for (const upload of uploads.slice(-modules.length)) {
+    assert.match(upload.file, /\.integrity\.json$/);
+  }
+  assert.deepEqual(
+    uploads.filter(({ file }) => file.endsWith(".svg")).map(({ contentType }) => contentType),
+    modules.map(() => "image/svg+xml; charset=utf-8"),
+  );
   assert.ok(
     uploads.every(({ blob }) => blob.startsWith(`scripts/otel/${getCdnChannel(version)}/`)),
   );
@@ -122,11 +248,20 @@ test("publishes immutable files without overwriting and uploads integrity files 
   };
   const saved = process.env.AZURE_STORAGE_SAS_TOKEN;
   delete process.env.AZURE_STORAGE_SAS_TOKEN;
+  const verified = [];
   try {
-    await publishCdn({ version, account: "store", container: "cdn", run, log: () => {} });
+    await publishCdn({
+      version,
+      account: "store",
+      container: "cdn",
+      run,
+      verify: async (options) => verified.push(options.version),
+      log: () => {},
+    });
   } finally {
     if (saved !== undefined) process.env.AZURE_STORAGE_SAS_TOKEN = saved;
   }
+  assert.deepEqual(verified, [version]);
 
   const uploadCalls = calls.filter((args) => args[2] === "upload");
   assert.equal(uploadCalls.length, uploads.length - 1);
@@ -163,5 +298,127 @@ test("publishes immutable files without overwriting and uploads integrity files 
       run: () => ({ status: 1, stdout: "", stderr: "AuthorizationPermissionMismatch" }),
     }),
     /Unable to check .*AuthorizationPermissionMismatch/,
+  );
+});
+
+test("the publish and verify CLIs load without an import cycle", () => {
+  const publish = spawnSync(
+    process.execPath,
+    ["scripts/publish-cdn.mjs", "--account", "store", "--dry-run"],
+    { cwd: root, encoding: "utf8", timeout: 30_000 },
+  );
+  assert.equal(publish.status, 0, publish.stderr);
+  assert.match(publish.stdout, new RegExp(`Would upload .*integrity\\.json`));
+  const verify = spawnSync(process.execPath, ["scripts/verify-cdn.mjs", "--help"], {
+    cwd: root,
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+  assert.equal(verify.status, 0, verify.stderr);
+  assert.match(verify.stdout, /npm run cdn:verify/);
+});
+
+test("verifies published CDN headers, bytes and integrity hashes", async (t) => {
+  let override = () => {};
+  const server = createServer(async (request, response) => {
+    const file = basename(new URL(request.url, "http://localhost").pathname);
+    const bytes = await readFile(resolve(cdnDirectory, file)).catch(() => undefined);
+    if (!bytes) return response.writeHead(404).end();
+    const headers = {
+      "Content-Type": getCdnUploads(version).find((upload) => upload.file === file).contentType,
+      // Azure Storage reorders directives; verification compares them as a set.
+      "Cache-Control": "no-transform, public, max-age=31536000, immutable",
+    };
+    if (request.headers.origin) headers["Access-Control-Allow-Origin"] = "*";
+    const served = { headers, body: bytes };
+    override(file, served);
+    response.writeHead(200, served.headers);
+    // A stalled response sends part of the body and never finishes.
+    if (served.stall) response.write(served.body.subarray(0, 16));
+    else response.end(served.body);
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+  const options = {
+    version,
+    origin: `http://127.0.0.1:${server.address().port}`,
+    log: () => {},
+  };
+
+  const verified = await verifyCdn(options);
+  assert.deepEqual(
+    verified.sort(),
+    getCdnUploads(version)
+      .map(({ url }) => url)
+      .sort(),
+  );
+
+  const bundle = `opentelemetry-browser.${version}.min.js`;
+  override = (file, served) => {
+    if (file === bundle) served.body = Buffer.concat([served.body, Buffer.from("\n")]);
+    if (file.endsWith(".map")) delete served.headers["Access-Control-Allow-Origin"];
+    if (file.endsWith(".svg")) served.headers["Cache-Control"] = "public, max-age=300";
+  };
+  await assert.rejects(verifyCdn({ ...options, remoteOnly: true }), (error) => {
+    assert.match(error.message, new RegExp(`${bundle}\\.map: Access-Control-Allow-Origin`));
+    assert.match(error.message, /\.size\.svg: Cache-Control public, max-age=300/);
+    assert.match(error.message, new RegExp(`integrity\\.json: sha256 does not match .*/${bundle}`));
+    assert.doesNotMatch(error.message, /differs from the local build/);
+    return true;
+  });
+  await assert.rejects(
+    verifyCdn(options),
+    new RegExp(`${bundle}: content differs from the local build`),
+  );
+
+  override = (file, served) => {
+    if (file.endsWith(".integrity.json")) served.headers["Content-Type"] = "text/plain";
+  };
+  await assert.rejects(verifyCdn(options), /integrity\.json: Content-Type text\/plain/);
+
+  const manifest = `opentelemetry-browser.${version}.integrity.json`;
+  const editManifest = (edit) => {
+    override = (file, served) => {
+      if (file !== manifest) return;
+      const integrity = JSON.parse(served.body.toString("utf8"));
+      edit(integrity);
+      served.body = Buffer.from(JSON.stringify(integrity));
+    };
+  };
+  const remote = { ...options, remoteOnly: true };
+
+  editManifest((integrity) => (integrity.ext = {}));
+  await assert.rejects(verifyCdn(remote), (error) => {
+    for (const format of ["min.js", "js", "umd.min.js", "umd.js"]) {
+      assert.match(
+        error.message,
+        new RegExp(`${manifest}: missing @${format.replaceAll(".", "\\.")}(\\n|$)`),
+      );
+    }
+    return true;
+  });
+
+  editManifest((integrity) => delete integrity.ext["@umd.js"]);
+  await assert.rejects(verifyCdn(remote), new RegExp(`${manifest}: missing @umd\\.js`));
+
+  editManifest((integrity) => {
+    integrity.ext["@min.js"].integrity = integrity.ext["@js"].integrity;
+  });
+  await assert.rejects(verifyCdn(remote), (error) => {
+    assert.match(error.message, new RegExp(`${manifest}: integrity does not match .*/${bundle}`));
+    assert.doesNotMatch(error.message, /sha\d+ does not match/);
+    return true;
+  });
+
+  override = (file, served) => {
+    if (file === bundle) served.stall = true;
+  };
+  await assert.rejects(
+    verifyCdn({ ...remote, timeoutMs: 500 }),
+    new RegExp(`${bundle}: download failed \\(timed out after 500 ms\\)`),
   );
 });

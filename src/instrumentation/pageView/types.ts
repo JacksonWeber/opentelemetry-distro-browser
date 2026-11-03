@@ -3,6 +3,7 @@
 
 import type { SpanContext } from "@opentelemetry/api";
 import { type LogRecord } from "@opentelemetry/api-logs";
+import type { KeyValueStorage } from "../../storage/keyValueStorage.js";
 
 /**
  * Which resolution step produced the page name.
@@ -164,6 +165,25 @@ export interface PageViewInstrumentationConfig {
   readonly enabled?: boolean;
 
   /**
+   * Reports the previous page's visit duration when the next page view starts, including SPA
+   * routes. Azure Monitor receives a `PageVisitTime` custom metric in milliseconds with
+   * `PageName` and `PageUrl` properties. This is elapsed time, including time in hidden tabs,
+   * not active engagement or page-load duration.
+   *
+   * @remarks
+   * Same-tab, same-origin document navigations use sessionStorage unless distribution storage is
+   * disabled or unavailable; SPA timing still works in memory. No visit metric is sent on hide
+   * or unload: the last visit is omitted unless another instrumented page starts. Use distinct
+   * `storage.namePrefix` values for independent instances, or initialize same-destination
+   * instances in consistent order across documents. With a deferred Azure Monitor connection
+   * string, set an explicit `storage.namePrefix` to enable cross-document persistence before the
+   * destination resolves; otherwise tracking is in-memory only.
+   *
+   * @defaultValue false
+   */
+  readonly autoTrackPageVisitTime?: boolean;
+
+  /**
    * Supplies the framework route pattern, such as `/orders/:id`. Called when the navigation is
    * observed and again when it settles, so a router that commits its route asynchronously is
    * still reflected. Must be cheap and free of side effects.
@@ -218,6 +238,11 @@ export interface PageViewInstrumentationConfig {
  * @internal
  */
 export interface InternalPageViewInstrumentationConfig extends PageViewInstrumentationConfig {
+  /** Null disables persistence; undefined uses the standalone sessionStorage default. */
+  readonly visitStorage?: KeyValueStorage | null;
+  /** Stable destination/instance-specific storage key supplied by the distribution. */
+  readonly visitStorageKey?: string;
+
   /**
    * Page-view context to publish into. When omitted the instrumentation creates its own and
    * exposes it through `pageViews`. Never a module-level global, so independent instances stay

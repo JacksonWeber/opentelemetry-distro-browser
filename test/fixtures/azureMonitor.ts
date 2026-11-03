@@ -14,10 +14,11 @@ function assertObject(value: unknown, path: string): asserts value is Record<str
   );
 }
 
-function assertMap(value: unknown, type: "string" | "number", path: string) {
+function assertMap(value: unknown, type: "string" | "number", path: string, booleanKey?: string) {
   assertObject(value, path);
   for (const [key, entry] of Object.entries(value)) {
-    assert(typeof entry === type, `${path}.${key}: expected ${type}`);
+    const expected = key === booleanKey ? "boolean" : type;
+    assert(typeof entry === expected, `${path}.${key}: expected ${expected}`);
     if (type === "number")
       assert(Number.isFinite(entry), `${path}.${key}: expected a finite number`);
   }
@@ -44,9 +45,17 @@ export function assertAzureMonitorEnvelope(value: unknown): asserts value is Azu
   expect(value).toMatchObject({
     name: expect.any(String),
     iKey: expect.any(String),
-    ver: 1,
-    sampleRate: 100,
   });
+  if (value.ver !== undefined) expect(value.ver, "envelope.ver").toBe(1);
+  if (value.sampleRate !== undefined) {
+    assert(
+      typeof value.sampleRate === "number" &&
+        Number.isFinite(value.sampleRate) &&
+        value.sampleRate > 0 &&
+        value.sampleRate <= 100,
+      "envelope.sampleRate: expected a finite percentage in (0, 100]",
+    );
+  }
   assert(
     typeof value.time === "string" && Number.isFinite(Date.parse(value.time)),
     "envelope.time: expected an ISO timestamp",
@@ -58,7 +67,12 @@ export function assertAzureMonitorEnvelope(value: unknown): asserts value is Azu
   assertObject(baseData, "envelope.data.baseData");
   expect(baseData.ver, "baseData.ver").toBe(2);
   if (baseData.properties !== undefined)
-    assertMap(baseData.properties, "string", "baseData.properties");
+    assertMap(
+      baseData.properties,
+      "string",
+      "baseData.properties",
+      baseType === "MetricData" ? "telemetrySuccess" : undefined,
+    );
   if (baseData.measurements !== undefined)
     assertMap(baseData.measurements, "number", "baseData.measurements");
 
@@ -126,6 +140,19 @@ export function assertAzureMonitorEnvelope(value: unknown): asserts value is Azu
     case "EventData":
       suffix = "Event";
       expect(baseData.name).toEqual(expect.any(String));
+      break;
+    case "MetricData":
+      suffix = "Metric";
+      assert(Array.isArray(baseData.metrics), "baseData.metrics: expected an array");
+      expect(baseData.metrics).toHaveLength(1);
+      for (const metric of baseData.metrics) {
+        assertObject(metric, "baseData.metrics[]");
+        expect(metric).toMatchObject({ name: expect.any(String), kind: 0 });
+        assert(
+          typeof metric.value === "number" && Number.isFinite(metric.value),
+          "baseData.metrics[].value: expected a finite number",
+        );
+      }
       break;
     default:
       throw new Error(`Unsupported Azure Monitor baseType: ${String(baseType)}`);

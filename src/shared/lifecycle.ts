@@ -4,19 +4,55 @@
 import { callWithTimeout } from "@opentelemetry/core";
 import { getSharedRegistry, reportError } from "./globalOwnership.js";
 
-/** Runs every cleanup task, including when a sibling throws or never settles. */
+/** Rethrows a single collected error as-is, or several as one `AggregateError`. */
+export function throwErrors(errors: readonly unknown[], message: string): void {
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, message);
+}
+
+/** Runs bounded task groups in order, collecting all failures. */
 export async function runLifecycleTasks(
   tasks: readonly (() => Promise<void>)[],
   message: string,
+  followingTasks?: readonly (() => Promise<void>)[],
 ): Promise<void> {
-  const results = await Promise.allSettled(
-    tasks.map((task) => callWithTimeout(Promise.resolve().then(task), 30_000)),
-  );
+  const errors: unknown[] = [];
+  for (const group of followingTasks ? [tasks, followingTasks] : [tasks]) {
+    const results = await Promise.allSettled(
+      group.map((task) => callWithTimeout(Promise.resolve().then(task), 30_000)),
+    );
+    for (const result of results) {
+      if (result.status === "rejected") errors.push(result.reason);
+    }
+  }
+  throwErrors(errors, message);
+}
+
+/** Waits for every already-bounded operation without imposing a second deadline. */
+export async function waitForAll(
+  operations: readonly (Promise<void> | undefined)[],
+  message: string,
+): Promise<void> {
+  // eslint-disable-next-line @typescript-eslint/await-thenable -- Absent optional stages are fulfilled no-ops.
+  const results = await Promise.allSettled(operations);
   const errors = results.flatMap((result) =>
     result.status === "rejected" ? [result.reason as unknown] : [],
   );
-  if (errors.length === 1) throw errors[0];
-  if (errors.length > 1) throw new AggregateError(errors, message);
+  throwErrors(errors, message);
+}
+
+/** Also settles when a transport or application wrapper ignores cancellation. */
+export function withAbort<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return operation;
+  let onAbort: (() => void) | undefined;
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(new DOMException("Request aborted", "AbortError"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+  return Promise.race([operation, cancelled]).finally(() => {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+  });
 }
 
 /** Installs one pair of unload listeners for all active instances in this realm. */

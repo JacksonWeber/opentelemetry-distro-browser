@@ -13,6 +13,15 @@ function detectWith(userAgent: unknown): Record<string, unknown> {
   }
 }
 
+function detectWithNavigator(nav: unknown): Record<string, unknown> {
+  vi.stubGlobal("navigator", nav);
+  try {
+    return userAgentDetector.detect().attributes as Record<string, unknown>;
+  } finally {
+    vi.unstubAllGlobals();
+  }
+}
+
 interface Expectation {
   label: string;
   userAgent: string;
@@ -629,6 +638,60 @@ describe("UserAgentDetector", () => {
   });
 
   describe("version extraction edge cases", () => {
+    it("uses a cached high-entropy platform version to distinguish Windows 11", async () => {
+      const getHighEntropyValues = vi.fn().mockResolvedValue({ platformVersion: "15.0.0" });
+      const nav = {
+        userAgent:
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
+        userAgentData: { getHighEntropyValues },
+      };
+
+      const first = detectWithNavigator(nav);
+      const second = detectWithNavigator(nav);
+
+      await expect(first["user_agent.os.version"]).resolves.toBe("11");
+      await expect(second["user_agent.os.version"]).resolves.toBe("11");
+      expect(getHighEntropyValues).toHaveBeenCalledOnce();
+      expect(getHighEntropyValues).toHaveBeenCalledWith(["platformVersion"]);
+    });
+
+    it.each([
+      ["12.0.0", "10"],
+      ["13.0.0", "11"],
+    ])("maps Windows platform version %s to Windows %s", async (platformVersion, expected) => {
+      const attributes = detectWithNavigator({
+        userAgent:
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
+        userAgentData: {
+          getHighEntropyValues: vi.fn().mockResolvedValue({ platformVersion }),
+        },
+      });
+
+      await expect(attributes["user_agent.os.version"]).resolves.toBe(expected);
+    });
+
+    it("falls back to the user agent OS version for a malformed platform version", async () => {
+      const attributes = detectWithNavigator({
+        userAgent:
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
+        userAgentData: {
+          getHighEntropyValues: vi.fn().mockResolvedValue({ platformVersion: "13beta" }),
+        },
+      });
+
+      await expect(attributes["user_agent.os.version"]).resolves.toBe("10");
+    });
+
+    it("falls back to the user agent OS version when high-entropy hints fail", async () => {
+      const attributes = detectWithNavigator({
+        userAgent:
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
+        userAgentData: { getHighEntropyValues: vi.fn().mockRejectedValue(new Error("denied")) },
+      });
+
+      await expect(attributes["user_agent.os.version"]).resolves.toBe("10");
+    });
+
     it("does not use the WebKit build number as the Safari version", () => {
       const attributes = detectWith(
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15",

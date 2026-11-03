@@ -1,14 +1,16 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { context, diag, propagation, trace } from "@opentelemetry/api";
+import { ROOT_CONTEXT, context, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
+import { resourceFromAttributes } from "@opentelemetry/resources";
 import type { ReadWriteLogRecord } from "@opentelemetry/sdk-logs";
 import type { Span } from "@opentelemetry/sdk-trace-base";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   useMicrosoftOpenTelemetry,
   type MicrosoftOpenTelemetryBrowser,
+  type MicrosoftOpenTelemetryBrowserConfigurationUpdate,
   type MicrosoftOpenTelemetryBrowserOptions,
 } from "../../../src/index.js";
 import { noopLoggerProvider, noopTracerProvider } from "../../../src/routing/instanceRouter.js";
@@ -55,12 +57,22 @@ afterEach(async () => {
 
 async function initialize(
   shutdown: () => Promise<void> = async () => {},
-  options: Pick<MicrosoftOpenTelemetryBrowserOptions, "session"> = { session: { enabled: true } },
+  options: Pick<
+    MicrosoftOpenTelemetryBrowserOptions,
+    | "session"
+    | "resource"
+    | "samplingPercentage"
+    | "sessionRenewalMs"
+    | "sessionExpirationMs"
+    | "storage"
+    | "userContext"
+  > = {},
 ) {
   const spans: Span[] = [];
   const records: ReadWriteLogRecord[] = [];
   const handle = await useMicrosoftOpenTelemetry({
     ...options,
+    userContext: options.userContext ?? { enabled: false },
     pageView: { enabled: false },
     spanProcessors: [
       {
@@ -93,7 +105,76 @@ async function initialize(
   return { handle, emit, spans, records };
 }
 
-it("generates and persists the same session ID when explicitly enabled", async () => {
+it.each(["native", "alias"] as const)(
+  "captures inherited startup %s lifetime getters once and applies runtime updates afterward",
+  async (kind) => {
+    const inactivity = vi.fn(() => (kind === "alias" ? 1000 : 1));
+    const maximum = vi.fn(() => (kind === "alias" ? 2000 : 2));
+    const native = Object.create(null) as { inactivityTimeout?: number; maxDuration?: number };
+    if (kind === "native") {
+      Object.setPrototypeOf(native, {
+        get inactivityTimeout() {
+          return inactivity();
+        },
+        get maxDuration() {
+          return maximum();
+        },
+      });
+    }
+    class Options {
+      session = native;
+      storage = { enabled: false };
+      userContext = { enabled: false };
+      pageView = { enabled: false };
+      spanProcessors: MicrosoftOpenTelemetryBrowserOptions["spanProcessors"];
+      get sessionRenewalMs() {
+        return kind === "alias" ? inactivity() : undefined;
+      }
+      get sessionExpirationMs() {
+        return kind === "alias" ? maximum() : undefined;
+      }
+    }
+    const spans: Span[] = [];
+    const options = new Options();
+    options.spanProcessors = [
+      {
+        onStart: (span) => {
+          spans.push(span);
+        },
+        onEnd() {},
+        async forceFlush() {},
+        async shutdown() {},
+      },
+    ];
+    const handle = await useMicrosoftOpenTelemetry(options);
+    handles.add(handle);
+    const emit = () => {
+      trace.getTracer("startup-getters").startSpan("activity").end();
+      return spans.at(-1)?.attributes["session.id"];
+    };
+    const id = emit();
+    await vi.advanceTimersByTimeAsync(1000);
+    await handle.updateCfg({ session: { inactivityTimeout: 3, maxDuration: 4 } });
+    expect(emit()).toBe(id);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(emit()).not.toBe(id);
+    expect(inactivity).toHaveBeenCalledOnce();
+    expect(maximum).toHaveBeenCalledOnce();
+  },
+);
+
+it("rejects explicitly reset native lifetimes that conflict with startup aliases", async () => {
+  const access = vi.spyOn(window, "localStorage", "get");
+  await expect(
+    useMicrosoftOpenTelemetry({
+      session: { inactivityTimeout: undefined },
+      sessionRenewalMs: 1000,
+    }),
+  ).rejects.toThrow("Conflicting configuration paths");
+  expect(access).not.toHaveBeenCalled();
+});
+
+it("generates and persists the same session ID by default", async () => {
   const { emit } = await initialize();
   const id = emit();
   expect(id).toMatch(/^[0-9a-f]{32}$/);
@@ -110,7 +191,7 @@ it("uses fresh memory-only sessions without touching storage when persistence co
   localStorage.setItem(storageKey, stored);
   const access = vi.spyOn(window, "localStorage", "get");
   const warn = vi.spyOn(diag, "warn").mockImplementation(() => {});
-  const options = { session: { enabled: true, persist: false, inactivityTimeout: 1 } };
+  const options = { session: { persist: false, inactivityTimeout: 1 } };
   const first = await initialize(undefined, options);
   const id = first.emit();
   expect(id).toMatch(/^[0-9a-f]{32}$/);
@@ -214,6 +295,68 @@ it.each([false, true])(
   },
 );
 
+it.each([false, true])(
+  "enforces the default 24-hour lifetime at the exact boundary (reload=%s)",
+  async (reload) => {
+    const start = Date.now();
+    const first = await initialize();
+    const id = first.emit();
+    // Keep the session active so the default inactivity timeout cannot expire it first.
+    for (let minute = 1; minute < 24 * 60; minute++) {
+      vi.setSystemTime(start + minute * 60_000);
+      expect(first.emit()).toBe(id);
+    }
+    vi.setSystemTime(start + 24 * 60 * 60_000 - 1);
+    expect(first.emit()).toBe(id);
+    let current = first;
+    if (reload) {
+      await first.handle.shutdown();
+      handles.delete(first.handle);
+      resetApis();
+      current = await initialize();
+      expect(current.emit()).toBe(id);
+    }
+    vi.setSystemTime(start + 24 * 60 * 60_000);
+    const renewed = current.emit();
+    expect(renewed).not.toBe(id);
+    expect(renewed).toMatch(/^[0-9a-f]{32}$/);
+    expect(JSON.parse(localStorage.getItem(storageKey)!)).toMatchObject({ id: renewed });
+  },
+);
+
+it.each([30 * 60_000 - 1, 30 * 60_000, 30 * 60_000 + 1])(
+  "enforces the default 30-minute inactivity timeout across reloads (%i ms)",
+  async (idleMs) => {
+    const first = await initialize();
+    const id = first.emit();
+    await first.handle.shutdown();
+    handles.delete(first.handle);
+    resetApis();
+    vi.setSystemTime(Date.now() + idleMs);
+    const restored = await initialize();
+    if (idleMs < 30 * 60_000) expect(restored.emit()).toBe(id);
+    else expect(restored.emit()).not.toBe(id);
+  },
+);
+
+it.each([24 * 60 * 60_000 - 1, 24 * 60 * 60_000, 24 * 60 * 60_000 + 1])(
+  "enforces the default maximum lifetime when restoring recent activity (%i ms)",
+  async (age) => {
+    vi.setSystemTime(age + 1_000_000);
+    localStorage.setItem(
+      storageKey,
+      JSON.stringify({
+        id: "restored",
+        startTimestamp: Date.now() - age,
+        lastActivityTimestamp: Date.now() - 1,
+      }),
+    );
+    const { emit } = await initialize();
+    if (age < 24 * 60 * 60_000) expect(emit()).toBe("restored");
+    else expect(emit()).not.toBe("restored");
+  },
+);
+
 it.each([1999, 2000, 2001])(
   "enforces configured maximum lifetime across reloads (%i ms)",
   async (age) => {
@@ -298,6 +441,574 @@ it("captures session configuration before asynchronous initialization", async ()
   expect(access).not.toHaveBeenCalled();
 });
 
+it.each([2999, 3000])(
+  "shortens inactivity on next activity without update-time storage or timestamp changes (%i ms idle)",
+  async (idleMs) => {
+    const { handle, emit } = await initialize(undefined, {
+      session: { inactivityTimeout: 10, maxDuration: 0 },
+    });
+    const started = Date.now();
+    const id = emit();
+    vi.setSystemTime(started + 1000);
+    expect(emit()).toBe(id);
+    const stored = localStorage.getItem(storageKey);
+    vi.setSystemTime(started + 1000 + idleMs);
+    const access = vi.spyOn(window, "localStorage", "get");
+    const read = vi.spyOn(Storage.prototype, "getItem");
+    const write = vi.spyOn(Storage.prototype, "setItem");
+    await handle.updateCfg({ session: { inactivityTimeout: 3 } });
+    expect(access).not.toHaveBeenCalled();
+    expect(read).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(localStorage.getItem(storageKey)).toBe(stored);
+    expect(JSON.parse(stored!)).toEqual({
+      id,
+      startTimestamp: started,
+      lastActivityTimestamp: started + 1000,
+    });
+    const next = emit();
+    if (idleMs < 3000) expect(next).toBe(id);
+    else expect(next).not.toBe(id);
+    expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual({
+      id: next,
+      startTimestamp: idleMs < 3000 ? started : Date.now(),
+      lastActivityTimestamp: Date.now(),
+    });
+  },
+);
+
+it("extends inactivity even after the old limit elapsed without restarting the activity window", async () => {
+  const { handle, emit } = await initialize(undefined, {
+    session: { inactivityTimeout: 1, maxDuration: 0 },
+  });
+  const started = Date.now();
+  const id = emit();
+  vi.setSystemTime(started + 500);
+  expect(emit()).toBe(id);
+  vi.setSystemTime(started + 2000);
+  const access = vi.spyOn(window, "localStorage", "get");
+  const read = vi.spyOn(Storage.prototype, "getItem");
+  const write = vi.spyOn(Storage.prototype, "setItem");
+  await handle.updateCfg({ session: { inactivityTimeout: 3 } });
+  expect(access).not.toHaveBeenCalled();
+  expect(read).not.toHaveBeenCalled();
+  expect(write).not.toHaveBeenCalled();
+  expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual({
+    id,
+    startTimestamp: started,
+    lastActivityTimestamp: started + 500,
+  });
+  vi.setSystemTime(started + 3499);
+  expect(emit()).toBe(id);
+  vi.setSystemTime(started + 6499);
+  expect(emit()).not.toBe(id);
+});
+
+it.each(["shorten", "extend"] as const)(
+  "%s maximum duration relative to creation time independently of recent activity",
+  async (change) => {
+    const { handle, emit } = await initialize(undefined, {
+      session: { inactivityTimeout: 1, maxDuration: change === "shorten" ? 10 : 1 },
+    });
+    const started = Date.now();
+    const id = emit();
+    vi.setSystemTime(started + 750);
+    expect(emit()).toBe(id);
+    vi.setSystemTime(started + 1500);
+    const access = vi.spyOn(window, "localStorage", "get");
+    const read = vi.spyOn(Storage.prototype, "getItem");
+    const write = vi.spyOn(Storage.prototype, "setItem");
+    await handle.updateCfg({ session: { maxDuration: change === "shorten" ? 1 : 3 } });
+    expect(access).not.toHaveBeenCalled();
+    expect(read).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+    expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual({
+      id,
+      startTimestamp: started,
+      lastActivityTimestamp: started + 750,
+    });
+    vi.setSystemTime(started + 1600);
+    if (change === "shorten") {
+      expect(emit()).not.toBe(id);
+    } else {
+      expect(emit()).toBe(id);
+      vi.setSystemTime(started + 2400);
+      expect(emit()).toBe(id);
+      vi.setSystemTime(started + 2999);
+      expect(emit()).toBe(id);
+      vi.setSystemTime(started + 3000);
+      expect(emit()).not.toBe(id);
+    }
+  },
+);
+
+it.each(["inactivityTimeout", "maxDuration"] as const)(
+  "native zero disables runtime %s expiration rather than restoring the default",
+  async (field) => {
+    const { handle, emit } = await initialize(undefined, {
+      session: { inactivityTimeout: 0, maxDuration: 0, [field]: 1 },
+    });
+    const id = emit();
+    vi.setSystemTime(Date.now() + 2000);
+    await handle.updateCfg({ session: { [field]: 0 } });
+    vi.setSystemTime(Date.now() + 25 * 60 * 60_000);
+    expect(emit()).toBe(id);
+    await handle.updateCfg({ session: { [field]: 1 } });
+    vi.setSystemTime(Date.now() + 1000);
+    expect(emit()).not.toBe(id);
+  },
+);
+
+const lifetimes = [
+  { field: "inactivityTimeout", alias: "sessionRenewalMs", defaultSeconds: 1800 },
+  { field: "maxDuration", alias: "sessionExpirationMs", defaultSeconds: 86400 },
+] as const;
+
+it.each(lifetimes)(
+  "resets $field through native or session undefined and alias zero or undefined using existing timestamps",
+  async ({ field, alias, defaultSeconds }) => {
+    const { handle, emit } = await initialize(undefined, {
+      session: { inactivityTimeout: 0, maxDuration: 0 },
+    });
+    // Each reset starts with unlimited lifetimes, not a newly created session at update time.
+    for (const patch of [
+      { session: { [field]: undefined } },
+      { session: undefined },
+      { [alias]: 0 },
+      { [alias]: undefined },
+    ]) {
+      await handle.updateCfg({ session: { inactivityTimeout: 0, maxDuration: 0 } });
+      const started = Date.now();
+      const id = emit();
+      vi.setSystemTime(started + defaultSeconds * 1000 - 1);
+      if (field === "maxDuration") expect(emit()).toBe(id);
+      await handle.updateCfg(patch);
+      expect(JSON.parse(localStorage.getItem(storageKey)!)).toMatchObject({
+        id,
+        startTimestamp: started,
+        lastActivityTimestamp: field === "maxDuration" ? Date.now() : started,
+      });
+      vi.setSystemTime(started + defaultSeconds * 1000);
+      expect(emit()).not.toBe(id);
+    }
+  },
+);
+
+it("merges omissions without resetting sampling or the other session lifetime", async () => {
+  const { handle, emit, spans } = await initialize(undefined, {
+    samplingPercentage: 100,
+    session: { persist: false, inactivityTimeout: 1, maxDuration: 2 },
+  });
+  const started = Date.now();
+  const id = emit();
+  expect(await handle.updateCfg({})).toEqual({ revision: 0, changedPaths: [] });
+  await handle.updateCfg({ session: { maxDuration: 0 } });
+  const unsampledParent = trace.setSpanContext(ROOT_CONTEXT, {
+    traceId: "00000000000000000000000000000001",
+    spanId: "0000000000000001",
+    traceFlags: 0,
+  });
+  trace.getTracer("session-merge").startSpan("still-explicit-100", {}, unsampledParent).end();
+  expect(spans.at(-1)?.name).toBe("still-explicit-100");
+  vi.setSystemTime(started + 999);
+  expect(emit()).toBe(id);
+  await handle.updateCfg({ samplingPercentage: 100 });
+  vi.setSystemTime(started + 1999);
+  expect(emit()).not.toBe(id);
+});
+
+it.each(lifetimes)(
+  "replacement resets sampling and omitted $field without resetting timestamps",
+  async ({ field, defaultSeconds }) => {
+    const { handle, emit, spans } = await initialize(undefined, {
+      samplingPercentage: 100,
+      session: { inactivityTimeout: 0, maxDuration: 0 },
+    });
+    const other = field === "inactivityTimeout" ? "maxDuration" : "inactivityTimeout";
+    // Cover both an empty replacement and a replacement with a partial session object.
+    for (const patch of [{}, { session: { [other]: 0 } }]) {
+      await handle.updateCfg({
+        samplingPercentage: 100,
+        session: { inactivityTimeout: 0, maxDuration: 0 },
+      });
+      const started = Date.now();
+      const id = emit();
+      vi.setSystemTime(started + defaultSeconds * 1000 - 1);
+      if (field === "maxDuration") expect(emit()).toBe(id);
+      const stored = localStorage.getItem(storageKey);
+      await handle.updateCfg(patch, false);
+      expect(localStorage.getItem(storageKey)).toBe(stored);
+      const count = spans.length;
+      trace
+        .getTracer("session-replacement")
+        .startSpan(
+          "default-unsampled-parent",
+          {},
+          trace.setSpanContext(ROOT_CONTEXT, {
+            traceId: "00000000000000000000000000000001",
+            spanId: "0000000000000001",
+            traceFlags: 0,
+          }),
+        )
+        .end();
+      expect(spans).toHaveLength(count);
+      vi.setSystemTime(started + defaultSeconds * 1000);
+      expect(emit()).not.toBe(id);
+    }
+  },
+);
+
+it.each(lifetimes)(
+  "preserves fractional $alias milliseconds at startup and runtime and accepts equivalent native values",
+  async ({ field, alias }) => {
+    const { handle, emit } = await initialize(undefined, {
+      session: {
+        persist: false,
+        [field === "inactivityTimeout" ? "maxDuration" : "inactivityTimeout"]: 0,
+      },
+      [alias]: 500.5,
+    });
+    const id = emit();
+    vi.setSystemTime(Date.now() + 500);
+    expect(emit()).toBe(id);
+    vi.setSystemTime(Date.now() + (field === "maxDuration" ? 1 : 501));
+    const renewed = emit();
+    expect(renewed).not.toBe(id);
+    await handle.updateCfg({ [alias]: 2000.5 });
+    vi.setSystemTime(Date.now() + 2000);
+    expect(emit()).toBe(renewed);
+    expect(await handle.updateCfg({ session: { [field]: 2.0005 }, [alias]: 2000.5 })).toMatchObject(
+      {
+        changedPaths: [],
+      },
+    );
+    vi.setSystemTime(Date.now() + 2001);
+    expect(emit()).not.toBe(renewed);
+  },
+);
+
+it.each(lifetimes)(
+  "startup $alias zero and undefined restore defaults rather than disabling expiration",
+  async ({ field, alias, defaultSeconds }) => {
+    for (const value of [0, undefined]) {
+      const started = Date.now();
+      localStorage.setItem(
+        storageKey,
+        JSON.stringify({
+          id: "alias-default",
+          startTimestamp: started,
+          lastActivityTimestamp: started,
+        }),
+      );
+      vi.setSystemTime(started + defaultSeconds * 1000 - 1);
+      const current = await initialize(undefined, {
+        session: { [field === "inactivityTimeout" ? "maxDuration" : "inactivityTimeout"]: 0 },
+        [alias]: value,
+      });
+      expect(JSON.parse(localStorage.getItem(storageKey)!)).toMatchObject({
+        id: "alias-default",
+        lastActivityTimestamp: started,
+      });
+      vi.setSystemTime(started + defaultSeconds * 1000);
+      expect(current.emit()).not.toBe("alias-default");
+      await current.handle.shutdown();
+    }
+  },
+);
+
+it.each(lifetimes)(
+  "rejects conflicting $alias and native values before startup or any runtime sampling mutation",
+  async ({ field, alias, defaultSeconds }) => {
+    const access = vi.spyOn(window, "localStorage", "get");
+    // Native zero means unlimited; alias zero means the default, so equal raw zeros conflict.
+    for (const [native, milliseconds] of [
+      [1, 2000],
+      [0, 0],
+    ]) {
+      await expect(
+        initialize(undefined, {
+          session: { [field]: native },
+          [alias]: milliseconds,
+        }),
+      ).rejects.toThrow();
+    }
+    expect(access).not.toHaveBeenCalled();
+    expect(startTelemetryInstance).not.toHaveBeenCalled();
+    const equivalent = await initialize(undefined, {
+      session: { persist: false, [field]: defaultSeconds },
+      [alias]: 0,
+    });
+    await equivalent.handle.shutdown();
+    const { handle, emit, spans } = await initialize(undefined, {
+      samplingPercentage: 100,
+      session: { persist: false, inactivityTimeout: 10, maxDuration: 10 },
+    });
+    const id = emit();
+    for (const [native, milliseconds] of [
+      [1, 2000],
+      [0, 0],
+    ]) {
+      await expect(
+        handle.updateCfg({
+          samplingPercentage: 0,
+          session: { [field]: native },
+          [alias]: milliseconds,
+        }),
+      ).rejects.toThrow();
+      expect(await handle.updateCfg({})).toEqual({ revision: 0, changedPaths: [] });
+    }
+    vi.setSystemTime(Date.now() + 1500);
+    const count = spans.length;
+    expect(emit()).toBe(id);
+    expect(spans).toHaveLength(count + 1);
+    await handle.updateCfg({ session: { [field]: defaultSeconds }, [alias]: 0 });
+  },
+);
+
+it.each([
+  { session: { enabled: false } },
+  { session: { persist: false } },
+  { storage: { enabled: false } },
+  { storage: { namePrefix: "runtime-" } },
+])("rejects startup-only updates atomically (%j)", async (startupOnly) => {
+  const { handle, emit, spans } = await initialize(undefined, {
+    session: { inactivityTimeout: 10, maxDuration: 10 },
+  });
+  const id = emit();
+  const write = vi.spyOn(Storage.prototype, "setItem");
+  await expect(
+    handle.updateCfg({
+      ...startupOnly,
+      samplingPercentage: 0,
+      session: { inactivityTimeout: 1, ...startupOnly.session },
+    } as MicrosoftOpenTelemetryBrowserConfigurationUpdate),
+  ).rejects.toThrow();
+  expect(await handle.updateCfg({})).toEqual({ revision: 0, changedPaths: [] });
+  expect(write).not.toHaveBeenCalled();
+  vi.setSystemTime(Date.now() + 1500);
+  expect(emit()).toBe(id);
+  expect(spans).toHaveLength(2);
+});
+
+it.each(["session-disabled", "memory-only", "storage-disabled"] as const)(
+  "updates lifetimes without accessing storage or changing startup consent (%s)",
+  async (mode) => {
+    const stored = JSON.stringify({ id: "previous", startTimestamp: Date.now() });
+    localStorage.setItem(storageKey, stored);
+    const user = localStorage.getItem("opentelemetry-user");
+    const local = vi.spyOn(window, "localStorage", "get");
+    const session = vi.spyOn(window, "sessionStorage", "get");
+    const read = vi.spyOn(Storage.prototype, "getItem");
+    const write = vi.spyOn(Storage.prototype, "setItem");
+    const remove = vi.spyOn(Storage.prototype, "removeItem");
+    const cookie = vi.spyOn(document, "cookie", "get");
+    const cookieWrite = vi.spyOn(document, "cookie", "set");
+    const { handle, emit, spans, records } = await initialize(undefined, {
+      session: {
+        enabled: mode !== "session-disabled",
+        persist: mode !== "memory-only",
+        inactivityTimeout: 10,
+      },
+      storage: { enabled: mode !== "storage-disabled" },
+      userContext: { enabled: mode === "storage-disabled" },
+    });
+    const id = emit();
+    if (mode === "session-disabled") expect(id).toBeUndefined();
+    else {
+      expect(id).toMatch(/^[0-9a-f]{32}$/);
+      expect(id).not.toBe("previous");
+    }
+    await handle.updateCfg({ session: { inactivityTimeout: 1, maxDuration: 0 } });
+    vi.setSystemTime(Date.now() + 1000);
+    const renewed = emit();
+    if (mode === "session-disabled") expect(renewed).toBeUndefined();
+    else expect(renewed).not.toBe(id);
+    await handle.updateCfg({ sessionRenewalMs: 0, sessionExpirationMs: undefined });
+    if (mode === "storage-disabled") {
+      handle.userContext.setEnabled(true);
+      handle.userContext.setAuthenticatedUserContext("memory-user", "memory-account");
+      emit();
+      for (const record of [spans.at(-1)!, records.at(-1)!]) {
+        expect(record.attributes["user.id"]).toBe("memory-user");
+        expect(record.attributes["user.account.id"]).toBe("memory-account");
+        expect(record.attributes["enduser.pseudo.id"]).toBeUndefined();
+      }
+      handle.userContext.clearAuthenticatedUserContext();
+      handle.userContext.setEnabled(false);
+      emit();
+      for (const record of [spans.at(-1)!, records.at(-1)!]) {
+        expect(record.attributes["user.id"]).toBeUndefined();
+        expect(record.attributes["user.account.id"]).toBeUndefined();
+        expect(record.attributes["enduser.pseudo.id"]).toBeUndefined();
+      }
+    }
+    await handle.updateCfg({}, false);
+    expect(emit()).toBe(renewed);
+    await handle.shutdown();
+    expect(local).not.toHaveBeenCalled();
+    expect(session).not.toHaveBeenCalled();
+    expect(read).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+    expect(cookie).not.toHaveBeenCalled();
+    expect(cookieWrite).not.toHaveBeenCalled();
+    local.mockRestore();
+    read.mockRestore();
+    expect(localStorage.getItem(storageKey)).toBe(stored);
+    expect(localStorage.getItem("opentelemetry-user")).toBe(user);
+  },
+);
+
+it("keeps cached tracers and loggers on their own instance's mutable session lifetimes", async () => {
+  const first = await initialize(undefined, {
+    session: { persist: false, inactivityTimeout: 1, maxDuration: 0 },
+  });
+  const firstTracer = trace.getTracer("first-session");
+  const firstLogger = logs.getLogger("first-session");
+  const second = await initialize(undefined, {
+    session: { persist: false, inactivityTimeout: 10, maxDuration: 0 },
+  });
+  const instance = await vi.mocked(startTelemetryInstance).mock.results.at(-1)!.value;
+  const secondTracer = instance.tracerProvider.getTracer("second-session");
+  const secondLogger = instance.loggerProvider.getLogger("second-session");
+  function emitBoth() {
+    firstTracer.startSpan("first").end();
+    firstLogger.emit({ eventName: "first" });
+    secondTracer.startSpan("second").end();
+    secondLogger.emit({ eventName: "second" });
+    for (const current of [first, second]) {
+      expect(current.records.at(-1)?.attributes["session.id"]).toBe(
+        current.spans.at(-1)?.attributes["session.id"],
+      );
+    }
+    return [
+      first.spans.at(-1)!.attributes["session.id"],
+      second.spans.at(-1)!.attributes["session.id"],
+    ];
+  }
+  const [firstId, secondId] = emitBoth();
+  expect(firstId).not.toBe(secondId);
+  vi.setSystemTime(Date.now() + 750);
+  await first.handle.updateCfg({ session: { inactivityTimeout: 0.5 } });
+  const [renewedFirst, retainedSecond] = emitBoth();
+  expect(renewedFirst).not.toBe(firstId);
+  expect(retainedSecond).toBe(secondId);
+  await first.handle.updateCfg({ session: { inactivityTimeout: 0 } });
+  vi.setSystemTime(Date.now() + 750);
+  await second.handle.updateCfg({ session: { maxDuration: 1 } });
+  const [retainedFirst, renewedSecond] = emitBoth();
+  expect(retainedFirst).toBe(renewedFirst);
+  expect(renewedSecond).not.toBe(secondId);
+  expect(first.spans).toHaveLength(3);
+  expect(second.spans).toHaveLength(3);
+});
+
+it("isolates persisted sessions and runtime lifetimes under independent storage name prefixes", async () => {
+  const prefix = `runtime-session-${crypto.randomUUID()}-`;
+  const firstPrefix = `${prefix}first-`;
+  const secondPrefix = `${prefix}second-`;
+  const keys = [firstPrefix + storageKey, secondPrefix + storageKey];
+  const started = Date.now();
+  for (const [index, key] of keys.entries()) {
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        id: `restored-${index}`,
+        startTimestamp: started - 1500,
+        lastActivityTimestamp: started - 500,
+      }),
+    );
+  }
+  try {
+    const first = await initialize(undefined, {
+      session: { inactivityTimeout: 10, maxDuration: 0 },
+      storage: { namePrefix: firstPrefix },
+    });
+    const second = await initialize(undefined, {
+      session: { inactivityTimeout: 10, maxDuration: 0 },
+      storage: { namePrefix: secondPrefix },
+    });
+    const instance = await vi.mocked(startTelemetryInstance).mock.results.at(-1)!.value;
+    const tracer = instance.tracerProvider.getTracer("prefixed-session");
+    const logger = instance.loggerProvider.getLogger("prefixed-session");
+    function emitSecond() {
+      tracer.startSpan("second").end();
+      logger.emit({ eventName: "second" });
+      const id = second.spans.at(-1)?.attributes["session.id"];
+      expect(second.records.at(-1)?.attributes["session.id"]).toBe(id);
+      return id;
+    }
+    const read = vi.spyOn(Storage.prototype, "getItem");
+    const write = vi.spyOn(Storage.prototype, "setItem");
+    await first.handle.updateCfg({ session: { maxDuration: 1 } });
+    expect(read).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+    const firstId = first.emit();
+    expect(firstId).not.toBe("restored-0");
+    expect(emitSecond()).toBe("restored-1");
+    vi.setSystemTime(started + 500);
+    read.mockClear();
+    write.mockClear();
+    await second.handle.updateCfg({ sessionRenewalMs: 500 });
+    expect(read).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+    expect(first.emit()).toBe(firstId);
+    const secondId = emitSecond();
+    expect(secondId).not.toBe("restored-1");
+    expect(secondId).not.toBe(firstId);
+    expect(write.mock.calls.map(([key]) => key)).toEqual(keys);
+    expect(JSON.parse(localStorage.getItem(keys[0])!)).toEqual({
+      id: firstId,
+      startTimestamp: started,
+      lastActivityTimestamp: started + 500,
+    });
+    expect(JSON.parse(localStorage.getItem(keys[1])!)).toEqual({
+      id: secondId,
+      startTimestamp: started + 500,
+      lastActivityTimestamp: started + 500,
+    });
+  } finally {
+    await Promise.all([...handles].map((handle) => handle.shutdown()));
+    for (const key of keys) localStorage.removeItem(key);
+  }
+});
+
+it("rejects queued and future lifetime updates after shutdown without restarting session storage", async () => {
+  const { handle, emit, spans, records } = await initialize();
+  emit();
+  await handle.updateCfg({ session: { inactivityTimeout: 0.5, maxDuration: 1 } });
+  const tracer = trace.getTracer("stopped-session");
+  const logger = logs.getLogger("stopped-session");
+  const stored = localStorage.getItem(storageKey);
+  const access = vi.spyOn(window, "localStorage", "get");
+  const write = vi.spyOn(Storage.prototype, "setItem");
+  const read = vi.spyOn(Storage.prototype, "getItem");
+  const remove = vi.spyOn(Storage.prototype, "removeItem");
+  const queued = Promise.allSettled([
+    handle.updateCfg({ sessionRenewalMs: 1000 }),
+    handle.updateCfg({ session: { maxDuration: 0 } }),
+  ]);
+  const shutdown = handle.shutdown();
+  for (const result of await queued) {
+    expect(result.status).toBe("rejected");
+    if (result.status === "rejected") expect(result.reason).toMatchObject({ message: /stopped/ });
+  }
+  await shutdown;
+  await expect(handle.updateCfg({ session: { inactivityTimeout: 0 } })).rejects.toThrow("stopped");
+  vi.setSystemTime(Date.now() + 2 * 86400_000);
+  tracer.startSpan("after-shutdown").end();
+  logger.emit({ eventName: "after-shutdown" });
+  expect(spans).toHaveLength(1);
+  expect(records).toHaveLength(1);
+  expect(access).not.toHaveBeenCalled();
+  expect(write).not.toHaveBeenCalled();
+  expect(read).not.toHaveBeenCalled();
+  expect(remove).not.toHaveBeenCalled();
+  expect(vi.getTimerCount()).toBe(0);
+  expect(localStorage.getItem(storageKey)).toBe(stored);
+});
+
 it("renews the session when the clock moves backwards", async () => {
   const { emit } = await initialize();
   const id = emit();
@@ -305,8 +1016,24 @@ it("renews the session when the clock moves backwards", async () => {
   expect(emit()).not.toBe(id);
 });
 
-it.each([undefined, {}, { enabled: false }])(
-  "does not access storage, create timers, or enrich telemetry without opt-in (%j)",
+it.each([undefined, {}, { enabled: true }])(
+  "tracks and restores sessions unless explicitly disabled (%j)",
+  async (session) => {
+    const first = await initialize(undefined, { session });
+    const id = first.emit();
+    expect(id).toMatch(/^[0-9a-f]{32}$/);
+    expect(JSON.parse(localStorage.getItem(storageKey)!)).toMatchObject({ id });
+    await first.handle.shutdown();
+    handles.delete(first.handle);
+    resetApis();
+
+    const restored = await initialize(undefined, { session });
+    expect(restored.emit()).toBe(id);
+  },
+);
+
+it.each([{ enabled: false }])(
+  "does not access storage, create timers, or enrich telemetry when disabled (%j)",
   async (session) => {
     localStorage.setItem(
       storageKey,
@@ -329,16 +1056,28 @@ it.each([undefined, {}, { enabled: false }])(
   },
 );
 
-it("preserves a valid application-provided session ID", async () => {
-  const { emit, spans, records } = await initialize();
+it("preserves application-provided session IDs after a lifetime update makes managed activity due", async () => {
+  const { handle, emit, spans, records } = await initialize(undefined, {
+    session: { inactivityTimeout: 10, maxDuration: 0 },
+  });
+  const managedId = emit();
+  const stored = localStorage.getItem(storageKey);
+  vi.setSystemTime(Date.now() + 1000);
+  await handle.updateCfg({ session: { inactivityTimeout: 1 } });
+  const write = vi.spyOn(Storage.prototype, "setItem");
   trace
     .getTracer("application")
-    .startSpan("manual", { attributes: { "session.id": "application-session" } })
+    .startSpan("manual", { attributes: { "session.id": "application-span" } })
     .end();
-  logs.getLogger("application").emit({ attributes: { "session.id": "application-session" } });
-  expect(spans.at(-1)?.attributes["session.id"]).toBe("application-session");
-  expect(records.at(-1)?.attributes["session.id"]).toBe("application-session");
-  expect(emit()).not.toBe("application-session");
+  logs.getLogger("application").emit({ attributes: { "session.id": "application-log" } });
+  expect(spans.at(-1)?.attributes["session.id"]).toBe("application-span");
+  expect(records.at(-1)?.attributes["session.id"]).toBe("application-log");
+  expect(write).not.toHaveBeenCalled();
+  expect(localStorage.getItem(storageKey)).toBe(stored);
+  const renewed = emit();
+  expect(renewed).not.toBe(managedId);
+  expect(renewed).not.toBe("application-span");
+  expect(renewed).not.toBe("application-log");
 });
 
 it("replaces an empty application session ID with managed context", async () => {
@@ -352,6 +1091,56 @@ it("replaces an empty application session ID with managed context", async () => 
   expect(records.at(-1)?.attributes["session.id"]).toBe(spans.at(-1)?.attributes["session.id"]);
 });
 
+it.each([undefined, "", 0, false, ["invalid"], "application-record"])(
+  "preserves resource session context with record session.id=%j",
+  async (id) => {
+    const { handle, emit, spans, records } = await initialize(undefined, {
+      session: { enabled: true, persist: false, inactivityTimeout: 1, maxDuration: 2 },
+      resource: resourceFromAttributes({ "session.id": "application-resource" }),
+    });
+    await handle.updateCfg({ session: { inactivityTimeout: 0.5, maxDuration: 1 } });
+    trace
+      .getTracer("application")
+      .startSpan("manual", { attributes: { "session.id": id } })
+      .end();
+    logs.getLogger("application").emit({ attributes: { "session.id": id } });
+
+    for (const record of [...spans, ...records]) {
+      expect(record.attributes["session.id"]).toEqual(id);
+      expect(record.resource.attributes["session.id"]).toBe("application-resource");
+    }
+
+    vi.setSystemTime(Date.now() + 2000);
+    expect(emit()).toBeUndefined();
+    for (const record of [spans.at(-1)!, records.at(-1)!]) {
+      expect(record.resource.attributes["session.id"]).toBe("application-resource");
+    }
+  },
+);
+
+it.each([undefined, "", 0, false, ["invalid"]])(
+  "uses managed context only when neither record nor resource has a valid session ID (resource=%j)",
+  async (resourceId) => {
+    const { emit, spans, records } = await initialize(undefined, {
+      session: { enabled: true, persist: false },
+      resource: resourceFromAttributes({ "session.id": resourceId }),
+    });
+    const managedId = emit();
+    expect(managedId).toMatch(/^[0-9a-f]{32}$/);
+    for (const recordId of [undefined, "", 0, false, ["invalid"]]) {
+      trace
+        .getTracer("application")
+        .startSpan("manual", { attributes: { "session.id": recordId } })
+        .end();
+      logs.getLogger("application").emit({ attributes: { "session.id": recordId } });
+      for (const record of [spans.at(-1)!, records.at(-1)!]) {
+        expect(record.attributes["session.id"]).toBe(managedId);
+        expect(record.resource.attributes["session.id"]).toEqual(resourceId);
+      }
+    }
+  },
+);
+
 it("awaits persisted restoration before starting providers or enabling instrumentation", async () => {
   const restored = { id: "restored-session", startTimestamp: Date.now() - 1000 };
   localStorage.setItem(storageKey, JSON.stringify(restored));
@@ -364,6 +1153,7 @@ it("awaits persisted restoration before starting providers or enabling instrumen
   const logIds: unknown[] = [];
   const pending = useMicrosoftOpenTelemetry({
     session: { enabled: true },
+    userContext: { enabled: false },
     pageView: { enabled: false },
     spanProcessors: [
       {
@@ -658,8 +1448,8 @@ it("preserves a span's start ID when the session renews after inactivity", async
   expect(spans[1].attributes["session.id"]).toBe(id);
 });
 
-it("keeps an active session beyond 24 hours without a maximum lifetime", async () => {
-  const { emit } = await initialize();
+it("keeps an active session beyond 24 hours with maxDuration explicitly set to zero", async () => {
+  const { emit } = await initialize(undefined, { session: { maxDuration: 0 } });
   const id = emit();
   for (let interval = 0; interval < 75; interval++) {
     await vi.advanceTimersByTimeAsync(20 * 60_000);
@@ -667,7 +1457,7 @@ it("keeps an active session beyond 24 hours without a maximum lifetime", async (
   }
 });
 
-it.each(["getter", "read", "write", "missing"])(
+it.each(["getter", "read", "write", "missing", "unexpected"])(
   "warns once and retains an in-memory session when storage is unavailable (%s)",
   async (failure) => {
     const warn = vi.spyOn(diag, "warn").mockImplementation(() => {});
@@ -675,6 +1465,10 @@ it.each(["getter", "read", "write", "missing"])(
     else if (failure === "getter") {
       vi.spyOn(window, "localStorage", "get").mockImplementation(() => {
         throw new DOMException("denied", "SecurityError");
+      });
+    } else if (failure === "unexpected") {
+      vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+        throw new Error("unexpected storage failure");
       });
     } else {
       vi.spyOn(Storage.prototype, failure === "read" ? "getItem" : "setItem").mockImplementation(
@@ -695,18 +1489,6 @@ it.each(["getter", "read", "write", "missing"])(
     expect(warn).toHaveBeenCalledExactlyOnceWith(
       "Session storage unavailable; using an in-memory session.",
     );
-  },
-);
-
-it.each(["getItem", "setItem"] as const)(
-  "does not mask unexpected storage errors or start providers on %s failure",
-  async (operation) => {
-    const failure = new Error("unexpected storage failure");
-    vi.spyOn(Storage.prototype, operation).mockImplementation(() => {
-      throw failure;
-    });
-    await expect(useMicrosoftOpenTelemetry({ session: { enabled: true } })).rejects.toBe(failure);
-    expect(startTelemetryInstance).not.toHaveBeenCalled();
   },
 );
 

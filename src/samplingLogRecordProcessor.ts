@@ -2,24 +2,25 @@
 // Licensed under the MIT License.
 
 import { isSpanContextValid } from "@opentelemetry/api";
+import type { ReadWriteLogRecord } from "@opentelemetry/sdk-logs";
 import {
-  BatchLogRecordProcessor,
-  type BatchLogRecordProcessorBrowserOptions,
-  type ReadWriteLogRecord,
-} from "@opentelemetry/sdk-logs";
+  BrowserBatchLogRecordProcessor,
+  type BrowserBatchLogRecordProcessorOptions,
+} from "./browserBatchLogRecordProcessor.js";
 import {
   AZURE_MONITOR_SAMPLE_RATE,
   getEffectiveSampleRate,
   isTraceSampled,
   validateSamplingPercentage,
 } from "./sampling.js";
+import { copyManagedOperationName } from "./context/operationName.js";
 
-export interface AzureMonitorSamplingLogRecordProcessorOptions extends BatchLogRecordProcessorBrowserOptions {
-  samplingPercentage: number;
+export interface AzureMonitorSamplingLogRecordProcessorOptions extends BrowserBatchLogRecordProcessorOptions {
+  samplingPercentage: number | (() => number | undefined);
 }
 
-export class AzureMonitorSamplingLogRecordProcessor extends BatchLogRecordProcessor {
-  private readonly samplingPercentage: number;
+export class AzureMonitorSamplingLogRecordProcessor extends BrowserBatchLogRecordProcessor {
+  readonly #samplingPercentage: number | (() => number | undefined);
 
   public constructor(
     options: AzureMonitorSamplingLogRecordProcessorOptions,
@@ -27,22 +28,42 @@ export class AzureMonitorSamplingLogRecordProcessor extends BatchLogRecordProces
   ) {
     const { samplingPercentage, ...batchOptions } = options;
     super(batchOptions);
-    this.samplingPercentage = validateSamplingPercentage(samplingPercentage);
+    this.#samplingPercentage =
+      typeof samplingPercentage === "function"
+        ? samplingPercentage
+        : validateSamplingPercentage(samplingPercentage);
   }
 
   public override onEmit(record: ReadWriteLogRecord): void {
+    const percentage =
+      typeof this.#samplingPercentage === "function"
+        ? this.#samplingPercentage()
+        : this.#samplingPercentage;
+    this.onEmitWithSamplingPercentage(record, percentage);
+  }
+
+  /** Retains the emission-time policy when a deferred destination queues this record. */
+  public onEmitWithSamplingPercentage(
+    record: ReadWriteLogRecord,
+    percentage: number | undefined,
+  ): void {
+    if (percentage === undefined) {
+      super.onEmit(record);
+      return;
+    }
+    const samplingPercentage = validateSamplingPercentage(percentage);
     const spanContext = record.spanContext;
     const correlated = !!spanContext && isSpanContextValid(spanContext);
     const sampled = correlated
-      ? isTraceSampled(spanContext.traceId, this.samplingPercentage)
-      : this.samplingPercentage === 100 ||
-        (this.samplingPercentage !== 0 && this.random() * 100 < this.samplingPercentage);
+      ? isTraceSampled(spanContext.traceId, samplingPercentage)
+      : samplingPercentage === 100 ||
+        (samplingPercentage !== 0 && this.random() * 100 < samplingPercentage);
     if (!sampled) return;
 
     const currentSampleRate = record.attributes[AZURE_MONITOR_SAMPLE_RATE];
     const effectiveSampleRate = getEffectiveSampleRate(
       currentSampleRate,
-      this.samplingPercentage,
+      samplingPercentage,
       !correlated,
     );
     if (effectiveSampleRate < 100 && currentSampleRate !== effectiveSampleRate) {
@@ -54,6 +75,7 @@ export class AzureMonitorSamplingLogRecordProcessor extends BatchLogRecordProces
           },
         },
       }) as ReadWriteLogRecord;
+      copyManagedOperationName(record, azureRecord);
       super.onEmit(azureRecord);
       return;
     }

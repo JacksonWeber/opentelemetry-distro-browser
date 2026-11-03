@@ -15,7 +15,10 @@ export interface BreezeResponse {
   readonly errors: readonly BreezeError[];
 }
 
-export function parseBreezeResponse(responseBody: string): BreezeResponse | undefined {
+export function parseBreezeResponse(
+  responseBody: string,
+  expectedCount?: number,
+): BreezeResponse | undefined {
   let value: unknown;
   try {
     value = JSON.parse(responseBody) as unknown;
@@ -28,6 +31,26 @@ export function parseBreezeResponse(responseBody: string): BreezeResponse | unde
   if (typeof value.itemsReceived !== "number" || typeof value.itemsAccepted !== "number") {
     return undefined;
   }
+  const count = expectedCount ?? value.itemsReceived;
+  if (
+    !Number.isInteger(count) ||
+    count < 0 ||
+    value.itemsReceived !== count ||
+    !Number.isInteger(value.itemsAccepted) ||
+    value.itemsAccepted < 0 ||
+    value.itemsAccepted !== count - value.errors.length ||
+    !value.errors.every(
+      (error) =>
+        Number.isInteger(error.index) &&
+        error.index >= 0 &&
+        error.index < count &&
+        Number.isInteger(error.statusCode) &&
+        error.statusCode >= 100 &&
+        error.statusCode <= 599,
+    ) ||
+    new Set(value.errors.map((error) => error.index)).size !== value.errors.length
+  )
+    return undefined;
   return {
     itemsReceived: value.itemsReceived,
     itemsAccepted: value.itemsAccepted,

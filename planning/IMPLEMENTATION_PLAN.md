@@ -2,7 +2,7 @@
 
 **Status:** Active
 **Approach:** Greenfield browser distribution built on upstream OpenTelemetry APIs
-**Shipped:** Milestone M0, published as `@microsoft/opentelemetry-browser@0.1.0-alpha.2`
+**Latest release:** `@microsoft/opentelemetry-browser@0.1.0-beta.1` on npm and the CDN
 **Prior evidence:** Multi-instance browser PoC in [`../poc/`](../poc/)
 **Upstream alignment verified:** 2026-09-10 against
 [`open-telemetry/opentelemetry-browser`](https://github.com/open-telemetry/opentelemetry-browser)
@@ -14,10 +14,11 @@ This document holds the *why*. Everything else has its own document.
 |---|---|
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Global bridge, instance model, routing provider, instrumentation bridge, context, export, package layout, public API |
 | [`REQUIREMENTS.md`](REQUIREMENTS.md) | The requirement set: lifecycle, correctness, configuration, performance, packaging, security, diagnostics, testing |
-| [`M0_PLANNING.md`](M0_PLANNING.md) | The shipped alpha: what landed, what remains, and the M0 decisions |
+| [`M0_PLANNING.md`](M0_PLANNING.md) | The shipped alpha and beta: what landed and the M0 decisions |
 | [`M1_PLANNING.md`](M1_PLANNING.md) | Customer-visible browser telemetry, reliability, privacy, multi-instance isolation and browser support |
 | [`M2_PLANNING.md`](M2_PLANNING.md) | Supported browser bundle, CDN publishing and initialization snippet |
 | [`M3_PLANNING.md`](M3_PLANNING.md) | Advanced configuration, optional integrations, loader and delivery parity, and remaining Application Insights JavaScript feature gaps |
+| [`M4_PLANNING.md`](M4_PLANNING.md) | General availability of `1.0.0` by February 2027 and migration from ApplicationInsights-JS |
 | [`../poc/SIZE_REPORT.md`](../poc/SIZE_REPORT.md) | Generated bundle size measurements |
 
 ## 1. Goal
@@ -66,10 +67,9 @@ rejected with a diagnostic rather than silently dropped. W3C Trace Context and
 Baggage round-trip across an instance boundary, and a pre-existing global OTel
 SDK is detected, not overwritten.
 
-**Constraint, not solved.** Instrumentations that patch a browser global cannot
-run in more than one instance - two instances both enabling fetch report one
-request twice - so a shared patch needs a designated owner until
-[M1](M1_PLANNING.md). In
+**Original constraint, addressed in M1.** Independently wrapping a browser global
+couples instances. Production registration now shares the method patch and fans out to
+instance-owned subscribers for the pinned upstream modules. In
 `@opentelemetry/browser-instrumentation` the shared-patch modules are
 `navigation`, `console`, `fetch` and `xhr`; the rest attach isolated listeners or
 observers and route cleanly.
@@ -134,7 +134,8 @@ bundle tests.
 
 **Later.** Browser metrics remain deferred until upstream settles its browser metrics decision and
 aggregation, cardinality and export semantics. Advanced ApplicationInsights-JS parity is owned by
-[M3](M3_PLANNING.md).
+[M3](M3_PLANNING.md). General availability and migration from ApplicationInsights-JS are owned by
+[M4](M4_PLANNING.md).
 
 **Non-goals.** Reimplementing the OTel API or SDK. Building an Application
 Insights SDK, or making a legacy AI API the primary surface. Coupling core
@@ -148,8 +149,9 @@ unavoidable global OTel constraints from users.
 Milestone-scoped decisions live in the milestone that owns them:
 [`M0_PLANNING.md`](M0_PLANNING.md),
 [`M1_PLANNING.md`](M1_PLANNING.md),
-[`M2_PLANNING.md`](M2_PLANNING.md) and
-[`M3_PLANNING.md`](M3_PLANNING.md). What remains here is owned by no single milestone.
+[`M2_PLANNING.md`](M2_PLANNING.md),
+[`M3_PLANNING.md`](M3_PLANNING.md) and
+[`M4_PLANNING.md`](M4_PLANNING.md). What remains here is owned by no single milestone.
 
 - **Whether property mangling is revisited, and on what threshold.** The current answer is no:
   readable source and safe property access outrank the bytes. It is reopened only against a measured
