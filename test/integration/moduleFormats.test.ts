@@ -89,9 +89,19 @@ async function exercise(bundle: BrowserBundle): Promise<void> {
   const telemetry = await bundle.useMicrosoftOpenTelemetry({
     ...pipeline.options,
     pageView: { enabled: false },
+    traces: { distributedTracingMode: 17, appId: "browser-bundle" },
   });
   try {
-    bundle.trace.getTracer("module-format-test").startSpan("module-format").end();
+    const span = bundle.trace.getTracer("module-format-test").startSpan("module-format");
+    const headers = {};
+    bundle.propagation.inject(bundle.trace.setSpan(bundle.context.active(), span), headers);
+    const { traceId, spanId } = span.spanContext();
+    expect(headers).toEqual({
+      traceparent: `00-${traceId}-${spanId}-01`,
+      "Request-Id": `|${traceId}.${spanId}`,
+      "Request-Context": "appId=cid-v1:browser-bundle",
+    });
+    span.end();
     bundle.logs.getLogger("module-format-test").emit({ eventName: "module-format" });
     await telemetry.forceFlush();
 

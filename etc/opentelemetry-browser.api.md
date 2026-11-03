@@ -100,7 +100,9 @@ export interface MicrosoftOpenTelemetryBrowserSessionOptions {
 
 // @public
 export interface MicrosoftOpenTelemetryBrowserTraceOptions {
+    appId?: string;
     contextManager?: ContextManager;
+    distributedTracingMode?: 0 | 1 | 2 | 17 | 18;
     propagators?: readonly TextMapPropagator[];
 }
 

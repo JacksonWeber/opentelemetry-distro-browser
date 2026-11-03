@@ -6,6 +6,9 @@ All notable changes to this package are documented in this file.
 
 ### Added
 
+- Add opt-in Application Insights `Request-Id` and `Request-Context` propagation through
+  `traces.distributedTracingMode` and `traces.appId`, preserving W3C defaults and explicit
+  cross-origin allow lists.
 - Classify named browser log events as Azure Monitor custom events regardless of severity, while
   preserving browser console records as trace messages with their severity.
 

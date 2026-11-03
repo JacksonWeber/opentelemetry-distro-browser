@@ -53,6 +53,12 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
   expectTypeOf<MicrosoftOpenTelemetryBrowserTraceOptions["propagators"]>().toEqualTypeOf<
     readonly TextMapPropagator[] | undefined
   >();
+  expectTypeOf<MicrosoftOpenTelemetryBrowserTraceOptions["distributedTracingMode"]>().toEqualTypeOf<
+    0 | 1 | 2 | 17 | 18 | undefined
+  >();
+  expectTypeOf<MicrosoftOpenTelemetryBrowserTraceOptions["appId"]>().toEqualTypeOf<
+    string | undefined
+  >();
   expectTypeOf<MicrosoftOpenTelemetryBrowserOptions["session"]>().toEqualTypeOf<
     MicrosoftOpenTelemetryBrowserSessionOptions | undefined
   >();

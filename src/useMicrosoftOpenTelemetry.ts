@@ -283,7 +283,10 @@ export async function useMicrosoftOpenTelemetry(
     spanProcessors ??= [];
     logRecordProcessors ??= [];
     if (
-      (traceOptions?.contextManager || traceOptions?.propagators) &&
+      (traceOptions?.contextManager ||
+        traceOptions?.propagators ||
+        traceOptions?.distributedTracingMode !== undefined ||
+        traceOptions?.appId !== undefined) &&
       spanProcessors.length !== 0 &&
       isPageContextRegistered()
     ) {
@@ -292,6 +295,7 @@ export async function useMicrosoftOpenTelemetry(
       );
     }
     const instanceOptions = {
+      ...traceOptions,
       // Spread last: the caller's attributes win.
       resourceAttributes: {
         [ATTR_TELEMETRY_DISTRO_NAME]: "@microsoft/opentelemetry-browser",
