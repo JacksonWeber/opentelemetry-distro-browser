@@ -14,15 +14,14 @@ import type { MicrosoftOpenTelemetryBrowserTraceOptions } from "./types.js";
 export function createPropagator(
   options: MicrosoftOpenTelemetryBrowserTraceOptions,
 ): TextMapPropagator {
-  if (options.propagators !== undefined) {
-    return new CompositePropagator({ propagators: options.propagators.slice() });
+  const { propagators, distributedTracingMode: mode = 18, appId } = options;
+  if (propagators !== undefined) {
+    return new CompositePropagator({ propagators: propagators.slice() });
   }
 
-  const mode = options.distributedTracingMode === undefined ? 18 : options.distributedTracingMode;
   if (![0, 1, 2, 17, 18].includes(mode)) {
     throw new TypeError("distributedTracingMode must be 0, 1, 2, 17, or 18");
   }
-  const appId = options.appId;
   if (
     appId !== undefined &&
     (typeof appId !== "string" || !/^[\x21-\x7e]+$/.test(appId) || /[,;=]/.test(appId))

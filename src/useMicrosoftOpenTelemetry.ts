@@ -417,6 +417,15 @@ export async function useMicrosoftOpenTelemetry(
     return shutdownPromise;
   }
 
+  function updateInstrumentation(
+    update: (registry: NonNullable<typeof instrumentationRegistry>) => void,
+  ): Promise<void> {
+    return configuration.enqueue(() => {
+      if (!instrumentationRegistry) throw new Error("Instrumentation registry is unavailable.");
+      update(instrumentationRegistry);
+    });
+  }
+
   const handle: MicrosoftOpenTelemetryBrowser = {
     forceFlush,
     shutdown,
@@ -425,25 +434,12 @@ export async function useMicrosoftOpenTelemetry(
     instrumentations: {
       get: (id) => instrumentationRegistry?.get(id),
       add: (id, instrumentation) =>
-        configuration.enqueue(() => {
-          if (!instrumentationRegistry) throw new Error("Instrumentation registry is unavailable.");
-          instrumentationRegistry.add(id, instrumentation);
-        }),
-      remove: (id) =>
-        configuration.enqueue(() => {
-          if (!instrumentationRegistry) throw new Error("Instrumentation registry is unavailable.");
-          instrumentationRegistry.remove(id);
-        }),
+        updateInstrumentation((registry) => registry.add(id, instrumentation)),
+      remove: (id) => updateInstrumentation((registry) => registry.remove(id)),
       replace: (id, instrumentation) =>
-        configuration.enqueue(() => {
-          if (!instrumentationRegistry) throw new Error("Instrumentation registry is unavailable.");
-          instrumentationRegistry.replace(id, instrumentation);
-        }),
+        updateInstrumentation((registry) => registry.replace(id, instrumentation)),
       setEnabled: (id, enabled) =>
-        configuration.enqueue(() => {
-          if (!instrumentationRegistry) throw new Error("Instrumentation registry is unavailable.");
-          instrumentationRegistry.setEnabled(id, enabled);
-        }),
+        updateInstrumentation((registry) => registry.setEnabled(id, enabled)),
     },
   };
 
