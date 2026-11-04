@@ -422,6 +422,28 @@ it("keeps the connection string when azureMonitor is configured", () => {
   expect(generated).toContain('"cfg":{"azureMonitor":{"connectionString":"connection"}}');
 });
 
+it.each([
+  undefined,
+  null,
+  [],
+  {},
+  { enabled: false },
+  { enabled: true, collectionIntervalMillis: 1234 },
+  { enabled: "yes" },
+  { collectionIntervalMillis: 0 },
+  { collectionIntervalMillis: -1 },
+  { collectionIntervalMillis: 1.5 },
+  { collectionIntervalMillis: 2_147_483_648 },
+])("rejects npm-only customer stats in the loader: %j", (sdkStats) => {
+  expect(() =>
+    getSdkLoaderScript({
+      connectionString: "connection",
+      // @ts-expect-error Exercise untyped callers.
+      azureMonitor: { sdkStats },
+    }),
+  ).toThrow(TypeError);
+});
+
 it("rejects resource attributes when the bundle cannot build a resource", async () => {
   const src = createBundleUrl("return Promise.resolve({})");
   const { inlineScript, initialization } = executeLoader({

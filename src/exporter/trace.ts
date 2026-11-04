@@ -7,6 +7,7 @@ import { AzureMonitorExportClient, type AzureMonitorOptions } from "./base.js";
 import { isUnloading } from "./common.js";
 import { appendSpanEnvelopes } from "./spanUtils.js";
 import { customerSdkStats, spanItemType } from "./customerSdkStats.js";
+import { CUSTOMER_SDK_STATS_ENABLED } from "../shared/buildFeatures.js";
 
 /**
  * Exports OpenTelemetry spans to Azure Monitor.
@@ -25,7 +26,8 @@ export class AzureMonitorSpanExporter implements SpanExporter {
   /** Standalone export requires a resolved string; the distribution owns startup buffering. */
   public constructor(options: AzureMonitorOptions) {
     this.#client = new AzureMonitorExportClient(options);
-    if (this.#client.itemStats) customerSdkStats.set(this, this.#client.itemStats);
+    if (CUSTOMER_SDK_STATS_ENABLED && this.#client.itemStats)
+      customerSdkStats.set(this, this.#client.itemStats);
   }
 
   public export(spans: ReadableSpan[], callback: (result: ExportResult) => void): void {
@@ -34,7 +36,7 @@ export class AzureMonitorSpanExporter implements SpanExporter {
       spans,
       (span, envelopes) =>
         appendSpanEnvelopes(span, this.#client.instrumentationKey, envelopes, unloading),
-      (span) => spanItemType(span.kind),
+      CUSTOMER_SDK_STATS_ENABLED ? (span) => spanItemType(span.kind) : undefined,
       callback,
     );
   }

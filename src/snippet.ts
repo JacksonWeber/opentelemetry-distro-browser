@@ -341,6 +341,11 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
       checkField(value?.[field], `${name}.${field}`, kind);
     }
   }
+  check(
+    !azureMonitor || !("sdkStats" in azureMonitor),
+    "azureMonitor.sdkStats",
+    "omitted (npm-only)",
+  );
   for (const [name, value] of Object.entries(instrumentationOptions ?? {})) {
     if (value === undefined) continue;
     const path = `instrumentationOptions.${name}`;

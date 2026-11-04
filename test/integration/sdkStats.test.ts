@@ -6,6 +6,13 @@ import { logs } from "@opentelemetry/api-logs";
 import { FetchInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/fetch";
 import { ConsoleInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/console";
 import { ExportResultCode, type ExportResult } from "@opentelemetry/core";
+import { resourceFromAttributes } from "@opentelemetry/resources";
+import { ResourceTimingInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/resource-timing";
+import {
+  BatchLogRecordProcessor,
+  LoggerProvider,
+  type ReadWriteLogRecord,
+} from "@opentelemetry/sdk-logs";
 import { afterEach, expect, inject, it, vi } from "vitest";
 import type { BrowserInstrumentation, MicrosoftOpenTelemetryBrowser } from "../../src/types.js";
 import type { AzureMonitorEnvelope } from "../../src/exporter/telemetryModels.js";
@@ -18,11 +25,11 @@ import {
 import { AzureMonitorSpanExporter } from "../../src/exporter/trace.js";
 import { Sender } from "../../src/exporter/sender.js";
 import { rememberSdkIngestionUrl } from "../../src/shared/globalOwnership.js";
-import { SDK_STATS_ENDPOINT } from "../fixtures/sdkStats.js";
+import { SDK_STATS_ENDPOINT, withoutSdkStats } from "../fixtures/sdkStats.js";
 import { loadBrowserScript } from "../fixtures/browserBundle.js";
 
 const SECOND_KEY = "22222222-2222-2222-2222-222222222222";
-const handles: MicrosoftOpenTelemetryBrowser[] = [];
+const handles: Pick<MicrosoftOpenTelemetryBrowser, "shutdown">[] = [];
 let referrerPolicy: HTMLMetaElement | undefined;
 
 it.each(["index.js", "index.min.js"])(
@@ -292,14 +299,15 @@ it.each(
   },
 );
 
-it.each([
-  { file: "index.js", eu: false },
-  { file: "index.min.js", eu: false },
-  { file: "index.js", eu: true },
-  { file: "index.min.js", eu: true },
-])(
-  "targets production ingestion without configuration lookup through $file with EU state $eu",
-  async ({ file, eu }) => {
+it.each(
+  ["index.js", "index.min.js"].flatMap((file) =>
+    [false, true].flatMap((eu) =>
+      [false, true].map((customerStats) => ({ file, eu, customerStats })),
+    ),
+  ),
+)(
+  "isolates internal and customer stats through $file with EU $eu and customer stats $customerStats",
+  async ({ file, eu, customerStats }) => {
     referrerPolicy = document.createElement("meta");
     referrerPolicy.name = "referrer";
     referrerPolicy.content = "unsafe-url";
@@ -331,7 +339,12 @@ it.each([
         ...(instrumented ? pipeline.options : {}),
         azureMonitor: {
           connectionString: `InstrumentationKey=${key};IngestionEndpoint=${customerOrigin}/ingest/${id}`,
+          sdkStats: { enabled: customerStats },
         },
+        resource: resourceFromAttributes({
+          "service.name": `application-${key}`,
+          "service.instance.id": id,
+        }),
         pageView: { enabled: false },
         instrumentations: instrumented ? [instrumentation] : [],
       });
@@ -371,8 +384,13 @@ it.each([
     const customerReferrers: string[] = await nativeFetch(
       `${origin}/captured-referrers?runId=${runId}`,
     ).then((response) => response.json());
-    expect(customerReferrers).toHaveLength(2);
-    expect(customerReferrers.every((referrer) => referrer.startsWith(location.origin))).toBe(true);
+    expect(customerReferrers).toHaveLength(customerStats ? 4 : 2);
+    expect(
+      customerReferrers.filter((referrer) => referrer.startsWith(location.origin)),
+    ).toHaveLength(2);
+    expect(customerReferrers.filter((referrer) => referrer === "")).toHaveLength(
+      customerStats ? 2 : 0,
+    );
     for (const [id, key] of [
       [runId, TEST_INSTRUMENTATION_KEY],
       [`${runId}-second`, SECOND_KEY],
@@ -383,12 +401,24 @@ it.each([
       const stats = (await read(`${runId}-stats`)).filter(
         (envelope) => envelope.data.baseData.properties?.cikey === key,
       );
-      expect(customer).toHaveLength(2);
-      expect(
-        customer.every(
-          (envelope) => envelope.iKey === key && envelope.data.baseType !== "MetricData",
-        ),
-      ).toBe(true);
+      expect(customer).toHaveLength(customerStats ? 4 : 2);
+      expect(customer.every((envelope) => envelope.iKey === key)).toBe(true);
+      const itemStats = customer.filter((envelope) => envelope.data.baseType === "MetricData");
+      expect(itemStats).toHaveLength(customerStats ? 2 : 0);
+      for (const envelope of itemStats) {
+        assertAzureMonitorEnvelope(envelope);
+        expect(envelope.data.baseData).toMatchObject({
+          metrics: [{ name: "Item_Success_Count", value: 1 }],
+        });
+        expect(envelope.tags).toEqual({
+          "ai.internal.sdkVersion": expect.any(String),
+          "ai.cloud.role": `application-${key}`,
+          "ai.cloud.roleInstance": id,
+        });
+      }
+      expect(JSON.stringify(itemStats)).not.toMatch(
+        /private-user|private-account|application span|application log|ai\.operation|ai\.session/,
+      );
       const successes = stats.filter(
         (envelope) =>
           envelope.data.baseType === "MetricData" &&
@@ -414,6 +444,226 @@ it.each([
       expect(JSON.stringify(stats)).not.toMatch(
         /private-user|private-account|application span|application log|ai\.operation|ai\.session/,
       );
+    }
+  },
+);
+
+it("excludes real ingestion resource timing without filtering custom processor branches", async () => {
+  const moduleUrl = new URL("../../dist/esm/index.js", import.meta.url);
+  const distro: typeof import("../../src/index.js") = await import(
+    /* @vite-ignore */ moduleUrl.href
+  );
+  const nativeFetch = globalThis.fetch.bind(globalThis);
+  const transport = vi.fn(nativeFetch);
+  vi.stubGlobal("fetch", withoutSdkStats(transport));
+  const runId = crypto.randomUUID();
+  const origin = new URL(inject("ingestionEndpoint")).origin;
+  const destination = `${origin}/ingest/${runId}`;
+  const observed: ReadWriteLogRecord[] = [];
+  const handle = await distro.useMicrosoftOpenTelemetry({
+    azureMonitor: {
+      connectionString: `InstrumentationKey=${TEST_INSTRUMENTATION_KEY};IngestionEndpoint=${destination}`,
+      sdkStats: { enabled: true },
+    },
+    spanProcessors: [],
+    logRecordProcessors: [
+      {
+        onEmit: (record) => observed.push(record),
+        forceFlush: async () => {},
+        shutdown: async () => {},
+      },
+    ],
+    pageView: { enabled: false },
+    storage: { enabled: false },
+    session: { enabled: false },
+    instrumentations: [
+      new ResourceTimingInstrumentation({
+        enabled: false,
+        initiatorTypes: ["fetch"],
+        ignoreUrls: [new RegExp(`^(?!.*\\/ingest\\/${runId}).*$`)],
+        forceProcessingAfter: 0,
+      }),
+    ],
+  });
+  handles.push(handle);
+  logs.getLogger("app").emit({ body: "application" });
+  await handle.forceFlush();
+  await vi.waitFor(() =>
+    expect(observed.some((record) => record.eventName === "browser.resource_timing")).toBe(true),
+  );
+  for (let index = 0; index < 3; index++) {
+    await handle.forceFlush();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  await handle.shutdown();
+  expect(transport).toHaveBeenCalledTimes(2);
+  const captured: AzureMonitorEnvelope[] = await nativeFetch(
+    `${origin}/captured?runId=${runId}`,
+  ).then((response) => response.json());
+  expect(captured).toHaveLength(2);
+  expect(captured.filter((envelope) => envelope.data.baseType === "MetricData")).toHaveLength(1);
+});
+
+it.each([0, 100])(
+  "excludes peer ingestion across two custom origins at %s percent sampling",
+  async (samplingPercentage) => {
+    const moduleUrl = new URL("../../dist/esm/index.js", import.meta.url);
+    const distro: typeof import("../../src/index.js") = await import(
+      /* @vite-ignore */ moduleUrl.href
+    );
+    const nativeFetch = globalThis.fetch.bind(globalThis);
+    const transport = vi.fn(nativeFetch);
+    vi.stubGlobal("fetch", withoutSdkStats(transport));
+    const runId = crypto.randomUUID();
+    const firstOrigin = new URL(inject("ingestionEndpoint")).origin;
+    const secondOrigin = firstOrigin.replace("127.0.0.1", "localhost");
+    const start = async (origin: string, key: string) => {
+      const instrumentation = new ResourceTimingInstrumentation({
+        enabled: false,
+        initiatorTypes: ["fetch"],
+        ignoreUrls: [new RegExp(`^(?!.*\\/ingest\\/${runId}).*$`)],
+        forceProcessingAfter: 0,
+      });
+      const bind = vi.spyOn(instrumentation, "setLoggerProvider");
+      const observed: ReadWriteLogRecord[] = [];
+      const handle = await distro.useMicrosoftOpenTelemetry({
+        azureMonitor: {
+          connectionString: `InstrumentationKey=${key};IngestionEndpoint=${origin}/ingest/${runId}`,
+          sdkStats: { enabled: true, collectionIntervalMillis: 50 },
+        },
+        samplingPercentage,
+        spanProcessors: [],
+        logRecordProcessors: [
+          {
+            onEmit: (record) => observed.push(record),
+            forceFlush: async () => {},
+            shutdown: async () => {},
+          },
+        ],
+        pageView: { enabled: false },
+        storage: { enabled: false },
+        session: { enabled: false },
+        instrumentations: [instrumentation],
+      });
+      handles.push(handle);
+      return { handle, observed, logger: bind.mock.calls[0][0].getLogger("app") };
+    };
+    const first = await start(firstOrigin, TEST_INSTRUMENTATION_KEY);
+    const second = await start(secondOrigin, SECOND_KEY);
+    first.logger.emit({ body: "first application log" });
+    second.logger.emit({ body: "second application log" });
+    await Promise.all([first.handle.forceFlush(), second.handle.forceFlush()]);
+    if (samplingPercentage === 0) {
+      // Sampling sends nothing. Seed real peer timings without sending application records.
+      await Promise.all(
+        [firstOrigin, secondOrigin].map((origin) =>
+          nativeFetch(`${origin}/ingest/${runId}/v2/track`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: "[]",
+          }),
+        ),
+      );
+    }
+    for (const { observed } of [first, second]) {
+      await vi.waitFor(() => {
+        const urls = observed
+          .filter((record) => record.eventName === "browser.resource_timing")
+          .map((record) => record.attributes["url.full"]);
+        expect(urls).toContain(`${firstOrigin}/ingest/${runId}/v2/track`);
+        expect(urls).toContain(`${secondOrigin}/ingest/${runId}/v2/track`);
+      });
+    }
+    for (let index = 0; index < 3; index++) {
+      await Promise.all([first.handle.forceFlush(), second.handle.forceFlush()]);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    await Promise.all([first.handle.shutdown(), second.handle.shutdown()]);
+    expect(transport).toHaveBeenCalledTimes(samplingPercentage === 0 ? 0 : 4);
+    const captured: AzureMonitorEnvelope[] = await nativeFetch(
+      `${firstOrigin}/captured?runId=${runId}`,
+    ).then((response) => response.json());
+    expect(captured).toHaveLength(samplingPercentage === 0 ? 0 : 4);
+    const stats = captured.filter((envelope) => envelope.data.baseType === "MetricData");
+    expect(stats).toHaveLength(samplingPercentage === 0 ? 0 : 2);
+    for (const envelope of stats) {
+      expect(envelope.data.baseData).toMatchObject({
+        metrics: [
+          {
+            name: "Item_Success_Count",
+            value: 1,
+          },
+        ],
+        properties: {
+          telemetryType: "TRACE",
+        },
+      });
+    }
+  },
+);
+
+it.each(["index.js", "index.min.js"])(
+  "keeps standalone stats warnings out of console telemetry through %s",
+  async (file) => {
+    const modulePath = `../../dist/esm/${file}`;
+    const moduleUrl = new URL(modulePath, import.meta.url);
+    const distro: typeof import("../../src/index.js") = await import(
+      /* @vite-ignore */ moduleUrl.href
+    );
+    context.disable();
+    const application: AzureMonitorEnvelope[] = [];
+    const reports: AzureMonitorEnvelope[][] = [];
+    const transport = vi.fn<typeof fetch>(async (url, init) => {
+      const envelopes: AzureMonitorEnvelope[] = JSON.parse(await new Request(url, init).text());
+      const stats = envelopes.every((envelope) => envelope.data.baseType === "MetricData");
+      if (stats) reports.push(envelopes);
+      else application.push(...envelopes);
+      return new Response(null, { status: stats ? 503 : 200 });
+    });
+    vi.stubGlobal("fetch", withoutSdkStats(transport));
+    const exporter = new distro.AzureMonitorLogRecordExporter({
+      connectionString: `InstrumentationKey=${TEST_INSTRUMENTATION_KEY};IngestionEndpoint=https://customer.example.test`,
+      sdkStats: { enabled: true },
+    });
+    const provider = new LoggerProvider({
+      processors: [new BatchLogRecordProcessor({ exporter })],
+    });
+    handles.push(provider);
+    const instrumentation = new ConsoleInstrumentation({ enabled: false, logMethods: ["warn"] });
+    instrumentation.setLoggerProvider(provider);
+    instrumentation.enable();
+    vi.spyOn(diag, "warn").mockImplementation((...args) => console.warn(...args));
+    try {
+      const wrappedWarn = console.warn;
+      for (let index = 1; index <= 2; index++) {
+        console.warn("application warning");
+        await provider.forceFlush();
+        await exporter.forceFlush();
+        await provider.forceFlush();
+        await exporter.forceFlush();
+        expect(application).toHaveLength(index);
+        expect(
+          application.every(
+            (envelope) =>
+              envelope.data.baseType === "MessageData" &&
+              "message" in envelope.data.baseData &&
+              envelope.data.baseData.message === "application warning",
+          ),
+        ).toBe(true);
+        expect(reports.at(-1)).toEqual([
+          expect.objectContaining({
+            data: expect.objectContaining({
+              baseData: expect.objectContaining({
+                metrics: [{ name: "Item_Success_Count", kind: 0, value: index }],
+              }),
+            }),
+          }),
+        ]);
+        expect(diag.warn).toHaveBeenCalledTimes(reports.length);
+        expect(console.warn).toBe(wrappedWarn);
+      }
+    } finally {
+      instrumentation.disable();
     }
   },
 );

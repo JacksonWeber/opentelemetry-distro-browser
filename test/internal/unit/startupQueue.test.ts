@@ -29,13 +29,16 @@ it("strictly caps the shared item count and reports overflow only once", () => {
   const warn = vi.spyOn(diag, "warn").mockImplementation(() => {});
   const queue = new StartupQueue<string>({ initInMemoMaxSize: 2 });
   const deliver = vi.fn();
-  queue.track("span");
-  queue.track("log");
-  queue.track("overflow");
-  queue.track("also overflow");
+  expect(queue.track("span")).toBeUndefined();
+  expect(queue.track("log")).toBeUndefined();
+  expect(queue.track("overflow")).toBe("QUEUE_FULL");
+  expect(queue.track("also overflow")).toBe("QUEUE_FULL");
   expect(warn).toHaveBeenCalledExactlyOnceWith("Telemetry startup queue full; dropping new items");
   queue.activate(deliver);
   expect(deliver.mock.calls).toEqual([["span"], ["log"]]);
+  expect(queue.track("active")).toBeUndefined();
+  queue.shutdown();
+  expect(queue.track("stopped")).toBeUndefined();
 });
 
 it("defaults to 100 items and a 50000 ms timeout", async () => {

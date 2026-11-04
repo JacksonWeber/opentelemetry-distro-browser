@@ -32,6 +32,21 @@ const workerSafeIdleCallback = {
     return { code: source.toString(), map: source.generateMap({ hires: true }) };
   },
 };
+const cdnFeatures = {
+  name: "cdn-features",
+  transform(code, id) {
+    if (!/[\\/]src[\\/]shared[\\/]buildFeatures\.ts$/.test(id)) return null;
+    const declaration = "export const CUSTOMER_SDK_STATS_ENABLED = true;";
+    const index = code.indexOf(declaration);
+    if (index === -1) this.error("Customer SDK Stats build flag was not found.");
+    const source = new MagicString(code).overwrite(
+      index,
+      index + declaration.length,
+      "export const CUSTOMER_SDK_STATS_ENABLED = false;",
+    );
+    return { code: source.toString(), map: source.generateMap({ hires: true }) };
+  },
+};
 const bundleForBrowser = () => [
   nodeResolve({ browser: true }),
   workerSafeIdleCallback,
@@ -77,7 +92,7 @@ const swcMinify = () => ({
 /** Self-contained UMD and IIFE bundles, unminified and minified, exposing `name` as a global. */
 const globalBundle = (input, module, name) => ({
   input,
-  plugins: bundleForBrowser(),
+  plugins: [cdnFeatures, ...bundleForBrowser()],
   output: ["umd", "iife"].flatMap((format) =>
     [false, true].map((minify) => ({
       file: `dist/browser/${module}.${format}${minify ? ".min" : ""}.js`,
@@ -155,7 +170,7 @@ export default [
       ...esmOutput,
       file: "dist/esm/index.min.js",
       plugins: [
-        terser(),
+        terser({ compress: { passes: 3 } }),
         visualizer({
           filename: "reports/bundle-stats.html",
           title: "OpenTelemetry browser ESM bundle",

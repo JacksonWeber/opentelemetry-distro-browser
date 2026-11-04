@@ -24,7 +24,9 @@ export type BrowserBatchLogRecordProcessorOptions = Pick<
   | "maxExportBatchSize"
   | "scheduledDelayMillis"
   | "exportTimeoutMillis"
->;
+> & {
+  shouldCollect?: (record: ReadableLogRecord) => boolean;
+};
 
 /**
  * Batches distribution-owned logs with the OpenTelemetry defaults.
@@ -46,9 +48,11 @@ export class BrowserBatchLogRecordProcessor implements LogRecordProcessor {
   #stopped = false;
   #queueFullReported = false;
   #shutdownPromise: Promise<void> | undefined;
+  readonly #shouldCollect: BrowserBatchLogRecordProcessorOptions["shouldCollect"];
 
   public constructor(options: BrowserBatchLogRecordProcessorOptions) {
     this.#exporter = options.exporter;
+    this.#shouldCollect = options.shouldCollect;
     this.#maxQueueSize = options.maxQueueSize ?? 2048;
     const batchSize = options.maxExportBatchSize ?? 512;
     if (
@@ -65,7 +69,7 @@ export class BrowserBatchLogRecordProcessor implements LogRecordProcessor {
   }
 
   public onEmit(record: ReadWriteLogRecord): void {
-    if (this.#stopped) return;
+    if (!this.accepts(record)) return;
     if (this.#records.length >= this.#maxQueueSize) {
       if (!this.#queueFullReported) {
         this.#queueFullReported = true;
@@ -76,6 +80,10 @@ export class BrowserBatchLogRecordProcessor implements LogRecordProcessor {
     this.#queueFullReported = false;
     this.#records.push(record);
     this.#schedule();
+  }
+
+  protected accepts(record: ReadableLogRecord): boolean {
+    return !this.#stopped && (this.#shouldCollect?.(record) ?? true);
   }
 
   public forceFlush(): Promise<void> {

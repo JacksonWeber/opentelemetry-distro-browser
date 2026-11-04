@@ -30,7 +30,10 @@ They also expose the standard OpenTelemetry APIs used by the bundled SDK, so dir
 consumers can emit manual telemetry without loading a second API copy. They inline every
 instrumentation and expose `getInstrumentations`, because a page loading them from the CDN has no
 bundler to add instrumentations later. They omit the opt-in browser and user-agent resource
-detectors, which are available from the npm package only. The
+detectors and customer SDK Stats, which are available from the npm package only. CDN builds remove
+customer reporting and pipeline accounting at build time, rather than only disabling them at runtime.
+The loader snippet does not accept `azureMonitor.sdkStats`, and CDN exporters and initialization
+reject that option. Internal SDK Stats remains unchanged. The
 `opentelemetry-browser-instrumentations.*` bundles expose
 only `Microsoft.OpenTelemetryInstrumentations` and include their own API copy, which shares state
 with the SDK bundle through the OpenTelemetry global registry. Use IIFE when RequireJS may already be present; UMD deliberately registers with
@@ -46,6 +49,9 @@ every item to be accepted. It uses the public test resource that the Application
 JavaScript SDK end-to-end tests use and needs network access.
 The `sideEffects: false` contract remains in place; importing the package does not initialize
 telemetry.
+
+The minified ESM artifact uses three Terser compression passes without property mangling or unsafe
+compression options. The self-contained UMD and IIFE bundles use SWC as described below.
 
 `npm run size` bundles real consumers of every published JavaScript entry point with Rollup,
 tree-shakes and minifies each scenario, and reports gzip and Brotli transfer sizes. It measures the
@@ -63,7 +69,7 @@ Every executable published entry point has absolute minified, gzip and Brotli bu
 
 | Entry point          | Minified |     Gzip |  Brotli |
 | -------------------- | -------: | -------: | ------: |
-| `.`                  |   154 kB | 48.25 kB | 42.5 kB |
+| `.`                  |   157 kB | 49.25 kB | 43.5 kB |
 | `./instrumentations` |    64 kB |    24 kB |   22 kB |
 | `./snippet`          |  6.25 kB |  2.75 kB |  2.5 kB |
 
@@ -79,7 +85,7 @@ including alpha:
 
 | Artifact                                                   |  Minified |     Gzip |  Brotli |
 | ---------------------------------------------------------- | --------: | -------: | ------: |
-| `opentelemetry-browser.{iife,umd}.min.js`                  | 181.25 kB | 57.75 kB | 50.5 kB |
+| `opentelemetry-browser.{iife,umd}.min.js`                  | 184.25 kB | 58.75 kB | 51.5 kB |
 | `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |     63 kB |    19 kB |   17 kB |
 
 SWC minifies the browser bundles and shortens `_`-prefixed properties, the TypeScript `private`

@@ -8,6 +8,16 @@ All notable changes to this package are documented in this file.
 
 - Document ApplicationInsights-JS migration paths, intentional exclusions and current gaps.
   Remove legacy correlation headers from the planned scope and retain W3C propagation.
+
+## 0.1.0-beta.2 - 2026-11-05
+
+### Added
+
+- Add opt-in same-realm configuration synchronization through
+  `extensionConfig.AppInsightsCfgSyncPlugin`. Support explicit broadcast-only and receive-only
+  modes for sampling and fetch/XHR gates, with local precedence, pause/resume/shutdown controls, and
+  safe receiver error callbacks. Synchronization does not use HTTP, storage, cross-document
+  delivery, retained history, or automatic publishing of local updates.
 - Support instance-local runtime instrumentation add/remove/replace with explicit IDs,
   provider binding, ownership transfer, network-gate preservation and best-effort rollback.
 - Add instance-local `instrumentations.get(id)` and supported pause/resume via
@@ -23,6 +33,9 @@ All notable changes to this package are documented in this file.
 - Add opt-in best-effort customer SDK Stats to standalone Azure Monitor exporters.
 - Support per-instance runtime session lifetime updates and Application Insights millisecond aliases
   `sessionRenewalMs` and `sessionExpirationMs` at initialization and through `updateCfg`.
+- Add npm-only distribution SDK Stats while keeping customer reporting out of CDN bundles.
+  Exclude client-side sampling and queue overflow from customer counters. Report ingestion rejections
+  with their HTTP status and preserve application success values for dropped requests and dependencies.
 - Support per-instance runtime sampling updates through dynamic configuration
 - Add opt-in `pageView.autoTrackPageVisitTime` to report previous-page visit duration as an
   Application Insights `PageVisitTime` metric across SPA and full-page navigation.

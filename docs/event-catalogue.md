@@ -1,7 +1,7 @@
 # Beta event catalogue
 
 This catalogue describes customer telemetry from `@microsoft/opentelemetry-browser`
-**0.1.0-beta.1**, including its pinned `@opentelemetry/browser-instrumentation` **0.8.1** dependency.
+**0.1.0-beta.2**, including its pinned `@opentelemetry/browser-instrumentation` **0.8.1** dependency.
 It describes the records before exporter-specific mapping. Application hooks and processors can
 modify them. Browser conventions are experimental/development-stability; the distribution-owned
 page-view schema is not an upstream stable convention. Pin versions and review schema changes.

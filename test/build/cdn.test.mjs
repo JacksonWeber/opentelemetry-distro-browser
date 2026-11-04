@@ -140,6 +140,7 @@ function loadInWorkerRealm(code, file) {
     queueMicrotask,
     performance,
     URL,
+    AbortController,
     TextEncoder,
     TextDecoder,
     navigator: { userAgent: "worker", language: "en-US" },
@@ -184,6 +185,28 @@ test("every CDN bundle loads without window and exposes its documented npm API",
     if (artifact.module === "opentelemetry-browser") {
       assert.deepEqual(Object.keys(microsoft.OpenTelemetry).sort(), sdkKeys, artifact.file);
       assert.doesNotMatch(code, /user_agent\.original/, artifact.file);
+      assert.doesNotMatch(
+        code,
+        /Customer SDK stats export failed|Item_Success_Count|countEnvelopes|countDrop|createStatsSpanProcessor/,
+        artifact.file,
+      );
+      assert.match(code, /Request_Success_Count/, artifact.file);
+      for (const enabled of [false, true]) {
+        const options = {
+          connectionString: "InstrumentationKey=00000000-0000-0000-0000-000000000000",
+          sdkStats: { enabled },
+        };
+        for (const Exporter of [
+          microsoft.OpenTelemetry.AzureMonitorSpanExporter,
+          microsoft.OpenTelemetry.AzureMonitorLogRecordExporter,
+        ]) {
+          assert.throws(() => new Exporter(options), /only available through the npm package/);
+        }
+        await assert.rejects(
+          microsoft.OpenTelemetry.useMicrosoftOpenTelemetry({ azureMonitor: options }),
+          /only available through the npm package/,
+        );
+      }
     } else {
       assert.deepEqual(
         Object.keys(microsoft.OpenTelemetryInstrumentations).sort(),

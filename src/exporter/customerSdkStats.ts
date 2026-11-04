@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { SpanKind } from "@opentelemetry/api";
+import { SpanKind, type Attributes } from "@opentelemetry/api";
 import type { LogRecordExporter, ReadableLogRecord } from "@opentelemetry/sdk-logs";
 import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace-base";
 import { isRetriable } from "./breezeUtils.js";
@@ -12,15 +12,18 @@ import { Sender } from "./sender.js";
 import { createSdkStatsEnvelope, reportFailure, sendSdkStats } from "./sdkStats.js";
 import { isSdkIngestionUrl } from "../shared/globalOwnership.js";
 import { waitForAll } from "../shared/lifecycle.js";
+import { CUSTOMER_SDK_STATS_ENABLED } from "../shared/buildFeatures.js";
 import type { AzureMonitorEnvelope, MetricData } from "./telemetryModels.js";
 
 /**
- * Customer SDK Stats, configured at startup.
+ * Customer SDK Stats, configured at startup through the npm package.
  *
  * @remarks
- * Transport counters count envelopes. Queue and sampling drops count source records.
+ * Not included in CDN bundles or the loader snippet. CDN bundles reject this option.
+ * Transport counters count envelopes. Client-side sampling and queue overflow are not counted.
  * Counts retain available application role and instance tags. Dropped requests and dependencies
  * are separated by their application success value, independently of export success.
+ * Ingestion-side sampling rejections use the returned status code and completed application success value.
  * Standalone exporters count observed delivery, retry and terminal-drop outcomes, not a durable
  * delivery ledger. Telemetry retained in memory or storage is not a drop; later expiry or eviction is not counted.
  * Cross-page drop attribution and deduplicated accounting after storage failures are deferred.
@@ -43,30 +46,63 @@ export interface AzureMonitorSdkStatsOptions {
   readonly collectionIntervalMillis?: number;
 }
 
-export function validateSdkStatsOptions(options: AzureMonitorSdkStatsOptions | undefined): void {
+export function snapshotSdkStatsOptions(
+  options: AzureMonitorSdkStatsOptions | undefined,
+): AzureMonitorSdkStatsOptions | undefined {
   if (options === undefined) return;
+  if (!CUSTOMER_SDK_STATS_ENABLED) {
+    throw new Error("Customer SDK Stats is only available through the npm package.");
+  }
   if (typeof options !== "object" || options === null || Array.isArray(options)) {
     throw new TypeError("sdkStats must be an object.");
   }
-  if (options.enabled !== undefined && typeof options.enabled !== "boolean") {
+  const { enabled, collectionIntervalMillis: interval } = options;
+  if (enabled !== undefined && typeof enabled !== "boolean") {
     throw new TypeError("sdkStats.enabled must be a boolean.");
   }
-  const interval = options.collectionIntervalMillis;
   if (
     interval !== undefined &&
     (!Number.isInteger(interval) || interval < 1 || interval > 2_147_483_647)
   ) {
     throw new RangeError("Invalid sdkStats.collectionIntervalMillis (1..2147483647 ms).");
   }
+  return { enabled, collectionIntervalMillis: interval };
 }
 
 type ItemOutcome = "Success" | "Dropped" | "Retry";
 export type ItemType =
   "CUSTOM_EVENT" | "CUSTOM_METRIC" | "DEPENDENCY" | "EXCEPTION" | "PAGE_VIEW" | "TRACE" | "REQUEST";
 
+export type ItemDimensions = [
+  type: ItemType,
+  role: string,
+  instance: string,
+  success: boolean | null,
+];
+
+export function resourceItemDimensions(
+  type: ItemType,
+  attributes: Attributes,
+  success: boolean | null = null,
+): ItemDimensions {
+  const tags = createTags(undefined, undefined, attributes["service.name"], {}, attributes);
+  return [type, tags["ai.cloud.role"] ?? "", tags["ai.cloud.roleInstance"] ?? "", success];
+}
+
+export function recordItemDimensions(
+  record: ReadableSpan | ReadableLogRecord,
+  type: ItemType,
+): ItemDimensions {
+  return resourceItemDimensions(
+    type,
+    record.resource.attributes,
+    "kind" in record ? spanSucceeded(record) : null,
+  );
+}
+
 export interface CustomerSdkStats {
   count(outcome: ItemOutcome, type: ItemType, code?: string, count?: number): void;
-  countFailedRecord(record: ReadableSpan | ReadableLogRecord, type: ItemType): void;
+  countDrop(dimensions: ItemDimensions, code: string, count?: number): void;
   countEnvelopes(
     outcome: ItemOutcome,
     envelopes: readonly AzureMonitorEnvelope[] | undefined,
@@ -121,8 +157,8 @@ export function createCustomerSdkStats(
   instrumentationKey: string,
   endpoint: string,
 ): CustomerSdkStats | undefined {
-  validateSdkStatsOptions(options);
-  if (options?.enabled !== true) return undefined;
+  options = snapshotSdkStatsOptions(options);
+  if (!CUSTOMER_SDK_STATS_ENABLED || options?.enabled !== true) return undefined;
   const interval = options.collectionIntervalMillis ?? 900_000;
   const counts = new Map<string, number>();
   const ingestionEndpoint = `${endpoint}/v2/track`;
@@ -161,15 +197,18 @@ export function createCustomerSdkStats(
     schedule();
   }
 
-  function countFailedRecord(record: ReadableSpan | ReadableLogRecord, type: ItemType): void {
-    const attributes = record.resource.attributes;
+  function countDrop(
+    [type, role, instance, success]: ItemDimensions,
+    code: string,
+    value = 1,
+  ): void {
     count(
       "Dropped",
       type,
-      "CLIENT_EXCEPTION",
-      1,
-      createTags(undefined, undefined, attributes["service.name"], {}, attributes),
-      "kind" in record ? spanSucceeded(record) : undefined,
+      code,
+      value,
+      { "ai.cloud.role": role, "ai.cloud.roleInstance": instance },
+      success ?? undefined,
     );
   }
 
@@ -289,7 +328,7 @@ export function createCustomerSdkStats(
 
   return {
     count,
-    countFailedRecord,
+    countDrop,
     countEnvelopes,
     shouldCollectLog: shouldCollectSdkStatsLog,
     forceFlush,

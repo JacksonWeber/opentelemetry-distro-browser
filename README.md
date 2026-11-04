@@ -34,7 +34,7 @@ See the [configuration reference](docs/configuration-reference.md),
 npm install @microsoft/opentelemetry-browser@beta @opentelemetry/api@1.9.1 @opentelemetry/api-logs@0.222.0 @opentelemetry/resources@2.11.0
 ```
 
-The OpenTelemetry versions above match `0.1.0-beta.1` and the imports in this guide. Keep them
+The OpenTelemetry versions above match `0.1.0-beta.2` and the imports in this guide. Keep them
 aligned with the distribution when upgrading. Use a browser bundler for the npm package, or follow
 [Snippet setup](#snippet-setup) for classic script loading.
 
@@ -157,9 +157,9 @@ page's `<head>`, replacing `CHANNEL`, `VERSION`, `YOUR_CONNECTION_STRING`, and `
 </script>
 ```
 
-For example, `0.1.0-beta.1` uses channel `beta`, and its `YOUR_INTEGRITY` is the
+For example, `0.1.0-beta.2` uses channel `beta`, and its `YOUR_INTEGRITY` is the
 `ext["@min.js"].integrity` value in
-[`opentelemetry-browser.0.1.0-beta.1.integrity.json`](https://js.monitor.azure.com/scripts/otel/beta/opentelemetry-browser.0.1.0-beta.1.integrity.json).
+[`opentelemetry-browser.0.1.0-beta.2.integrity.json`](https://js.monitor.azure.com/scripts/otel/beta/opentelemetry-browser.0.1.0-beta.2.integrity.json).
 The snippet enables Azure Monitor export, page views, and `fetch` and XHR dependency collection.
 To change that, add JSON settings to the configuration object at the end of the snippet. Settings in
 `cfg` use the same names as the npm options and are passed to `useMicrosoftOpenTelemetry` as is;
