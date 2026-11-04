@@ -167,7 +167,7 @@ examples below. Keep OpenTelemetry package versions aligned with the selected di
 the currently published package:
 
 ```bash
-npm install @microsoft/opentelemetry-browser@0.1.0-beta.1 @opentelemetry/api@1.9.1 @opentelemetry/api-logs@0.222.0 @opentelemetry/resources@2.11.0
+npm install @microsoft/opentelemetry-browser@0.1.0-beta.2 @opentelemetry/api@1.9.1 @opentelemetry/api-logs@0.222.0 @opentelemetry/resources@2.11.0
 ```
 
 Initialize telemetry before importing application code that needs instrumentation:

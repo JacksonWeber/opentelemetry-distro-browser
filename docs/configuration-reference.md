@@ -1,6 +1,6 @@
 # Beta configuration reference
 
-This reference describes `@microsoft/opentelemetry-browser` **0.1.0-beta.1**. Start with the
+This reference describes `@microsoft/opentelemetry-browser` **0.1.0-beta.2**. Start with the
 [getting-started guide](../README.md#getting-started), and consult the
 [event catalogue](event-catalogue.md) for emitted data. The public TypeScript contracts are in
 [distribution types](../src/types.ts), [page-view options](../src/instrumentation/pageView/types.ts)
