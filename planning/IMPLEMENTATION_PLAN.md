@@ -139,8 +139,8 @@ aggregation, cardinality and export semantics. Advanced ApplicationInsights-JS p
 [M4](M4_PLANNING.md).
 
 **Non-goals.** Reimplementing the OTel API or SDK. Building an Application
-Insights SDK, or making a legacy AI API the primary surface. Supporting legacy
-`Request-Id` or `Request-Context` correlation instead of W3C Trace Context. Coupling core
+Insights SDK, or making a legacy AI API the primary surface. Adding built-in
+`Request-Id` or `Request-Context` propagation alongside or instead of W3C Trace Context. Coupling core
 routing to a backend or wire format. Transparently supporting every browser
 instrumentation in the first release, or claiming arbitrary multi-instance
 auto-instrumentation is safe before shared patch behavior is proven. Hiding
