@@ -7,21 +7,26 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import {
-  cacheControl,
   cdnDirectory,
   cdnOrigin,
   getCdnArtifacts,
+  getCdnAliasUploads,
+  getCdnMajor,
   getCdnUploads,
   getIntegrity,
   getCdnUrl,
+  readCdnFile,
+  prepareCdnAliases,
   root,
 } from "./cdn.mjs";
 
-const usage = `Usage: npm run cdn:verify -- [--remote-only] [--origin <url>]
+const usage = `Usage: npm run cdn:verify -- [--destination next|public] [--major] [--version <full-version>] [--remote-only] [--origin <url>]
 
 Fetches every published CDN file for this package version and checks the status, Content-Type,
 Cache-Control and CORS headers, that each integrity.json hash matches the served bundle and, unless
---remote-only is set, that the served bytes equal the files prepared in cdn/ by \`npm run build\`.`;
+--remote-only is set, that the served bytes equal the files prepared in cdn/ by \`npm run build\`,
+with integrity URLs adapted to the selected destination. Omission retains legacy channel routing.
+--major audits mutable major aliases instead, after their 30-minute CDN cache has expired.`;
 
 const directives = (value) =>
   (value ?? "")
@@ -35,22 +40,41 @@ const normalizeType = (value) => (value ?? "").replace(/\s+/g, "").toLowerCase()
 /** Verifies the published CDN files for `version` and returns them; throws listing every problem. */
 export async function verifyCdn({
   version,
+  destination,
+  major = false,
   directory = cdnDirectory,
   remoteOnly = false,
   origin = cdnOrigin,
   fetch = globalThis.fetch,
   timeoutMs = 60_000,
+  signal: cancellationSignal,
   log = (line) => process.stdout.write(`${line}\n`),
 }) {
+  cancellationSignal?.throwIfAborted();
   const toServed = (url) => (origin === cdnOrigin ? url : url.replace(cdnOrigin, origin));
   const problems = [];
   const served = new Map();
+  const uploads = major
+    ? getCdnAliasUploads(version, destination)
+    : getCdnUploads(version, destination);
+  const aliasFiles =
+    major && !remoteOnly
+      ? new Map(
+          (await prepareCdnAliases(version, directory, destination)).map(({ file, bytes }) => [
+            file,
+            bytes,
+          ]),
+        )
+      : undefined;
+  const fileVersion = major ? getCdnMajor(version) : version;
 
-  for (const upload of getCdnUploads(version)) {
+  for (const upload of uploads) {
+    cancellationSignal?.throwIfAborted();
     const url = toServed(upload.url);
     const fail = (problem) => problems.push(`${url}: ${problem}`);
     // One deadline covers both the headers and the body.
-    const signal = AbortSignal.timeout(timeoutMs);
+    const deadline = AbortSignal.timeout(timeoutMs);
+    const signal = cancellationSignal ? AbortSignal.any([cancellationSignal, deadline]) : deadline;
     let response;
     try {
       response = await fetch(url, {
@@ -59,6 +83,7 @@ export async function verifyCdn({
         signal,
       });
     } catch (error) {
+      cancellationSignal?.throwIfAborted();
       fail(`request failed (${error.message})`);
       continue;
     }
@@ -71,6 +96,7 @@ export async function verifyCdn({
     try {
       bytes = Buffer.from(await response.arrayBuffer());
     } catch (error) {
+      cancellationSignal?.throwIfAborted();
       fail(
         `download failed (${signal.aborted ? `timed out after ${timeoutMs} ms` : error.message})`,
       );
@@ -81,20 +107,28 @@ export async function verifyCdn({
     if (normalizeType(headers.get("content-type")) !== normalizeType(upload.contentType)) {
       fail(`Content-Type ${headers.get("content-type")}, expected ${upload.contentType}`);
     }
-    if (directives(headers.get("cache-control")) !== directives(cacheControl)) {
-      fail(`Cache-Control ${headers.get("cache-control")}, expected ${cacheControl}`);
+    if (directives(headers.get("cache-control")) !== directives(upload.cacheControl)) {
+      fail(`Cache-Control ${headers.get("cache-control")}, expected ${upload.cacheControl}`);
     }
     if (headers.get("access-control-allow-origin") !== "*") {
       fail(`Access-Control-Allow-Origin ${headers.get("access-control-allow-origin")}`);
     }
     if (!remoteOnly) {
-      const local = await readFile(resolve(directory, upload.file)).catch(() => undefined);
+      let local;
+      try {
+        local = major
+          ? aliasFiles.get(upload.file)
+          : await readCdnFile(version, upload.file, directory, destination);
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
       if (!local) fail(`missing local ${upload.file}; run \`npm run build\` or pass --remote-only`);
       else if (!local.equals(bytes)) fail("content differs from the local build");
     }
     log(`Checked ${url}`);
   }
 
+  cancellationSignal?.throwIfAborted();
   for (const [url, bytes] of served) {
     if (!url.endsWith(".integrity.json")) continue;
     let integrity;
@@ -105,16 +139,25 @@ export async function verifyCdn({
       continue;
     }
     const ext = integrity.ext ?? {};
-    const expected = getCdnArtifacts(version).filter(
-      ({ module }) => url === getCdnUrl(version, `${module}.${version}.integrity.json`),
-    );
+    if (integrity.version !== version) {
+      problems.push(`${toServed(url)}: version ${integrity.version}, expected ${version}`);
+    }
+    const expected = getCdnArtifacts(version)
+      .map((artifact) => ({
+        ...artifact,
+        file: artifact.file.replace(`.${version}.`, `.${fileVersion}.`),
+      }))
+      .filter(
+        ({ module }) =>
+          url === getCdnUrl(version, `${module}.${fileVersion}.integrity.json`, destination),
+      );
     const expectedKeys = new Set(expected.map(({ format }) => `@${format}`));
     for (const key of Object.keys(ext)) {
       if (!expectedKeys.has(key)) problems.push(`${toServed(url)}: unexpected entry ${key}`);
     }
     for (const { format, file } of expected) {
       const entry = ext[`@${format}`];
-      const fileUrl = getCdnUrl(version, file);
+      const fileUrl = getCdnUrl(version, file, destination);
       if (!entry) {
         problems.push(`${toServed(url)}: missing @${format}`);
         continue;
@@ -151,6 +194,9 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     options: {
       "remote-only": { type: "boolean", default: false },
       origin: { type: "string", default: cdnOrigin },
+      destination: { type: "string" },
+      major: { type: "boolean", default: false },
+      version: { type: "string" },
       help: { type: "boolean", default: false },
     },
   });
@@ -159,10 +205,13 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     process.exit(0);
   }
   const { version } = JSON.parse(await readFile(resolve(root, "package.json"), "utf8"));
+  const selectedVersion = values.version ?? version;
   const verified = await verifyCdn({
-    version,
+    version: selectedVersion,
+    destination: values.destination,
+    major: values.major,
     remoteOnly: values["remote-only"],
     origin: values.origin,
   });
-  process.stdout.write(`Verified ${verified.length} CDN files for ${version}.\n`);
+  process.stdout.write(`Verified ${verified.length} CDN files for ${selectedVersion}.\n`);
 }
