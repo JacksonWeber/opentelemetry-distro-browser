@@ -2,6 +2,13 @@
 
 All notable changes to this package are documented in this file.
 
+## Unreleased
+
+### Added
+
+- Document ApplicationInsights-JS migration paths, intentional exclusions and current gaps.
+  Remove legacy correlation headers from the planned scope and retain W3C propagation.
+
 ## 0.1.0-beta.2 - 2026-11-05
 
 ### Added

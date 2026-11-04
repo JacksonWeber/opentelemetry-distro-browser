@@ -6,6 +6,9 @@ This reference describes `@microsoft/opentelemetry-browser` **0.1.0-beta.2**. St
 [distribution types](../src/types.ts), [page-view options](../src/instrumentation/pageView/types.ts)
 and [loader options](../src/snippet.ts).
 
+For ApplicationInsights-JS applications, see the [migration guide](../APPINSIGHTS_MIGRATION.md)
+for API replacements, intentional exclusions and current gaps.
+
 ## Initialization options
 
 Pass these options to `await useMicrosoftOpenTelemetry(options)`. Options are captured at startup;
@@ -646,6 +649,8 @@ does not preserve active context across unbound async continuations. See the
 
 `traces.propagators` accepts a readonly array of `TextMapPropagator`. Omit it for W3C Trace Context
 and Baggage, or supply `[]` to disable propagation when this distribution owns the registration.
+Built-in legacy `Request-Id` / `Request-Context` headers and `distributedTracingMode` / `appId`
+compatibility options are out of scope. Custom propagators remain supported.
 Global context and propagation are page-lifetime registrations, not per-handle isolation. The first
 active trace instance supplies the owned context delegate; later propagator options are unused.
 Application-registered context managers are not disabled by shutdown. Page-view instances share one
