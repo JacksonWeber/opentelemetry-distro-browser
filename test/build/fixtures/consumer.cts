@@ -31,6 +31,10 @@ useMicrosoftOpenTelemetry({ azureMonitor: options });
 useMicrosoftOpenTelemetry({ azureMonitor: asynchronousOptions });
 const syncOptions: MicrosoftOpenTelemetryBrowserConfigurationSyncOptions = {
   syncMode: 2,
+  cfgUrl: "https://configuration.example.test/config.json",
+  scheduleFetchTimeout: 1800000,
+  requestTimeoutMs: 10000,
+  blkCdnCfg: false,
   nonOverrideConfigs: { disableAjaxTracking: true },
 };
 useMicrosoftOpenTelemetry({ extensionConfig: { AppInsightsCfgSyncPlugin: syncOptions } });

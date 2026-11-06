@@ -147,7 +147,7 @@ export interface MicrosoftOpenTelemetryBrowserSessionOptions {
   maxDuration?: number;
 }
 
-/** Startup-only same-realm event synchronization. No HTTP, storage or cross-tab transport.
+/** Startup-only event synchronization and optional trusted HTTP configuration downloads.
  * @public
  */
 export interface MicrosoftOpenTelemetryBrowserConfigurationSyncOptions {
@@ -155,6 +155,14 @@ export interface MicrosoftOpenTelemetryBrowserConfigurationSyncOptions {
   readonly syncMode?: 0 | 1 | 2;
   /** Same-realm CustomEvent channel. Defaults to ai_cfgsync; not an authentication boundary. */
   readonly customEvtName?: string;
+  /** Explicit trusted HTTP(S) URL. Empty/omitted means no HTTP requests; no default feed is used. */
+  readonly cfgUrl?: string;
+  /** Blocks HTTP downloads without disabling event reception. Defaults to false. */
+  readonly blkCdnCfg?: boolean;
+  /** Poll interval after completion, in milliseconds. Defaults to 1800000; zero means initial/manual only. */
+  readonly scheduleFetchTimeout?: number;
+  /** Request and body deadline, in milliseconds. Defaults to 10000; must be positive. */
+  readonly requestTimeoutMs?: number;
   /** Prevent synchronization of selected allowlisted root fields. False cannot widen the allowlist. */
   readonly nonOverrideConfigs?: Readonly<
     Partial<Record<"samplingPercentage" | "disableFetchTracking" | "disableAjaxTracking", boolean>>
@@ -163,17 +171,17 @@ export interface MicrosoftOpenTelemetryBrowserConfigurationSyncOptions {
   readonly onError?: (error: unknown) => void;
 }
 
-/** Lifecycle controls for an explicitly configured same-realm event adapter.
+/** Lifecycle controls for an explicitly configured synchronization adapter.
  * @public
  */
 export interface MicrosoftOpenTelemetryBrowserConfigurationSync {
-  /** Explicitly broadcasts the allowed current snapshot in mode 1. Dispatch is not receiver acknowledgement. */
+  /** Downloads when HTTP is configured; otherwise broadcasts the snapshot in mode 1. Coalesces concurrent downloads. */
   sync(): Promise<void>;
-  /** Stops listening/publishing and invalidates queued delivery without reverting committed values. */
+  /** Aborts downloads, clears polling and invalidates queued delivery without reverting committed values. */
   pause(): void;
-  /** Resumes observation without replay. No effect after shutdown. */
+  /** Resumes observation and HTTP downloads, including polling stopped after three failures. No effect after shutdown. */
   resume(): void;
-  /** Permanently removes this adapter's listener. Telemetry shutdown also calls this. */
+  /** Permanently removes listeners and cancels polling/downloads. Telemetry shutdown also calls this. */
   shutdown(): void;
 }
 

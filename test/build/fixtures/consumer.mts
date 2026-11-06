@@ -125,6 +125,10 @@ export const initialize: (
 const syncOptions: MicrosoftOpenTelemetryBrowserConfigurationSyncOptions = {
   syncMode: 1,
   customEvtName: "consumer-config",
+  cfgUrl: "/telemetry-config.json",
+  blkCdnCfg: false,
+  scheduleFetchTimeout: 0,
+  requestTimeoutMs: 10000,
   nonOverrideConfigs: { samplingPercentage: true, disableFetchTracking: false },
   onError: (error): void => {
     const cause: unknown = error;
@@ -139,8 +143,8 @@ useMicrosoftOpenTelemetry({ extensionConfig: { AppInsightsCfgSyncPlugin: syncOpt
 // @ts-expect-error Only the three event synchronization modes are supported.
 const invalidSyncMode: MicrosoftOpenTelemetryBrowserConfigurationSyncOptions = { syncMode: 3 };
 const invalidSyncUrl: MicrosoftOpenTelemetryBrowserConfigurationSyncOptions = {
-  // @ts-expect-error HTTP configuration is not supported.
-  cfgUrl: "https://example.test",
+  // @ts-expect-error HTTP configuration requires an explicit URL string.
+  cfgUrl: true,
 };
 const invalidSyncExclusion: MicrosoftOpenTelemetryBrowserConfigurationSyncOptions = {
   // @ts-expect-error Resource configuration is not synchronizable.

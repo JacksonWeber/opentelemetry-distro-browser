@@ -96,9 +96,13 @@ export interface MicrosoftOpenTelemetryBrowserConfigurationSync {
 
 // @public
 export interface MicrosoftOpenTelemetryBrowserConfigurationSyncOptions {
+    readonly blkCdnCfg?: boolean;
+    readonly cfgUrl?: string;
     readonly customEvtName?: string;
     readonly nonOverrideConfigs?: Readonly<Partial<Record<"samplingPercentage" | "disableFetchTracking" | "disableAjaxTracking", boolean>>>;
     readonly onError?: (error: unknown) => void;
+    readonly requestTimeoutMs?: number;
+    readonly scheduleFetchTimeout?: number;
     readonly syncMode?: 0 | 1 | 2;
 }
 

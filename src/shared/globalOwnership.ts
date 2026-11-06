@@ -16,7 +16,40 @@ const activeIngestionUrlsKey = /* @__PURE__ */ Symbol.for(
   "@microsoft/opentelemetry-browser/active-sdk-ingestion-urls/1",
 );
 const keepaliveKey = /* @__PURE__ */ Symbol.for("@microsoft/opentelemetry-browser/keepalive/1");
+const configurationUrlsKey = /* @__PURE__ */ Symbol.for(
+  "@microsoft/opentelemetry-browser/configuration-urls/1",
+);
 const realm = globalThis as typeof globalThis & { [key: symbol]: unknown };
+
+/** Active configuration destinations and a bounded history for delayed resource timings. */
+export function registerConfigurationUrl(url: string): () => void {
+  const [active, recent] = (realm[configurationUrlsKey] ??= [new Map(), new Set()]) as [
+    Map<string, number>,
+    Set<string>,
+  ];
+  active.set(url, (active.get(url) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const remaining = (active.get(url) ?? 1) - 1;
+    if (remaining) active.set(url, remaining);
+    else active.delete(url);
+    recent.delete(url);
+    recent.add(url);
+    if (recent.size > 256) {
+      for (const oldest of recent) {
+        recent.delete(oldest);
+        break;
+      }
+    }
+  };
+}
+
+export function isConfigurationUrl(url: unknown): boolean {
+  const urls = realm[configurationUrlsKey] as [Map<string, number>, Set<string>] | undefined;
+  return typeof url === "string" && (urls?.[0].has(url) === true || urls?.[1].has(url) === true);
+}
 
 interface SharedRegistry {
   version: 1;

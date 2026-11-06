@@ -276,6 +276,50 @@ it("reads the startup extension getter once and does not broadcast automatically
   expect(read).toHaveBeenCalledOnce();
 });
 
+it("keeps automatic telemetry startup while HTTP synchronization runs and aborts it on shutdown", async () => {
+  const instance = fakeInstance();
+  vi.mocked(startTelemetryInstance).mockResolvedValueOnce(instance);
+  const transport = vi.spyOn(globalThis, "fetch").mockImplementation(() => new Promise(() => {}));
+  const handle = await useMicrosoftOpenTelemetry({
+    extensionConfig: {
+      AppInsightsCfgSyncPlugin: { cfgUrl: "/configuration.json", scheduleFetchTimeout: 0 },
+    },
+    pageView: { enabled: false },
+    session: { enabled: false },
+    userContext: { enabled: false },
+    storage: { enabled: false },
+  });
+  handles.add(handle);
+  expect(instance.commit).toHaveBeenCalledOnce();
+  expect(handle.configSync).toBeDefined();
+  expect(transport).toHaveBeenCalledOnce();
+  const pending = handle.configSync!.sync();
+  await handle.shutdown();
+  await pending;
+  expect(transport.mock.calls[0]![1]!.signal!.aborted).toBe(true);
+  expect(instance.shutdown).toHaveBeenCalledOnce();
+});
+
+it("does not start an HTTP request if the final initialization commit fails", async () => {
+  const instance = fakeInstance();
+  instance.commit.mockImplementation(() => {
+    throw new Error("commit failed");
+  });
+  vi.mocked(startTelemetryInstance).mockResolvedValueOnce(instance);
+  const transport = vi.spyOn(globalThis, "fetch").mockImplementation(() => new Promise(() => {}));
+  await expect(
+    useMicrosoftOpenTelemetry({
+      extensionConfig: { AppInsightsCfgSyncPlugin: { cfgUrl: "/configuration.json" } },
+      pageView: { enabled: false },
+      session: { enabled: false },
+      userContext: { enabled: false },
+      storage: { enabled: false },
+    }),
+  ).rejects.toThrow("commit failed");
+  expect(transport).not.toHaveBeenCalled();
+  expect(instance.shutdown).toHaveBeenCalledOnce();
+});
+
 it("rejects nested sync option accessors before SDK startup or storage access", async () => {
   const getter = vi.fn(() => 2);
   const local = vi.spyOn(window, "localStorage", "get");

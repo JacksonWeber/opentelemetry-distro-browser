@@ -35,6 +35,7 @@ import {
   commitGlobals,
   getSharedRegistry,
   isReportingSdkStats,
+  isConfigurationUrl,
   reportError,
   rollbackGlobals,
 } from "../shared/globalOwnership.js";
@@ -181,7 +182,16 @@ export async function startTelemetryInstance(
         processors: options.logRecordProcessors.map((processor): LogRecordProcessor => ({
           enabled: (options) => !stopped && (processor.enabled?.(options) ?? true),
           onEmit: (record, ctx) => {
-            if (!stopped && !isReportingSdkStats()) processor.onEmit(record, ctx);
+            if (
+              !stopped &&
+              !isReportingSdkStats() &&
+              !(
+                record.instrumentationScope.name ===
+                  "@opentelemetry/browser-instrumentation/resource-timing" &&
+                isConfigurationUrl(record.attributes["url.full"])
+              )
+            )
+              processor.onEmit(record, ctx);
           },
           forceFlush: (options) => processor.forceFlush(options),
           shutdown: shutdownProcessor,

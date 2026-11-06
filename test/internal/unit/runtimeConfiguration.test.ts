@@ -7,6 +7,10 @@ import {
   createConfigurationSync,
 } from "../../../src/configuration/configurationSync.js";
 import {
+  isConfigurationUrl,
+  registerConfigurationUrl,
+} from "../../../src/shared/globalOwnership.js";
+import {
   createRuntimeConfiguration,
   type MicrosoftOpenTelemetryBrowserConfigurationUpdate,
 } from "../../../src/configuration/runtimeConfiguration.js";
@@ -1223,6 +1227,7 @@ describe("configuration synchronization", () => {
     for (const handle of handles.splice(0)) handle.shutdown();
     for (const remove of listeners.splice(0)) remove();
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   it("requires explicit opt-in and captures receive defaults", () => {
@@ -1237,6 +1242,7 @@ describe("configuration synchronization", () => {
       name: "ai_cfgsync",
       excluded: new Set(),
       onError: undefined,
+      http: undefined,
     });
   });
 
@@ -1254,6 +1260,421 @@ describe("configuration synchronization", () => {
     expect(add).not.toHaveBeenCalled();
     created.start();
     expect(add).toHaveBeenCalledWith(name, expect.any(Function));
+  });
+
+  describe("HTTP configuration", () => {
+    const url = "https://configuration.example.test/config.json";
+    const document = (config: unknown = { samplingPercentage: 25 }, enabled: unknown = true) =>
+      new Response(JSON.stringify({ enabled, config, version: "test" }));
+    const httpOptions = { cfgUrl: url, scheduleFetchTimeout: 0 };
+
+    async function started(
+      controller: ReturnType<typeof createRuntimeConfiguration>,
+      options = {},
+    ) {
+      const handle = adapter(controller, { ...httpOptions, ...options });
+      await handle.sync();
+      return handle;
+    }
+
+    it("captures HTTP defaults and resolves a relative trusted URL once", () => {
+      expect(
+        captureConfigurationSync({ AppInsightsCfgSyncPlugin: { cfgUrl: "./config.json#private" } })
+          ?.http,
+      ).toEqual({
+        url: new URL("./config.json", location.href).href,
+        interval: 1_800_000,
+        timeout: 10_000,
+      });
+    });
+
+    it.each([
+      { cfgUrl: 1 },
+      { cfgUrl: null },
+      { cfgUrl: "file:///config.json" },
+      { cfgUrl: "https://user:password@example.test/config" },
+      { cfgUrl: "javascript:void(0)" },
+      { blkCdnCfg: 1 },
+      { scheduleFetchTimeout: -1 },
+      { scheduleFetchTimeout: Infinity },
+      { scheduleFetchTimeout: 2_147_483_648 },
+      { scheduleFetchTimeout: null },
+      { requestTimeoutMs: 0 },
+      { requestTimeoutMs: NaN },
+      { requestTimeoutMs: "1000" },
+    ])("rejects malformed HTTP options: %j", (options) => {
+      expect(() => captureConfigurationSync({ AppInsightsCfgSyncPlugin: options })).toThrow();
+    });
+
+    it.each([{}, { cfgUrl: "" }, { cfgUrl: url, syncMode: 0 }, { cfgUrl: url, blkCdnCfg: true }])(
+      "does not download without effective HTTP opt-in: %j",
+      async (options) => {
+        const transport = vi.spyOn(globalThis, "fetch");
+        const { controller } = create();
+        const handle = adapter(controller, options);
+        await handle.sync();
+        expect(transport).not.toHaveBeenCalled();
+      },
+    );
+
+    it("downloads initially, merges only supplied fields, and uses a credential-free GET", async () => {
+      const transport = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValue(document({ disableFetchTracking: true }));
+      const { controller } = create({ samplingPercentage: 40 });
+      await started(controller);
+      expect(transport).toHaveBeenCalledExactlyOnceWith(url, {
+        signal: expect.any(AbortSignal),
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        cache: "no-store",
+        redirect: "error",
+      });
+      expect(controller.snapshot()).toMatchObject({
+        samplingPercentage: 40,
+        disableFetchTracking: true,
+      });
+    });
+
+    it("coalesces overlapping downloads and preserves local precedence", async () => {
+      let complete!: (response: Response) => void;
+      const transport = vi.spyOn(globalThis, "fetch").mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            complete = resolve;
+          }),
+      );
+      const { controller } = create();
+      const handle = adapter(controller, httpOptions);
+      const first = handle.sync();
+      expect(handle.sync()).toBe(first);
+      await Promise.resolve();
+      await controller.updateCfg({ samplingPercentage: 70 });
+      complete(document({ samplingPercentage: 20, disableAjaxTracking: true }));
+      await first;
+      expect(transport).toHaveBeenCalledOnce();
+      expect(controller.snapshot()).toMatchObject({
+        samplingPercentage: 70,
+        disableAjaxTracking: true,
+      });
+    });
+
+    it("broadcasts downloaded fields without applying them to a mode-1 publisher", async () => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        document({ samplingPercentage: 15, disableFetchTracking: true }),
+      );
+      const name = "http-publisher";
+      const events = observe(name);
+      const source = create().controller;
+      const destination = create().controller;
+      adapter(destination, { customEvtName: name });
+      await started(source, {
+        syncMode: 1,
+        customEvtName: name,
+        nonOverrideConfigs: { disableFetchTracking: true },
+      });
+      await barrier(destination);
+      expect(source.snapshot().samplingPercentage).toBeUndefined();
+      expect(destination.snapshot()).toMatchObject({
+        samplingPercentage: 15,
+        disableFetchTracking: false,
+      });
+      expect(events).toHaveLength(1);
+      expect(events[0]!.detail).toEqual({ cfg: { samplingPercentage: 15 } });
+    });
+
+    it("applies HTTP updates without echo and respects exclusions", async () => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        document({ samplingPercentage: 10, disableAjaxTracking: true }),
+      );
+      const events = observe("http-no-echo");
+      const { controller } = create();
+      await started(controller, {
+        customEvtName: "http-no-echo",
+        nonOverrideConfigs: { samplingPercentage: true },
+      });
+      expect(controller.snapshot()).toMatchObject({
+        samplingPercentage: undefined,
+        disableAjaxTracking: true,
+      });
+      expect(events).toEqual([]);
+    });
+
+    it.each([false, 0, ""])("does not apply disabled HTTP documents: %j", async (enabled) => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(document({ samplingPercentage: 0 }, enabled));
+      const { controller } = create({ samplingPercentage: 50 });
+      await started(controller);
+      expect(controller.snapshot().samplingPercentage).toBe(50);
+    });
+
+    it.each([
+      { enabled: true, config: { samplingPercentage: -1 } },
+      { enabled: true, config: { samplingPercentage: null } },
+      { enabled: true, config: { disableAjaxTracking: "yes" } },
+      { enabled: true, config: { session: {} } },
+      { enabled: false, config: { connectionString: "secret" } },
+      { enabled: true, config: [] },
+      { enabled: true },
+      { enabled: {} },
+      { enabled: true, config: {}, overrides: {} },
+      { enabled: true, config: {}, version: {} },
+      { enabled: true, config: JSON.parse('{"__proto__":{}}') },
+    ])("rejects a complete malformed document before applying any field: %j", async (payload) => {
+      const onError = vi.fn();
+      vi.spyOn(globalThis, "fetch").mockImplementation(
+        async () => new Response(JSON.stringify(payload)),
+      );
+      const { controller } = create();
+      await controller.updateCfg({ samplingPercentage: 80 });
+      const handle = adapter(controller, { ...httpOptions, onError });
+      await expect(handle.sync()).rejects.toThrow();
+      expect(controller.snapshot().samplingPercentage).toBe(80);
+      await Promise.resolve();
+      expect(onError).toHaveBeenCalledOnce();
+    });
+
+    it.each([
+      () => new Response("error", { status: 503 }),
+      () => new Response("not json"),
+      () => new Response("{}", { headers: { "content-length": "65537" } }),
+      () => new Response(" ".repeat(65537)),
+      () => new Response(new Uint8Array([0xff])),
+    ])("rejects HTTP, JSON, encoding and body-size failures", async (response) => {
+      vi.spyOn(globalThis, "fetch").mockImplementation(async () => response());
+      const { controller } = create();
+      const handle = adapter(controller, httpOptions);
+      await expect(handle.sync()).rejects.toThrow();
+      expect(controller.snapshot().samplingPercentage).toBeUndefined();
+    });
+
+    it("bounds fetch wrappers that ignore abort and ignores their late response", async () => {
+      vi.useFakeTimers();
+      let complete!: (response: Response) => void;
+      vi.spyOn(globalThis, "fetch").mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            complete = resolve;
+          }),
+      );
+      const { controller } = create();
+      const handle = adapter(controller, { ...httpOptions, requestTimeoutMs: 100 });
+      const failure = expect(handle.sync()).rejects.toThrow("timed out");
+      await vi.advanceTimersByTimeAsync(100);
+      await failure;
+      complete(document());
+      await Promise.resolve();
+      await barrier(controller);
+      expect(controller.snapshot().samplingPercentage).toBeUndefined();
+    });
+
+    it("bounds response-body reads and cancels the stalled stream", async () => {
+      vi.useFakeTimers();
+      const cancelled = vi.fn();
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(new ReadableStream({ cancel: cancelled })),
+      );
+      const handle = adapter(create().controller, { ...httpOptions, requestTimeoutMs: 100 });
+      const failure = expect(handle.sync()).rejects.toThrow("timed out");
+      await vi.advanceTimersByTimeAsync(100);
+      await failure;
+      expect(cancelled).toHaveBeenCalledOnce();
+    });
+
+    it("polls after completion rather than overlapping slow requests, and zero disables repeats", async () => {
+      vi.useFakeTimers();
+      const transport = vi.spyOn(globalThis, "fetch").mockImplementation(async () => document());
+      const handle = await started(create().controller, { scheduleFetchTimeout: 1000 });
+      await vi.advanceTimersByTimeAsync(999);
+      expect(transport).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(transport).toHaveBeenCalledTimes(2);
+      handle.shutdown();
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(transport).toHaveBeenCalledTimes(2);
+    });
+
+    it("stops automatic polling after three failures and restarts on resume", async () => {
+      vi.useFakeTimers();
+      const onError = vi.fn(() => {
+        throw new Error("reporting failure");
+      });
+      const transport = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network"));
+      const handle = adapter(create().controller, {
+        ...httpOptions,
+        scheduleFetchTimeout: 100,
+        onError,
+      });
+      await expect(handle.sync()).rejects.toThrow("network");
+      await vi.advanceTimersByTimeAsync(500);
+      expect(transport).toHaveBeenCalledTimes(3);
+      expect(onError).toHaveBeenCalledTimes(3);
+      transport.mockImplementation(async () => document());
+      handle.resume();
+      await handle.sync();
+      expect(transport).toHaveBeenCalledTimes(4);
+    });
+
+    it.each(["pause", "shutdown"] as const)(
+      "%s aborts a pending request and makes its late result inert",
+      async (action) => {
+        let complete!: (response: Response) => void;
+        const transport = vi.spyOn(globalThis, "fetch").mockImplementation(
+          () =>
+            new Promise((resolve) => {
+              complete = resolve;
+            }),
+        );
+        const onError = vi.fn();
+        const { controller } = create();
+        const handle = adapter(controller, { ...httpOptions, onError });
+        const pending = handle.sync();
+        await Promise.resolve();
+        handle[action]();
+        await pending;
+        expect(transport.mock.calls[0]![1]!.signal!.aborted).toBe(true);
+        complete(document());
+        await barrier(controller);
+        expect(controller.snapshot().samplingPercentage).toBeUndefined();
+        expect(onError).not.toHaveBeenCalled();
+        if (action === "shutdown") {
+          handle.resume();
+          await handle.sync();
+          expect(transport).toHaveBeenCalledOnce();
+        }
+      },
+    );
+
+    it("resumes with a fresh request while the cancelled wrapper remains unresolved", async () => {
+      const transport = vi
+        .spyOn(globalThis, "fetch")
+        .mockImplementationOnce(() => new Promise(() => {}))
+        .mockImplementation(async () => document());
+      const { controller } = create();
+      const handle = adapter(controller, httpOptions);
+      const pending = handle.sync();
+      await Promise.resolve();
+      handle.pause();
+      handle.resume();
+      await Promise.all([pending, handle.sync()]);
+      expect(transport).toHaveBeenCalledTimes(2);
+      expect(controller.snapshot().samplingPercentage).toBe(25);
+    });
+
+    it("invalidates an HTTP commit cancelled from a gate callback", async () => {
+      let pause = () => {};
+      const applied: boolean[] = [];
+      const { controller } = create({}, (next) => {
+        applied.push(next.disableAjaxTracking);
+        if (next.disableAjaxTracking) pause();
+      });
+      vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+        document({ disableAjaxTracking: true }),
+      );
+      const handle = adapter(controller, httpOptions);
+      pause = () => handle.pause();
+      await handle.sync();
+      expect(applied).toEqual([true, false]);
+      expect(controller.snapshot().disableAjaxTracking).toBe(false);
+    });
+
+    it("resumes with one fresh request after a completed initial-only download", async () => {
+      const transport = vi.spyOn(globalThis, "fetch").mockImplementation(async () => document());
+      const handle = await started(create().controller);
+      handle.pause();
+      handle.resume();
+      await handle.sync();
+      expect(transport).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not expose invalid JSON payload contents through onError", async () => {
+      const onError = vi.fn();
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("private-configuration-data"));
+      const handle = adapter(create().controller, { ...httpOptions, onError });
+      await expect(handle.sync()).rejects.toThrow("valid JSON");
+      await Promise.resolve();
+      expect(String(onError.mock.calls[0]![0])).not.toContain("private-configuration-data");
+    });
+
+    it("bounds recent URL history without losing active or multiply-owned destinations", () => {
+      const key = Symbol.for("@microsoft/opentelemetry-browser/configuration-urls/1");
+      const realm = globalThis as typeof globalThis & { [key: symbol]: unknown };
+      const previous = realm[key];
+      realm[key] = [new Map<string, number>(), new Set<string>()];
+      try {
+        const first = registerConfigurationUrl(url);
+        const second = registerConfigurationUrl(url);
+        first();
+        first();
+        for (let index = 0; index < 300; index++)
+          registerConfigurationUrl(`${url}?index=${index}`)();
+        expect(isConfigurationUrl(url)).toBe(true);
+        expect((realm[key] as [Map<string, number>, Set<string>])[1].size).toBe(256);
+        second();
+        for (let index = 300; index < 600; index++)
+          registerConfigurationUrl(`${url}?index=${index}`)();
+        expect(isConfigurationUrl(url)).toBe(false);
+        expect(isConfigurationUrl(`${url}?index=599`)).toBe(true);
+      } finally {
+        if (previous === undefined) Reflect.deleteProperty(realm, key);
+        else realm[key] = previous;
+      }
+    });
+
+    it("retains recently completed requests when more than 256 other URLs remain active", () => {
+      const release = Array.from({ length: 258 }, (_, index) =>
+        registerConfigurationUrl(`${url}?active=${index}`),
+      );
+      try {
+        release[0]!();
+        expect(isConfigurationUrl(`${url}?active=0`)).toBe(true);
+        expect(isConfigurationUrl(`${url}?active=257`)).toBe(true);
+      } finally {
+        for (const done of release) done();
+      }
+    });
+
+    it("counts UTF-8 bytes across chunks rather than characters", async () => {
+      const cancelled = vi.fn();
+      const encoded = new TextEncoder().encode("é".repeat(20000));
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(
+          new ReadableStream({
+            start(stream) {
+              stream.enqueue(encoded);
+              stream.enqueue(encoded);
+            },
+            cancel: cancelled,
+          }),
+        ),
+      );
+      const handle = adapter(create().controller, httpOptions);
+      await expect(handle.sync()).rejects.toThrow("65536 bytes");
+      expect(cancelled).toHaveBeenCalledOnce();
+    });
+
+    it("waits for a slow response to complete before starting the poll delay", async () => {
+      vi.useFakeTimers();
+      let finish!: (response: Response) => void;
+      const transport = vi
+        .spyOn(globalThis, "fetch")
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              finish = resolve;
+            }),
+        )
+        .mockImplementation(async () => document());
+      const handle = adapter(create().controller, { ...httpOptions, scheduleFetchTimeout: 100 });
+      const pending = handle.sync();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(transport).toHaveBeenCalledOnce();
+      finish(document());
+      await pending;
+      await vi.advanceTimersByTimeAsync(99);
+      expect(transport).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(transport).toHaveBeenCalledTimes(2);
+    });
   });
 
   it("cleans up a receiver if registration succeeds before addEventListener throws", async () => {
@@ -1345,6 +1766,7 @@ describe("configuration synchronization", () => {
       name: "part7-options",
       excluded: new Set(["samplingPercentage"]),
       onError,
+      http: undefined,
     });
   });
 

@@ -79,6 +79,62 @@ function clients() {
   };
 }
 
+it("applies HTTP configuration without recording or propagating its fetch on either instance", async () => {
+  const url = "https://configuration.example.test/config.json";
+  const transport = vi.fn<typeof fetch>(
+    async () => new Response(JSON.stringify({ enabled: true, config: { samplingPercentage: 25 } })),
+  );
+  vi.mocked(globalThis.fetch).mockImplementation(transport);
+  const siblingHook = vi.fn();
+  const ownerHook = vi.fn();
+  const sibling = await start({
+    instrumentations: [
+      new FetchInstrumentation({
+        enabled: false,
+        requestHook: siblingHook,
+        propagateTraceHeaderCorsUrls: [/.*/],
+      }),
+    ],
+  });
+  const owner = await start({
+    instrumentations: [
+      new FetchInstrumentation({
+        enabled: false,
+        requestHook: ownerHook,
+        propagateTraceHeaderCorsUrls: [/.*/],
+      }),
+    ],
+    extensionConfig: { AppInsightsCfgSyncPlugin: { cfgUrl: url, scheduleFetchTimeout: 0 } },
+  });
+  // Async application wrappers forward after the stack context has unwound; SDK fetch
+  // exclusion must not depend solely on a synchronous suppressTracing context.
+  const patchedFetch = globalThis.fetch;
+  globalThis.fetch = async (...args) => {
+    await Promise.resolve();
+    return patchedFetch(...args);
+  };
+  try {
+    await owner.handle.configSync!.sync();
+  } finally {
+    globalThis.fetch = patchedFetch;
+  }
+  expect(ownerHook).not.toHaveBeenCalled();
+  expect(siblingHook).not.toHaveBeenCalled();
+  expect(transport.mock.calls[0]![1]?.headers).toBeUndefined();
+  await owner.handle.forceFlush();
+  await sibling.handle.forceFlush();
+  expect(owner.spanExporter.getFinishedSpans()).toEqual([]);
+  expect(sibling.spanExporter.getFinishedSpans()).toEqual([]);
+  // An ordinary request is still observed by each active subscriber.
+  await fetch("https://application.example.test/data");
+  await vi.waitFor(async () => {
+    await sibling.handle.forceFlush();
+    expect(sibling.spanExporter.getFinishedSpans()).toHaveLength(1);
+    expect(ownerHook).toHaveBeenCalledOnce();
+    expect(siblingHook).toHaveBeenCalledOnce();
+  });
+});
+
 function emit(client: ReturnType<typeof clients>, name: string): void {
   client.tracer.startSpan(name, {}, ROOT_CONTEXT).end();
   client.logger.emit({ eventName: name, body: name, context: ROOT_CONTEXT });

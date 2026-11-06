@@ -239,17 +239,22 @@ or `initInMemoMaxSize`, and cannot replace or disable a destination. There is no
 ### Optional configuration synchronization
 
 `extensionConfig.AppInsightsCfgSyncPlugin` is a startup-only option for synchronizing a narrow
-runtime subset between SDK instances in the **same JavaScript realm**. It is not accepted by the CDN loader. It
-uses `CustomEvent` on `globalThis`, not HTTP, storage, network requests, tabs, iframes or workers;
-those contexts have independent realm state.
+runtime subset between SDK instances in the **same JavaScript realm**, or for downloading that
+subset from one explicitly configured trusted HTTP(S) endpoint. It is not accepted by the CDN
+loader. Event synchronization uses `CustomEvent` on `globalThis`, not storage, tabs, iframes or
+workers; those contexts have independent realm state.
 
-| Option                | Default and behavior                                                                                                                                                                                              |
-| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Plugin options object | Omitted: synchronization is not configured. When configured, the handle exposes `configSync` with `sync(): Promise<void>`, `pause()`, `resume()`, and `shutdown()`.                                               |
-| `syncMode`            | `2` (receive only). `0` is inert, `1` broadcasts only, and `2` receives only.                                                                                                                                     |
-| `customEvtName`       | `"ai_cfgsync"`. This event name is the channel; use a different name to isolate participants.                                                                                                                     |
-| `nonOverrideConfigs`  | Optional map for `samplingPercentage`, `disableFetchTracking`, and `disableAjaxTracking`. `true` excludes a field from publishing and receiving; `false` cannot widen the allowlist. Unknown keys reject startup. |
-| `onError`             | Optional `(error: unknown) => void` callback. Thrown errors and rejected returns are isolated.                                                                                                                    |
+| Option                 | Default and behavior                                                                                                                                                                                                                              |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Plugin options object  | Omitted: synchronization is not configured. When configured, the handle exposes `configSync` with `sync(): Promise<void>`, `pause()`, `resume()`, and `shutdown()`.                                                                               |
+| `syncMode`             | `2` (receive only). `0` disables event and HTTP work, `1` broadcasts event snapshots and forwards downloaded fields through the event channel without local application, and `2` applies event or downloaded fields locally without echoing them. |
+| `customEvtName`        | `"ai_cfgsync"`. This event name is the channel; use a different name to isolate participants.                                                                                                                                                     |
+| `cfgUrl`               | Empty or omitted: no HTTP request and no Microsoft feed. Otherwise, a URL is resolved once at startup and must be credential-free HTTP(S). Its fragment is discarded.                                                                             |
+| `blkCdnCfg`            | `false`. `true` blocks HTTP downloads even when `cfgUrl` is set; event reception and existing local synchronization state remain available.                                                                                                       |
+| `scheduleFetchTimeout` | `1800000` milliseconds. Positive values schedule the next download after the prior request completes. `0` permits only the initial automatic attempt and manual `sync()` calls. Values must be finite numbers from `0` through `2147483647`.      |
+| `requestTimeoutMs`     | `10000` milliseconds. Covers the complete fetch and body read. Must be finite and greater than `0`, up to `2147483647`.                                                                                                                           |
+| `nonOverrideConfigs`   | Optional map for `samplingPercentage`, `disableFetchTracking`, and `disableAjaxTracking`. `true` excludes a field from publishing and receiving; `false` cannot widen the allowlist. Unknown keys reject startup.                                 |
+| `onError`              | Optional `(error: unknown) => void` callback for asynchronous download and receive failures. Thrown errors and rejected returns are isolated.                                                                                                     |
 
 Synchronization starts only after an explicit `AppInsightsCfgSyncPlugin` object is supplied, including `{}`.
 Startup configuration establishes local precedence: an actual startup sampling value, including an
@@ -258,12 +263,13 @@ local `updateCfg` permanently protects each field it supplies, including no-op u
 resets; `updateCfg(patch, false)` protects all three synchronizable fields. Failed local updates
 do not create a protection. There is no API to release a protection.
 
-Only `samplingPercentage` (a finite value from `0` through `100` or explicit `undefined`),
-`disableFetchTracking`, and `disableAjaxTracking` may cross the channel. The latter two accept only
-booleans in events. The SDK rejects unknown fields and session, beacon,
-identity, destination, instrumentation, state, and HTTP-related settings. It validates the whole
-received payload before applying locks or allow-list filtering. This intentionally strict subset is
-not compatible with a full Application Insights configuration object or full plugin configuration.
+Only `samplingPercentage` (a finite value from `0` through `100`, or an explicit `undefined` reset
+in JavaScript events), `disableFetchTracking`, and
+`disableAjaxTracking` may cross the channel or download boundary. The latter two accept only
+booleans. The SDK rejects unknown fields and session, beacon, identity, destination,
+instrumentation, state, and HTTP-related settings. It validates the whole received payload before
+applying local-precedence locks or allow-list filtering. This intentionally strict subset is not
+compatible with a full Application Insights configuration object or full plugin configuration.
 
 An explicit local `updateCfg` remains local: it does not automatically publish, echo a received
 update, replay a value on startup, or retain history. A broadcaster publishes a snapshot of every
@@ -293,14 +299,59 @@ but each handle has an independent revision; there is no atomic cross-handle com
 resolves when dispatch is complete, not when recipients acknowledge or apply it. Receiver failures
 call `onError`, do not roll back the publisher, and do not log payload contents.
 
-`pause()` cancels queued broadcasts and delivery for its current generation without reverting
-already applied values. `resume()` enables future messages only; it does not replay a snapshot.
-`shutdown()` is terminal and removes the event listener. Initialization stages the listener and
-removes it if startup fails before commit; telemetry shutdown also removes it.
+For HTTP synchronization, provide one explicit endpoint:
+
+```typescript
+const telemetry = await useMicrosoftOpenTelemetry({
+  extensionConfig: {
+    AppInsightsCfgSyncPlugin: {
+      cfgUrl: "https://config.example.com/telemetry.json",
+      requestTimeoutMs: 10000,
+      scheduleFetchTimeout: 1800000,
+    },
+  },
+});
+```
+
+The endpoint returns this JSON envelope. `enabled` accepts a boolean, a finite number, or a string;
+its JavaScript truthiness controls whether the validated `config` is applied. `version`, when
+present, is a string or finite number and is otherwise ignored. A disabled envelope is still
+validated when it contains `config`.
+
+```json
+{
+  "enabled": true,
+  "config": {
+    "samplingPercentage": 25,
+    "disableFetchTracking": false,
+    "disableAjaxTracking": false
+  },
+  "version": "2026-11-03"
+}
+```
+
+The response body is limited to 65536 bytes, must be valid JSON, and must be structurally flat:
+only the envelope and allowlisted scalar config fields are supported. Nested objects and arrays are
+rejected. The deadline covers both fetch and reading the body. Requests use `credentials: "omit"`,
+`redirect: "error"`, `referrerPolicy: "no-referrer"`, and `cache: "no-store"`. Downloads bypass
+the SDK-managed fetch observers; resource-timing records for exact configuration URLs are also
+excluded from distribution pipelines. Active URLs and at most 256 recent destinations are retained
+realm-wide for delayed resource timings. Earlier SDK versions and independently managed
+instrumentations do not consult this resource-timing exclusion; configure their `ignoreUrls` if
+they run alongside this adapter. Application transport wrappers remain the application's responsibility.
+
+The initial download runs automatically only when HTTP is configured. Concurrent manual `sync()`
+downloads coalesce and reject their callers on failure; automatic failures call `onError`. Polling
+stops after three consecutive failures and `resume()` restarts it. `pause()` aborts an active
+download, clears polling, and invalidates queued delivery without reverting committed values.
+`resume()` starts a fresh request after a pause, even with a zero polling interval.
+`shutdown()` performs the same cancellation terminally and removes the event listener. Initialization
+stages the listener and removes it if startup fails before commit; telemetry shutdown also removes it.
 If removal throws, shutdown attempts one bounded retry and still reports the original error.
 
-The channel is not authentication or confidentiality protection. Any script in the same realm can
-observe or forge these events, so do not synchronize secrets.
+Configuration synchronization does not block telemetry startup or `forceFlush()`. A same-realm
+event channel is not an authentication boundary, and `cfgUrl` trust, CORS, and CSP are application
+responsibilities. Do not treat either transport as confidential or use it for secrets.
 
 ## Session and identity
 

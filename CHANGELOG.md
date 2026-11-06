@@ -8,6 +8,9 @@ All notable changes to this package are documented in this file.
 
 - Document ApplicationInsights-JS migration paths, intentional exclusions and current gaps.
   Remove legacy correlation headers from the planned scope and retain W3C propagation.
+- Add opt-in HTTP(S) configuration synchronization through `extensionConfig.AppInsightsCfgSyncPlugin`,
+  with credential-free downloads, bounded polling and requests, local precedence, and cancellation
+  on pause or shutdown.
 
 ## 0.1.0-beta.2 - 2026-11-05
 

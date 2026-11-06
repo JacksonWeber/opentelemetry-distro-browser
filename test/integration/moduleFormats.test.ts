@@ -15,6 +15,7 @@ import {
 } from "@opentelemetry/api";
 import { logs, type LoggerProvider } from "@opentelemetry/api-logs";
 import { resourceFromAttributes } from "@opentelemetry/resources";
+import { getInstrumentations } from "../../src/instrumentation/browserInstrumentation/index.js";
 import { expect, inject, it, vi } from "vitest";
 import {
   useMicrosoftOpenTelemetry,
@@ -44,6 +45,86 @@ interface BrowserBundle {
 interface InstrumentationBundle {
   getInstrumentations(options?: InstrumentationOptions): Promise<BrowserInstrumentation[]>;
 }
+
+it.each(["source", "minified IIFE"])(
+  "downloads trusted HTTP configuration through %s without self-collection",
+  async (kind) => {
+    const script =
+      kind === "source" ? undefined : await loadScript("opentelemetry-browser.iife.min.js");
+    const bundle = kind === "source" ? undefined : getBrowserBundle();
+    if (kind !== "source" && !bundle) throw new Error("Expected browser bundle");
+    const pipeline = createInMemoryPipeline();
+    const url = new URL("/configuration?sampling=0", inject("ingestionEndpoint")).href;
+    const requestHook = vi.fn();
+    const instrumentations = bundle
+      ? await bundle.getInstrumentations({
+          xhr: { enabled: false },
+          fetch: { requestHook },
+          resourceTiming: { enabled: true, initiatorTypes: ["fetch"], forceProcessingAfter: 0 },
+        })
+      : await getInstrumentations({
+          xhr: { enabled: false },
+          fetch: { requestHook },
+          resourceTiming: { enabled: true, initiatorTypes: ["fetch"], forceProcessingAfter: 0 },
+        });
+    const initialize = bundle?.useMicrosoftOpenTelemetry ?? useMicrosoftOpenTelemetry;
+    let handle: MicrosoftOpenTelemetryBrowser | undefined;
+    try {
+      handle = await initialize({
+        ...pipeline.options,
+        instrumentations,
+        pageView: { enabled: false },
+        session: { enabled: false },
+        userContext: { enabled: false },
+        storage: { enabled: false },
+        extensionConfig: { AppInsightsCfgSyncPlugin: { cfgUrl: url, scheduleFetchTimeout: 0 } },
+      });
+      const api = bundle?.trace ?? trace;
+      await handle.configSync!.sync();
+      expect(requestHook).not.toHaveBeenCalled();
+      api.getTracer("http-configuration").startSpan("dropped").end();
+      await handle.forceFlush();
+      expect(pipeline.spanExporter.getFinishedSpans()).toEqual([]);
+      await handle.updateCfg({ samplingPercentage: 100 });
+      await handle.configSync!.sync();
+      api.getTracer("http-configuration").startSpan("local-precedence").end();
+      await handle.forceFlush();
+      expect(pipeline.spanExporter.getFinishedSpans().map((span) => span.name)).toEqual([
+        "local-precedence",
+      ]);
+      // Force delayed resource entries through the observer before checking suppression.
+      const applicationUrl = new URL("/headers", inject("redirectEndpoint")).href;
+      await fetch(applicationUrl);
+      await vi.waitFor(async () => {
+        await handle!.forceFlush();
+        expect(
+          pipeline.logExporter
+            .getFinishedLogRecords()
+            .some((record) => record.attributes["url.full"] === applicationUrl),
+        ).toBe(true);
+      });
+      expect(
+        pipeline.logExporter
+          .getFinishedLogRecords()
+          .some((record) => record.attributes["url.full"] === url),
+      ).toBe(false);
+    } finally {
+      await handle?.shutdown();
+      bundle?.trace.disable();
+      bundle?.logs.disable();
+      bundle?.context.disable();
+      bundle?.propagation.disable();
+      bundle?.diag.disable();
+      trace.disable();
+      logs.disable();
+      context.disable();
+      propagation.disable();
+      diag.disable();
+      script?.remove();
+      delete window.Microsoft;
+    }
+  },
+);
 
 interface AmdDefine {
   (dependencies: string[], factory: (exports: Record<string, unknown>) => void): void;

@@ -51,6 +51,17 @@ export default async function setup(project: TestProject): Promise<() => Promise
       response.writeHead(204).end();
       return;
     }
+    if (request.method === "GET" && request.url?.startsWith("/configuration?")) {
+      const url = new URL(request.url, "http://localhost");
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          enabled: true,
+          config: { samplingPercentage: Number(url.searchParams.get("sampling")) },
+        }),
+      );
+      return;
+    }
     const ingestionMatch = request.url?.match(/^\/ingest\/([^/]+)\/v2\/track$/);
     if (request.method === "POST" && ingestionMatch) {
       try {
