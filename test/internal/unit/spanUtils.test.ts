@@ -2,10 +2,13 @@
 // Licensed under the MIT License.
 
 import { SpanKind, SpanStatusCode } from "@opentelemetry/api";
+import { SDK_INFO } from "@opentelemetry/core";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
+import { ATTR_TELEMETRY_SDK_VERSION } from "@opentelemetry/semantic-conventions";
 import { describe, expect, it } from "vitest";
-import { spanToEnvelope } from "../../../src/exporter/spanUtils.js";
+import { setManagedOperationName } from "../../../src/context/operationName.js";
+import { spanToEnvelope, spanToEnvelopes } from "../../../src/exporter/spanUtils.js";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../../src/shared/constants.js";
 import { AZURE_MONITOR_SAMPLE_RATE } from "../../../src/sampling.js";
 import { TEST_INSTRUMENTATION_KEY as instrumentationKey } from "../../fixtures/azureMonitor.js";
@@ -15,6 +18,126 @@ const spanContext = createSpanContext();
 const parentSpanContext = { ...spanContext, spanId: "0000000000000002" };
 
 describe("Azure Monitor span envelope mapping", () => {
+  it.each([
+    SpanKind.CLIENT,
+    SpanKind.SERVER,
+    SpanKind.CONSUMER,
+    SpanKind.INTERNAL,
+    SpanKind.PRODUCER,
+  ])("sets browser device tags and omits the default envelope version (kind=%i)", (kind) => {
+    const envelope = spanToEnvelope(makeSpan({ kind }), instrumentationKey);
+
+    expect(envelope.tags).toMatchObject({
+      "ai.device.type": "Browser",
+      "ai.device.id": "browser",
+    });
+    expect(envelope).not.toHaveProperty("ver");
+    expect(envelope.data.baseData.ver).toBe(2);
+  });
+
+  it("maps resource OS attributes to the Application Insights client OS tag", () => {
+    const envelope = spanToEnvelope(
+      makeSpan({
+        resource: resourceFromAttributes({
+          "user_agent.os.name": "Windows",
+          "user_agent.os.version": "11",
+        }),
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.tags["ai.device.osVersion"]).toBe("Windows11");
+  });
+
+  it("prefers a complete record OS over the resource OS", () => {
+    const envelope = spanToEnvelope(
+      makeSpan({
+        attributes: {
+          "user_agent.os.name": "Linux",
+          "user_agent.os.version": "6.8",
+        },
+        resource: resourceFromAttributes({
+          "user_agent.os.name": "Windows",
+          "user_agent.os.version": "11",
+        }),
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.tags["ai.device.osVersion"]).toBe("Linux6.8");
+    expect(envelope.data.baseData.properties).toBeUndefined();
+  });
+
+  it("does not combine incomplete record and resource OS values", () => {
+    const envelope = spanToEnvelope(
+      makeSpan({
+        attributes: { "user_agent.os.name": "Linux" },
+        resource: resourceFromAttributes({ "user_agent.os.version": "11" }),
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.tags).not.toHaveProperty("ai.device.osVersion");
+    expect(envelope.data.baseData.properties).toEqual({ "user_agent.os.name": "Linux" });
+  });
+
+  it("maps resource service.version to the Application Insights application version tag", () => {
+    const envelope = spanToEnvelope(
+      makeSpan({
+        resource: resourceFromAttributes({
+          "service.version": "synthetic-release-42",
+          "custom.resource.marker": "not-exported-per-record",
+        }),
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.tags["ai.application.ver"]).toBe("synthetic-release-42");
+    expect(envelope.data.baseData.properties).toBeUndefined();
+  });
+
+  it("bounds the Application Insights application version tag", () => {
+    const envelope = spanToEnvelope(
+      makeSpan({
+        resource: resourceFromAttributes({ "service.version": "v".repeat(1_025) }),
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.tags["ai.application.ver"]).toBe("v".repeat(1_024));
+  });
+
+  it("maps service.version to application context", () => {
+    const envelope = spanToEnvelope(
+      makeSpan({
+        resource: resourceFromAttributes({
+          "service.name": "browser-store",
+          "service.version": "2.4.1",
+        }),
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.tags["ai.application.ver"]).toBe("2.4.1");
+  });
+
+  it("maps the page name captured for an application span to operation context", () => {
+    const span = makeSpan();
+    setManagedOperationName(span, "Products");
+
+    expect(spanToEnvelope(span, instrumentationKey).tags["ai.operation.name"]).toBe("Products");
+    expect(span.attributes).not.toHaveProperty("ai.operation.name");
+  });
+
+  it("bounds the managed operation name for an application span", () => {
+    const span = makeSpan();
+    setManagedOperationName(span, "n".repeat(70_000));
+
+    expect(spanToEnvelope(span, instrumentationKey).tags["ai.operation.name"]).toBe(
+      "n".repeat(1_024),
+    );
+  });
+
   it.each([SpanKind.CLIENT, SpanKind.SERVER, SpanKind.CONSUMER, SpanKind.INTERNAL])(
     "promotes standard session IDs to tags without changing the source span (kind=%i)",
     (kind) => {
@@ -41,6 +164,33 @@ describe("Azure Monitor span envelope mapping", () => {
     },
   );
 
+  it.each([undefined, "", 0, false, ["invalid"], "record-session"])(
+    "prefers a valid record session ID over resource context (record=%j)",
+    (id) => {
+      const span = makeSpan({
+        attributes: { "session.id": id },
+        resource: resourceFromAttributes({ "session.id": "resource-session" }),
+      });
+      const envelope = spanToEnvelope(span, instrumentationKey);
+      expect(envelope.tags["ai.session.id"]).toBe(
+        id === "record-session" ? id : "resource-session",
+      );
+      expect(span.attributes["session.id"]).toEqual(id);
+      expect(span.resource.attributes["session.id"]).toBe("resource-session");
+    },
+  );
+
+  it.each([undefined, "", 0, false, ["invalid"]])(
+    "omits invalid resource session tags (resource=%j)",
+    (id) => {
+      const envelope = spanToEnvelope(
+        makeSpan({ resource: resourceFromAttributes({ "session.id": id }) }),
+        instrumentationKey,
+      );
+      expect(envelope.tags).not.toHaveProperty("ai.session.id");
+    },
+  );
+
   it("maps an HTTP client span to RemoteDependencyData", () => {
     const envelope = spanToEnvelope(
       makeSpan({
@@ -64,14 +214,15 @@ describe("Azure Monitor span envelope mapping", () => {
       name: "Microsoft.ApplicationInsights.RemoteDependency",
       time: "2025-01-01T00:00:00.000Z",
       iKey: instrumentationKey,
-      sampleRate: 100,
+      sampleRate: undefined,
       tags: {
-        "ai.internal.sdkVersion": `mot${OPENTELEMETRY_BROWSER_VERSION}`,
+        "ai.internal.sdkVersion": `browser:otel${SDK_INFO[ATTR_TELEMETRY_SDK_VERSION]}:mot${OPENTELEMETRY_BROWSER_VERSION}`,
+        "ai.device.type": "Browser",
+        "ai.device.id": "browser",
         "ai.operation.id": spanContext.traceId,
         "ai.operation.parentId": parentSpanContext.spanId,
         "ai.cloud.role": "browser-store",
       },
-      ver: 1,
       data: {
         baseType: "RemoteDependencyData",
         baseData: {
@@ -89,6 +240,212 @@ describe("Azure Monitor span envelope mapping", () => {
         },
       },
     });
+  });
+
+  it("maps parented internal spans to InProc dependencies", () => {
+    const envelope = spanToEnvelope(
+      makeSpan({
+        kind: SpanKind.INTERNAL,
+        name: "checkout.validate-cart",
+        parentSpanContext,
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.data.baseData).toMatchObject({ type: "InProc" });
+  });
+
+  it("leaves root internal spans as generic dependencies", () => {
+    const envelope = spanToEnvelope(
+      makeSpan({
+        kind: SpanKind.INTERNAL,
+        name: "checkout.validate-cart",
+        parentSpanContext: undefined,
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.data.baseData).toMatchObject({ type: "Dependency" });
+  });
+
+  it("classifies parented internal HTTP spans as HTTP dependencies", () => {
+    const envelope = spanToEnvelope(
+      makeSpan({
+        kind: SpanKind.INTERNAL,
+        parentSpanContext,
+        attributes: {
+          "http.request.method": "GET",
+          "url.full": "https://example.test/items",
+        },
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.data.baseData).toMatchObject({ type: "Http" });
+  });
+
+  it("does not split surrogate pairs in span and span-event names", () => {
+    const envelopes = spanToEnvelopes(
+      makeSpan({
+        name: `${"s".repeat(1_023)}\u{1f600}`,
+        events: [
+          {
+            name: `${"e".repeat(32_767)}\u{1f600}`,
+            time: [1_735_689_602, 0],
+            droppedAttributesCount: 0,
+          },
+        ],
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelopes[0].data.baseData).toMatchObject({ name: "s".repeat(1_023) });
+    expect(envelopes[1].data.baseData).toMatchObject({ message: "e".repeat(32_767) });
+  });
+
+  it("maps span events to envelopes parented to the span", () => {
+    const span = makeSpan({
+      spanContext: () => spanContext,
+      attributes: { "session.id": "session-1" },
+      events: [
+        {
+          name: "exception",
+          time: [1_735_689_601, 0],
+          attributes: {
+            "exception.type": "Error",
+            "exception.message": "boom",
+            "exception.stacktrace":
+              "Error: boom\n    at checkout (https://example.test/app.js:1:2)",
+          },
+          droppedAttributesCount: 0,
+        },
+        {
+          name: "checkout.step",
+          time: [1_735_689_602, 0],
+          attributes: { phase: "validate", attempt: 2 },
+          droppedAttributesCount: 0,
+        },
+      ],
+    });
+    setManagedOperationName(span, "Checkout");
+    const envelopes = spanToEnvelopes(span, instrumentationKey);
+
+    expect(envelopes).toHaveLength(3);
+    expect(envelopes[1]).toMatchObject({
+      name: "Microsoft.ApplicationInsights.Exception",
+      tags: {
+        "ai.operation.id": spanContext.traceId,
+        "ai.operation.parentId": spanContext.spanId,
+        "ai.operation.name": "Checkout",
+        "ai.session.id": "session-1",
+      },
+      data: {
+        baseType: "ExceptionData",
+        baseData: { exceptions: [{ typeName: "Error", message: "boom" }] },
+      },
+    });
+    expect(envelopes[2]).toMatchObject({
+      name: "Microsoft.ApplicationInsights.Message",
+      tags: {
+        "ai.operation.id": spanContext.traceId,
+        "ai.operation.parentId": spanContext.spanId,
+        "ai.operation.name": "Checkout",
+        "ai.session.id": "session-1",
+      },
+      data: {
+        baseType: "MessageData",
+        baseData: {
+          message: "checkout.step",
+          properties: { phase: "validate" },
+          measurements: { attempt: 2 },
+        },
+      },
+    });
+  });
+
+  it("preserves span event OS attributes that are not promoted to tags", () => {
+    const envelopes = spanToEnvelopes(
+      makeSpan({
+        events: [
+          {
+            name: "checkout.step",
+            time: [1_735_689_602, 0],
+            attributes: {
+              "user_agent.os.name": "Linux",
+              "user_agent.os.version": "6.8",
+            },
+            droppedAttributesCount: 0,
+          },
+        ],
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelopes[1].tags).not.toHaveProperty("ai.device.osVersion");
+    expect(envelopes[1].data.baseData.properties).toEqual({
+      "user_agent.os.name": "Linux",
+      "user_agent.os.version": "6.8",
+    });
+  });
+
+  it("prefers a span event session ID over the span session ID", () => {
+    const envelopes = spanToEnvelopes(
+      makeSpan({
+        attributes: { "session.id": "span-session" },
+        events: [
+          {
+            name: "checkout.step",
+            time: [1_735_689_602, 0],
+            attributes: { "session.id": "event-session" },
+            droppedAttributesCount: 0,
+          },
+        ],
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelopes[1].tags["ai.session.id"]).toBe("event-session");
+    expect(envelopes[1].data.baseData.properties).toBeUndefined();
+  });
+
+  it("keeps the span session ID when the span event session ID is empty", () => {
+    const envelopes = spanToEnvelopes(
+      makeSpan({
+        attributes: { "session.id": "span-session" },
+        events: [
+          {
+            name: "checkout.step",
+            time: [1_735_689_602, 0],
+            attributes: { "session.id": "" },
+            droppedAttributesCount: 0,
+          },
+        ],
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelopes[1].tags["ai.session.id"]).toBe("span-session");
+    expect(envelopes[1].data.baseData.properties).toBeUndefined();
+  });
+
+  it("omits the session tag when both span event and span session IDs are empty", () => {
+    const envelopes = spanToEnvelopes(
+      makeSpan({
+        attributes: { "session.id": "" },
+        events: [
+          {
+            name: "checkout.step",
+            time: [1_735_689_602, 0],
+            attributes: { "session.id": "" },
+            droppedAttributesCount: 0,
+          },
+        ],
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelopes[1].tags).not.toHaveProperty("ai.session.id");
+    expect(envelopes[1].data.baseData.properties).toBeUndefined();
   });
 
   it.each(["user.id", "enduser.id"])(
@@ -233,22 +590,27 @@ describe("Azure Monitor span envelope mapping", () => {
     expect(envelope.data.baseData.duration).toBe("1.01:01:01.0010000");
   });
 
-  it("maps the reserved sample rate without exporting it as a custom measurement", () => {
-    const envelope = spanToEnvelope(
-      makeSpan({ attributes: { [AZURE_MONITOR_SAMPLE_RATE]: 25 } }),
-      instrumentationKey,
-    );
+  it.each([0.000001, 25, 99.5])(
+    "maps the reserved sample rate %s without exporting it as a custom measurement",
+    (sampleRate) => {
+      const envelope = spanToEnvelope(
+        makeSpan({ attributes: { [AZURE_MONITOR_SAMPLE_RATE]: sampleRate } }),
+        instrumentationKey,
+      );
 
-    expect(envelope.sampleRate).toBe(25);
-    expect(envelope.data.baseData.measurements).toBeUndefined();
-  });
+      expect(envelope.sampleRate).toBe(sampleRate);
+      expect(envelope.data.baseData.measurements).toBeUndefined();
+    },
+  );
 
-  it.each([undefined, 0])(
-    "defaults standalone span conversion with sample rate %s to full sampling",
+  it.each([undefined, 0, 100, -1, 101, NaN, Infinity, "25"])(
+    "omits full sampling from standalone span conversion with sample rate %s",
     (sampleRate) => {
       const attributes =
         sampleRate === undefined ? {} : { [AZURE_MONITOR_SAMPLE_RATE]: sampleRate };
-      expect(spanToEnvelope(makeSpan({ attributes }), instrumentationKey).sampleRate).toBe(100);
+      expect(
+        JSON.parse(JSON.stringify(spanToEnvelope(makeSpan({ attributes }), instrumentationKey))),
+      ).not.toHaveProperty("sampleRate");
     },
   );
 });

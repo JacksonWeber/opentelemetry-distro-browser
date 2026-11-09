@@ -7,6 +7,7 @@ import { AzureMonitorLogRecordExporter } from "../../src/exporter/log.js";
 import { Sender } from "../../src/exporter/sender.js";
 import { AzureMonitorSpanExporter } from "../../src/exporter/trace.js";
 import { createReadableLogRecord, createReadableSpan } from "../fixtures/telemetry.js";
+import { withoutSdkStats } from "../fixtures/sdkStats.js";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -19,7 +20,7 @@ it.each(["forceFlush", "shutdown"] as const)(
     const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => {
       return new Response(null, { status: 503, headers: { "retry-after": "86400" } });
     });
-    vi.stubGlobal("fetch", fetch);
+    vi.stubGlobal("fetch", withoutSdkStats(fetch));
     const options = {
       connectionString:
         "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example.test",

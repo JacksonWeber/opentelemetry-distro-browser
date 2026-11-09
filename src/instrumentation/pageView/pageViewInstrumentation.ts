@@ -18,7 +18,9 @@ import { OPENTELEMETRY_BROWSER_VERSION } from "../../shared/constants.js";
 import { markPageContext } from "../../shared/pageOperationContext.js";
 import { createPageViewContext, generatePageViewId } from "./pageViewContext.js";
 import { readServerTraceContext } from "./serverTraceContext.js";
-import { redactUrl } from "./urlRedaction.js";
+import { redactUrl } from "../../shared/urlRedaction.js";
+import { createKeyValueStorage } from "../../storage/keyValueStorage.js";
+import { PageVisitTime } from "./pageVisitTime.js";
 import {
   ATTR_PAGE_VIEW_DURATION,
   ATTR_PAGE_VIEW_DURATION_SOURCE,
@@ -100,6 +102,11 @@ interface PendingPageView {
   idleId?: number;
 }
 
+interface ResolvedPageName {
+  readonly name: string;
+  readonly source: PageViewNameSource;
+}
+
 /**
  * Minimal structural view of the experimental Navigation API, typed locally because it is absent
  * from the DOM library and must not be reached through an upstream internal path.
@@ -146,6 +153,7 @@ type RequestIdleCallbackLike = (
  * @public
  */
 export class PageViewInstrumentation extends InstrumentationBase<InternalPageViewInstrumentationConfig> {
+  // Not `#private`: sharedBrowserPatches reads these to detect an already active instance.
   private enabledState = false;
   private historyPatched = false;
   /**
@@ -153,32 +161,30 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
    * document loads once, so re-enabling must not emit a second record carrying the same
    * `PerformanceNavigationTiming` duration.
    */
-  private documentLoadReported = false;
-  private readonly context: PageViewContext;
-  private readonly ownsContext: boolean;
+  #documentLoadReported = false;
+  readonly #context: PageViewContext;
+  readonly #ownsContext: boolean;
 
-  private pending: PendingPageView | undefined;
-  private operation: SpanContext | undefined;
-  private operationUrl = "";
-  private pageViewIndex = 0;
-  private lastUrl = "";
+  #pending: PendingPageView | undefined;
+  #operation: SpanContext | undefined;
+  #operationUrl = "";
+  #operationName: ResolvedPageName | undefined;
+  #resolvingOperationName = false;
+  #pageViewIndex = 0;
+  #lastUrl = "";
   /**
    * `history.length` as of the last navigation this instrumentation observed. A `popstate` that
    * arrives with a higher count appended an entry and is therefore a push, not a traversal.
    */
-  private historyLength = 0;
-  private explicitName: string | undefined;
+  #historyLength = 0;
+  #explicitName: string | undefined;
+  #visit: PageVisitTime | undefined;
+  #startupPending = false;
 
-  private onLoad: (() => void) | undefined;
-  private onPopState: (() => void) | undefined;
-  private onHashChange: (() => void) | undefined;
-  private onPageHide: (() => void) | undefined;
-  private onPageShow: ((event: Event) => void) | undefined;
-  private onCurrentEntryChange: ((event: Event) => void) | undefined;
-  private ownPushState: unknown;
-  private ownReplaceState: unknown;
-  /** The target the `currententrychange` listener was attached to, so it can always be removed. */
-  private navigationApiTarget: NavigationApiLike | undefined;
+  /** Aborted by `disable()` to remove every listener added while enabled. */
+  #listeners: AbortController | undefined;
+  #ownPushState: unknown;
+  #ownReplaceState: unknown;
 
   public constructor(
     config: InternalPageViewInstrumentationConfig = {},
@@ -193,8 +199,8 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       ...config,
       enabled: false,
     });
-    this.ownsContext = config.pageViewContext === undefined;
-    this.context = config.pageViewContext ?? createPageViewContext();
+    this.#ownsContext = config.pageViewContext === undefined;
+    this.#context = config.pageViewContext ?? createPageViewContext();
     this.setConfig(config);
     if (this.getConfig().enabled) {
       this.enable();
@@ -210,7 +216,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
    * consumer cannot mint or mutate page views.
    */
   public get pageViews(): PageViewSource {
-    return this.context;
+    return this.#context;
   }
 
   /**
@@ -218,7 +224,21 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
    * URL changes are checked here so callback ordering cannot assign the previous page's ID.
    */
   public getOperationContext(): SpanContext | undefined {
-    return this.enabledState ? this.currentOperation() : undefined;
+    return this.enabledState ? this.#currentOperation() : undefined;
+  }
+
+  /** Safe name resolved with the current operation before its page view is published. */
+  public getOperationName(traceId: string): string | undefined {
+    const operation = this.getOperationContext();
+    if (operation?.traceId !== traceId) return undefined;
+    const published = this.#context.getCurrentPageView();
+    const resolved =
+      published?.id === traceId
+        ? { name: published.name, source: published.nameSource }
+        : this.#operationName;
+    return resolved?.source === NAME_SOURCE_EXPLICIT || resolved?.source === NAME_SOURCE_ROUTE
+      ? resolved.name
+      : undefined;
   }
 
   /**
@@ -227,27 +247,67 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
    * @internal
    */
   public settleForUnload(): void {
-    this.settle(DURATION_SOURCE_PAGE_HIDE);
+    this.#settle(DURATION_SOURCE_PAGE_HIDE);
   }
 
-  private currentOperation(): SpanContext {
-    const url = this.getNavigationApi()?.currentEntry?.url ?? location.href;
+  /** @internal */
+  public beginStartup(): void {
+    this.#startupPending = true;
+    this.#visit?.beginStartup();
+  }
+
+  /** @internal */
+  public commitStartup(): void {
+    this.#startupPending = false;
+    this.#visit?.commitStartup();
+  }
+
+  /** @internal */
+  public rollbackStartup(): void {
+    this.#startupPending = false;
+    this.#visit?.rollbackStartup();
+  }
+
+  #currentOperation(): SpanContext {
+    const url = this.#getNavigationApi()?.currentEntry?.url ?? location.href;
     const shared = this.getConfig().sharedOperation?.();
     if (shared) {
       // Kept for this URL, so the page view in flight keeps its ID after the source shuts down.
-      this.operation = shared;
-      this.operationUrl = url;
-    } else if (!this.operation || this.operationUrl !== url) {
-      const traceId = this.mintId(this.getConfig().generatePageViewId);
-      this.operation = {
-        traceId,
-        spanId: new RandomIdGenerator().generateSpanId(),
-        traceFlags: this.isTraceSampled(traceId) ? TraceFlags.SAMPLED : TraceFlags.NONE,
-      };
-      markPageContext(this.operation);
-      this.operationUrl = url;
+      if (this.#operation !== shared || this.#operationUrl !== url) {
+        this.#operationName = undefined;
+      }
+      this.#operation = shared;
+      this.#operationUrl = url;
+    } else if (!this.#operation || this.#operationUrl !== url) {
+      const config = this.getConfig();
+      this.#operation =
+        this.#pageViewIndex === 0 && config.useServerTraceContext !== false
+          ? readServerTraceContext(this.#getNavigationTiming())
+          : undefined;
+      if (!this.#operation) {
+        const traceId = this.#mintId(config.generatePageViewId);
+        this.#operation = {
+          traceId,
+          spanId: new RandomIdGenerator().generateSpanId(),
+          traceFlags: this.isTraceSampled(traceId) ? TraceFlags.SAMPLED : TraceFlags.NONE,
+        };
+        markPageContext(this.#operation);
+      }
+      this.#operationUrl = url;
+      this.#operationName = undefined;
+      this.#operationName = this.#resolveOperationName();
     }
-    return this.operation;
+    return this.#operation;
+  }
+
+  #resolveOperationName(): ResolvedPageName | undefined {
+    if (this.#resolvingOperationName) return undefined;
+    this.#resolvingOperationName = true;
+    try {
+      return this.#resolveName();
+    } finally {
+      this.#resolvingOperationName = false;
+    }
   }
 
   /**
@@ -262,15 +322,16 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
    * @param name - The page name, or undefined to clear it.
    */
   public setPageName(name: string | undefined): void {
-    this.explicitName = name;
-    const pending = this.pending;
+    this.#explicitName = name;
+    const pending = this.#pending;
     if (pending && name !== undefined && pending.pageView.name !== name) {
       // Mutated in place: callbacks already scheduled for this navigation hold `pending` by
       // identity, so replacing it would strand both the settle path and the cap timer.
       const updated: PageView = { ...pending.pageView, name, nameSource: NAME_SOURCE_EXPLICIT };
       pending.pageView = updated;
       // Republish so a correlation consumer sees the corrected name before the record is emitted.
-      this.context.setCurrentPageView(updated);
+      this.#context.setCurrentPageView(updated);
+      this.#visit?.update(updated);
     }
   }
 
@@ -285,67 +346,95 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     }
     const active = trace.getSpanContext(this.initialContext ?? context.active());
     this.initialContext = undefined;
-    const initial =
-      (active && isSpanContextValid(active) ? active : undefined) ??
-      this.getConfig().sharedOperation?.() ??
-      (this.pageViewIndex === 0 && this.getConfig().useServerTraceContext !== false
-        ? readServerTraceContext()
-        : undefined);
-    if (initial) {
-      this.operation = initial;
-      this.operationUrl = this.getNavigationApi()?.currentEntry?.url ?? location.href;
+    if (active && isSpanContextValid(active)) {
+      this.#operation = active;
+      this.#operationUrl = this.#getNavigationApi()?.currentEntry?.url ?? location.href;
     }
     this.enabledState = true;
-    this.lastUrl = location.href;
-    this.historyLength = history.length;
+    const config = this.getConfig();
+    if (config.autoTrackPageVisitTime) {
+      this.#visit = new PageVisitTime(
+        config.visitStorage === undefined
+          ? createKeyValueStorage("sessionStorage", "Page visit storage unavailable; using memory.")
+          : config.visitStorage,
+        config.visitStorageKey ?? "otel.pageVisit",
+        (previous, duration) => {
+          const operation: SpanContext = {
+            traceId: previous.id,
+            spanId: new RandomIdGenerator().generateSpanId(),
+            traceFlags: this.isTraceSampled(previous.id) ? TraceFlags.SAMPLED : TraceFlags.NONE,
+          };
+          markPageContext(operation);
+          this.#emitLogRecord({
+            eventName: "browser.page_visit",
+            timestamp: Date.now(),
+            severityNumber: SEVERITY_NUMBER_INFO,
+            context: trace.setSpanContext(ROOT_CONTEXT, operation),
+            attributes: {
+              [ATTR_PAGE_VIEW_ID]: previous.id,
+              [ATTR_PAGE_VIEW_NAME]: previous.name,
+              ...(previous.url ? { [ATTR_URL_FULL]: previous.url } : {}),
+              "browser.page_visit.duration": duration,
+            },
+          });
+        },
+        // Only storage is untrusted. In-memory page URLs already passed both redactors.
+        // Resolve pathname-only sanitizer output before built-in absolute-URL redaction.
+        (url) =>
+          this.#guard(
+            () => this.#sanitize(new URL(url, location.href).href),
+            "Invalid stored page visit URL; dropping the URL",
+          ) ?? "",
+      );
+      if (this.#startupPending) this.#visit.beginStartup();
+    }
+    this.#lastUrl = location.href;
+    this.#historyLength = history.length;
 
-    const navigationApi = this.getNavigationApi();
+    const listeners = (this.#listeners = new AbortController());
+    const on = (target: EventTarget, type: string, listener: (event: Event) => void): void => {
+      target.addEventListener(type, listener, { signal: listeners.signal });
+    };
+    const navigationApi = this.#getNavigationApi();
     if (navigationApi) {
-      this.onCurrentEntryChange = (event: Event): void => {
-        this.handleSoftNavigation("currententrychange", event);
-      };
-      // Remember the target: config is publicly replaceable through `setConfig`, so re-deriving
-      // it in `disable()` could return undefined and strand the listener.
-      this.navigationApiTarget = navigationApi;
-      navigationApi.addEventListener("currententrychange", this.onCurrentEntryChange);
+      on(navigationApi, "currententrychange", (event) => {
+        this.#handleSoftNavigation("currententrychange", event);
+      });
     } else {
       if (!this.historyPatched) {
-        this._wrap(history, "pushState", this.patchHistoryMethod("pushState"));
-        this._wrap(history, "replaceState", this.patchHistoryMethod("replaceState"));
+        this._wrap(history, "pushState", this.#patchHistoryMethod("pushState"));
+        this._wrap(history, "replaceState", this.#patchHistoryMethod("replaceState"));
         // Remember the exact functions installed, so `disable()` can tell whether it is still the
         // outermost wrapper before unwrapping.
-        this.ownPushState = Reflect.get(history, "pushState");
-        this.ownReplaceState = Reflect.get(history, "replaceState");
+        this.#ownPushState = Reflect.get(history, "pushState");
+        this.#ownReplaceState = Reflect.get(history, "replaceState");
         this.historyPatched = true;
       }
-      this.onPopState = (): void => {
-        this.handleSoftNavigation("popstate");
-      };
-      window.addEventListener("popstate", this.onPopState);
-      this.onHashChange = (): void => {
-        this.handleSoftNavigation("hashchange");
-      };
-      window.addEventListener("hashchange", this.onHashChange);
+      on(window, "popstate", () => {
+        this.#handleSoftNavigation("popstate");
+      });
+      on(window, "hashchange", () => {
+        this.#handleSoftNavigation("hashchange");
+      });
     }
 
     // A soft navigation that never settles would otherwise be lost when the user leaves.
-    this.onPageHide = (): void => {
+    on(window, "pagehide", () => {
       this.settleForUnload();
-    };
-    window.addEventListener("pagehide", this.onPageHide);
+      this.#visit?.suspend();
+    });
 
     // A restore from the back/forward cache reuses the document, so nothing else here fires: no
     // load event, no history entry change. Without this the user is looking at a page that
     // produced no page view, and every signal they generate is stamped with the correlation id of
     // the visit they made before they navigated away.
-    this.onPageShow = (event: Event): void => {
+    on(window, "pageshow", (event) => {
       if ((event as PageTransitionEvent).persisted) {
-        this.handleBackForwardRestore();
+        this.#handleBackForwardRestore();
       }
-    };
-    window.addEventListener("pageshow", this.onPageShow);
+    });
 
-    this.startHardNavigation();
+    this.#startHardNavigation();
   }
 
   public override disable(): void {
@@ -353,36 +442,13 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       return;
     }
     this.enabledState = false;
-    this.operation = undefined;
+    this.#visit?.stop();
+    this.#visit = undefined;
+    this.#operation = undefined;
+    this.#operationName = undefined;
 
-    if (this.onLoad) {
-      window.removeEventListener("load", this.onLoad);
-      this.onLoad = undefined;
-    }
-    if (this.onPopState) {
-      window.removeEventListener("popstate", this.onPopState);
-      this.onPopState = undefined;
-    }
-    if (this.onHashChange) {
-      window.removeEventListener("hashchange", this.onHashChange);
-      this.onHashChange = undefined;
-    }
-    if (this.onPageHide) {
-      window.removeEventListener("pagehide", this.onPageHide);
-      this.onPageHide = undefined;
-    }
-    if (this.onPageShow) {
-      window.removeEventListener("pageshow", this.onPageShow);
-      this.onPageShow = undefined;
-    }
-    if (this.onCurrentEntryChange) {
-      this.navigationApiTarget?.removeEventListener(
-        "currententrychange",
-        this.onCurrentEntryChange,
-      );
-      this.onCurrentEntryChange = undefined;
-      this.navigationApiTarget = undefined;
-    }
+    this.#listeners?.abort();
+    this.#listeners = undefined;
     if (this.historyPatched) {
       // Unwrap only while this instance is still the outermost wrapper. `history` is global: if
       // another instance wrapped after this one, unwrapping here restores the function this
@@ -391,37 +457,37 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       // through once disabled, and `historyPatched` stays set so a re-enable does not stack a
       // second wrapper on top.
       const outermost =
-        Reflect.get(history, "pushState") === this.ownPushState &&
-        Reflect.get(history, "replaceState") === this.ownReplaceState;
+        Reflect.get(history, "pushState") === this.#ownPushState &&
+        Reflect.get(history, "replaceState") === this.#ownReplaceState;
       if (outermost) {
         this._unwrap(history, "pushState");
         this._unwrap(history, "replaceState");
-        this.ownPushState = undefined;
-        this.ownReplaceState = undefined;
+        this.#ownPushState = undefined;
+        this.#ownReplaceState = undefined;
         this.historyPatched = false;
       }
     }
 
     // Drop rather than emit. Distribution shutdown disables instrumentations before providers, and
     // a truncated record produced by shutdown is noise rather than signal.
-    this.clearPending();
-    if (this.ownsContext) {
-      this.context.clear();
+    this.#clearPending();
+    if (this.#ownsContext) {
+      this.#context.clear();
     }
     // `pageViewIndex` is not reset: it is an ordinal within the document's lifetime, and
     // restarting it would make a re-enabled instrumentation emit indices that collide with the
     // ones it already reported.
   }
 
-  private startHardNavigation(): void {
-    if (this.documentLoadReported) {
+  #startHardNavigation(): void {
+    if (this.#documentLoadReported) {
       // Re-enabled within the same document. The load happened once and was already reported, so
       // there is nothing to observe until the next route change.
       return;
     }
-    const timing = this.getNavigationTiming();
-    const documentNavigation = this.begin({
-      navigationType: this.mapHardNavigationType(timing?.type),
+    const timing = this.#getNavigationTiming();
+    const documentNavigation = this.#begin({
+      navigationType: this.#mapHardNavigationType(timing?.type),
       sameDocument: false,
       referrer: document.referrer,
       // Anchor to the navigation start the browser reports, not to when the SDK initialized.
@@ -430,18 +496,21 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     });
 
     if (document.readyState === "complete") {
-      this.scheduleMacrotask(() => {
-        this.finalizeHardNavigation(documentNavigation);
+      this.#scheduleMacrotask(() => {
+        this.#finalizeHardNavigation(documentNavigation);
       }, documentNavigation);
       return;
     }
-    this.onLoad = (): void => {
-      // `loadEventEnd` is populated only after the load event finishes dispatching.
-      this.scheduleMacrotask(() => {
-        this.finalizeHardNavigation(documentNavigation);
-      }, documentNavigation);
-    };
-    window.addEventListener("load", this.onLoad, { once: true });
+    window.addEventListener(
+      "load",
+      () => {
+        // `loadEventEnd` is populated only after the load event finishes dispatching.
+        this.#scheduleMacrotask(() => {
+          this.#finalizeHardNavigation(documentNavigation);
+        }, documentNavigation);
+      },
+      { once: true, signal: this.#listeners?.signal },
+    );
   }
 
   /**
@@ -451,24 +520,24 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
    * before `load` fires, and that one has no document load duration, so anything but the original
    * navigation is left alone for its own settle path to finish.
    */
-  private finalizeHardNavigation(target: PendingPageView): void {
-    if (!this.enabledState || this.pending !== target) {
+  #finalizeHardNavigation(target: PendingPageView): void {
+    if (!this.enabledState || this.#pending !== target) {
       return;
     }
-    const timing = this.getNavigationTiming();
+    const timing = this.#getNavigationTiming();
     if (timing && timing.loadEventEnd > 0) {
-      this.emit(
+      this.#emit(
         target,
         timing.loadEventEnd - timing.startTime,
         DURATION_SOURCE_NAVIGATION_TIMING,
-        this.getNavigationPerformanceAttributes(timing) ?? {},
+        this.#getNavigationPerformanceAttributes(timing) ?? {},
       );
       return;
     }
-    this.emit(target, performance.now() - target.startedAt, DURATION_SOURCE_DOCUMENT_LOAD);
+    this.#emit(target, performance.now() - target.startedAt, DURATION_SOURCE_DOCUMENT_LOAD);
   }
 
-  private getNavigationPerformanceAttributes(
+  #getNavigationPerformanceAttributes(
     timing: PerformanceNavigationTiming,
   ): Record<string, number> | undefined {
     const boundaries = [
@@ -500,15 +569,12 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     };
   }
 
-  private getNavigationTiming(): PerformanceNavigationTiming | undefined {
-    if (typeof performance?.getEntriesByType !== "function") {
-      return undefined;
-    }
-    const [entry] = performance.getEntriesByType("navigation");
-    return entry as PerformanceNavigationTiming | undefined;
+  #getNavigationTiming(): PerformanceNavigationTiming | undefined {
+    return performance.getEntriesByType?.("navigation")[0] as
+      PerformanceNavigationTiming | undefined;
   }
 
-  private mapHardNavigationType(type: string | undefined): PageViewNavigationType {
+  #mapHardNavigationType(type: string | undefined): PageViewNavigationType {
     switch (type) {
       case "reload":
         return PAGE_VIEW_TYPE_RELOAD;
@@ -522,14 +588,14 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     }
   }
 
-  private getNavigationApi(): NavigationApiLike | undefined {
+  #getNavigationApi(): NavigationApiLike | undefined {
     if (!this.getConfig().useNavigationApiIfAvailable) {
       return undefined;
     }
     return (globalThis as { navigation?: NavigationApiLike }).navigation;
   }
 
-  private patchHistoryMethod(
+  #patchHistoryMethod(
     trigger: "pushState" | "replaceState",
   ): (original: History["pushState"]) => History["pushState"] {
     // eslint-disable-next-line @typescript-eslint/no-this-alias
@@ -546,45 +612,45 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
         original.apply(this, args);
         // Keep the entry count in step even when the call does not start a page view, so a later
         // traversal is not mistaken for a push against a stale count.
-        instrumentation.historyLength = history.length;
-        if (location.href !== instrumentation.lastUrl) {
-          instrumentation.handleSoftNavigation(trigger);
+        instrumentation.#historyLength = history.length;
+        if (location.href !== instrumentation.#lastUrl) {
+          instrumentation.#handleSoftNavigation(trigger);
         }
       };
     };
   }
 
-  private handleSoftNavigation(
+  #handleSoftNavigation(
     trigger: SoftNavigationTrigger,
     event?: NavigationCurrentEntryChangeEventLike,
   ): void {
     if (!this.enabledState) {
       return;
     }
-    const previousUrl = this.lastUrl;
+    const previousUrl = this.#lastUrl;
     // Read before anything else: the count is only meaningful relative to the last navigation.
-    const historyGrew = history.length > this.historyLength;
-    this.historyLength = history.length;
+    const historyGrew = history.length > this.#historyLength;
+    this.#historyLength = history.length;
     const currentUrl =
       trigger === "currententrychange"
-        ? (this.getNavigationApi()?.currentEntry?.url ?? location.href)
+        ? (this.#getNavigationApi()?.currentEntry?.url ?? location.href)
         : location.href;
     if (currentUrl === previousUrl) {
       return;
     }
 
     // Close out whatever was in flight first, so exactly one record is emitted per navigation.
-    this.settle(DURATION_SOURCE_SOFT_INTERRUPTED);
+    this.#settle(DURATION_SOURCE_SOFT_INTERRUPTED);
 
-    this.begin({
-      navigationType: this.mapSoftNavigationType(trigger, historyGrew, event),
+    this.#begin({
+      navigationType: this.#mapSoftNavigationType(trigger, historyGrew, event),
       sameDocument: true,
       referrer: previousUrl,
       url: currentUrl,
       startTimeUnixMs: Date.now(),
       startedAt: performance.now(),
     });
-    this.scheduleSoftSettle();
+    this.#scheduleSoftSettle();
   }
 
   /**
@@ -596,12 +662,12 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
    * of the visit that preceded it. `documentLoadReported` stays set, because the load itself
    * happened once and was already reported.
    */
-  private handleBackForwardRestore(): void {
+  #handleBackForwardRestore(): void {
     // The page was hidden on the way into the cache, which already settled anything in flight.
-    this.settle(DURATION_SOURCE_PAGE_HIDE);
-    this.operation = undefined;
+    this.#settle(DURATION_SOURCE_PAGE_HIDE);
+    this.#operation = undefined;
 
-    this.begin({
+    this.#begin({
       navigationType: PAGE_VIEW_TYPE_BACK_FORWARD,
       sameDocument: false,
       // No referrer. `document.referrer` is frozen at the document's original load, so on a
@@ -615,10 +681,10 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       startedAt: performance.now(),
     });
     // No load event fires on a restore, so the observed settle heuristic supplies the duration.
-    this.scheduleSoftSettle(DURATION_SOURCE_BFCACHE_RESTORE, DURATION_SOURCE_BFCACHE_CAPPED);
+    this.#scheduleSoftSettle(DURATION_SOURCE_BFCACHE_RESTORE, DURATION_SOURCE_BFCACHE_CAPPED);
   }
 
-  private mapSoftNavigationType(
+  #mapSoftNavigationType(
     trigger: SoftNavigationTrigger,
     historyGrew: boolean,
     event?: NavigationCurrentEntryChangeEventLike,
@@ -661,60 +727,60 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
    * @param settledSource - Duration source to report when the settle heuristic completes.
    * @param cappedSource - Duration source to report when the cap timer fires first.
    */
-  private scheduleSoftSettle(
+  #scheduleSoftSettle(
     settledSource: PageViewDurationSource = DURATION_SOURCE_SOFT_SETTLED,
     cappedSource: PageViewDurationSource = DURATION_SOURCE_SOFT_CAPPED,
   ): void {
-    const pending = this.pending;
+    const pending = this.#pending;
     if (!pending) {
       return;
     }
 
     const timeout = this.getConfig().softNavigationSettleTimeoutMs ?? DEFAULT_SETTLE_TIMEOUT_MS;
     pending.capTimerId = window.setTimeout(() => {
-      this.emit(pending, timeout, cappedSource);
+      this.#emit(pending, timeout, cappedSource);
     }, timeout);
 
     const afterPaint = (): void => {
-      if (this.pending !== pending) {
+      if (this.#pending !== pending) {
         return;
       }
-      this.whenIdle(() => {
-        this.emit(pending, performance.now() - pending.startedAt, settledSource);
+      this.#whenIdle(() => {
+        this.#emit(pending, performance.now() - pending.startedAt, settledSource);
       }, pending);
     };
 
     if (typeof requestAnimationFrame === "function") {
       pending.frameId = requestAnimationFrame(() => {
-        if (this.pending !== pending) return;
+        if (this.#pending !== pending) return;
         pending.frameId = requestAnimationFrame(() => {
           pending.frameId = undefined;
           afterPaint();
         });
       });
     } else {
-      this.scheduleMacrotask(afterPaint);
+      this.#scheduleMacrotask(afterPaint);
     }
   }
 
-  private whenIdle(callback: () => void, pending: PendingPageView): void {
+  #whenIdle(callback: () => void, pending: PendingPageView): void {
     const requestIdle = (globalThis as { requestIdleCallback?: RequestIdleCallbackLike })
       .requestIdleCallback;
     if (typeof requestIdle === "function" && typeof cancelIdleCallback === "function") {
       pending.idleId = requestIdle(
         () => {
           pending.idleId = undefined;
-          if (this.pending === pending) callback();
+          if (this.#pending === pending) callback();
         },
         { timeout: IDLE_TIMEOUT_MS },
       );
       return;
     }
-    this.scheduleMacrotask(callback);
+    this.#scheduleMacrotask(callback);
   }
 
-  private scheduleMacrotask(callback: () => void, pending = this.pending): void {
-    if (!pending || this.pending !== pending) return;
+  #scheduleMacrotask(callback: () => void, pending = this.#pending): void {
+    if (!pending || this.#pending !== pending) return;
     pending.taskTimerId = window.setTimeout(() => {
       pending.taskTimerId = undefined;
       callback();
@@ -722,7 +788,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
   }
 
   /** Starts a new page view and publishes it. Returns the pending record callbacks should target. */
-  private begin(input: {
+  #begin(input: {
     navigationType: PageViewNavigationType;
     sameDocument: boolean;
     referrer: string;
@@ -731,26 +797,28 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     startedAt: number;
   }): PendingPageView {
     const rawUrl = input.url ?? location.href;
-    const resolved = this.resolveName();
-    const operation = this.currentOperation();
+    const operation = this.#currentOperation();
+    const resolved = this.#resolveName();
+    this.#operationName = resolved;
 
     const pageView: PageView = {
       id: operation.traceId,
-      index: this.pageViewIndex++,
+      index: this.#pageViewIndex++,
       name: resolved.name,
       nameSource: resolved.source,
-      url: this.sanitize(rawUrl),
-      referrer: input.referrer ? this.sanitize(input.referrer) : "",
+      url: this.#sanitize(rawUrl),
+      referrer: input.referrer ? this.#sanitize(input.referrer) : "",
       navigationType: input.navigationType,
       sameDocument: input.sameDocument,
       startTimeUnixMs: input.startTimeUnixMs,
     };
 
-    this.lastUrl = rawUrl;
+    this.#lastUrl = rawUrl;
     const pending: PendingPageView = { pageView, operation, rawUrl, startedAt: input.startedAt };
-    this.pending = pending;
+    this.#pending = pending;
     // Publish before the record is emitted, so signals produced during the navigation correlate.
-    this.context.setCurrentPageView(pageView);
+    this.#context.setCurrentPageView(pageView);
+    this.#visit?.start(pageView);
     return pending;
   }
 
@@ -765,37 +833,21 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
    * This runs synchronously inside the application's own `history.pushState` call, so it must
    * never propagate.
    */
-  private sanitize(url: string): string {
+  #sanitize(url: string): string {
     const sanitize = this.getConfig().sanitizeUrl;
-    const result = safeExecuteInTheMiddle(
-      () => {
-        const redacted = redactUrl(url, this.getConfig().redactedQueryParams);
-        return sanitize ? sanitize(redacted) : redacted;
-      },
-      (error) => {
-        if (error) {
-          this._diag.error("URL sanitization failed; dropping the URL", error);
-        }
-      },
-      true,
-    );
+    const result = this.#guard(() => {
+      const redacted = redactUrl(url, this.getConfig().redactedQueryParams);
+      return sanitize ? sanitize(redacted) : redacted;
+    }, "URL sanitization failed; dropping the URL");
     return typeof result === "string" ? result : "";
   }
 
   /** Mints a page-view id, falling back to the built-in generator if a supplied one throws. */
-  private mintId(generate: (() => string) | undefined): string {
+  #mintId(generate: (() => string) | undefined): string {
     if (!generate) {
       return generatePageViewId();
     }
-    const result = safeExecuteInTheMiddle(
-      () => generate(),
-      (error) => {
-        if (error) {
-          this._diag.error("generatePageViewId hook failed", error);
-        }
-      },
-      true,
-    );
+    const result = this.#guard(generate, "generatePageViewId hook failed");
     if (typeof result === "string" && isValidTraceId(result)) return result;
     this._diag.error("generatePageViewId must return a valid trace id");
     return generatePageViewId();
@@ -804,23 +856,15 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
   /**
    * Resolves the page name from the first source that produces one.
    */
-  private resolveName(): { name: string; source: PageViewNameSource } {
-    const explicit = this.explicitName;
+  #resolveName(): ResolvedPageName {
+    const explicit = this.#explicitName;
     if (explicit) {
       return { name: explicit, source: NAME_SOURCE_EXPLICIT };
     }
 
     const routeResolver = this.getConfig().routeResolver;
     if (routeResolver) {
-      const route = safeExecuteInTheMiddle(
-        () => routeResolver(),
-        (error) => {
-          if (error) {
-            this._diag.error("routeResolver hook failed", error);
-          }
-        },
-        true,
-      );
+      const route = this.#guard(routeResolver, "routeResolver hook failed");
       if (route) {
         return { name: route, source: NAME_SOURCE_ROUTE };
       }
@@ -849,10 +893,10 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
    * timing, and a resolver that reads `location` would return the successor's route. A route that
    * was already resolved is kept as it is, rather than being downgraded to a title.
    */
-  private resolveInterruptedName(
+  #resolveInterruptedName(
     pending: PendingPageView,
   ): { name: string; source: PageViewNameSource } | undefined {
-    const explicit = this.explicitName;
+    const explicit = this.#explicitName;
     if (explicit) {
       return { name: explicit, source: NAME_SOURCE_EXPLICIT };
     }
@@ -867,12 +911,12 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
   }
 
   /** Ends whatever page view is in flight, if any, with the supplied reason. */
-  private settle(source: PageViewDurationSource): void {
-    const pending = this.pending;
+  #settle(source: PageViewDurationSource): void {
+    const pending = this.#pending;
     if (!pending) {
       return;
     }
-    this.emit(pending, performance.now() - pending.startedAt, source);
+    this.#emit(pending, performance.now() - pending.startedAt, source);
   }
 
   /**
@@ -890,9 +934,11 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
    * Republishes through the context when the name changed, so a correlation consumer holding the
    * page view sees the same name that is about to be emitted rather than the provisional one.
    */
-  private finalizeName(pending: PendingPageView): PageView {
+  #finalizeName(pending: PendingPageView): PageView {
     const resolved =
-      location.href === pending.rawUrl ? this.resolveName() : this.resolveInterruptedName(pending);
+      location.href === pending.rawUrl
+        ? this.#resolveName()
+        : this.#resolveInterruptedName(pending);
     if (
       !resolved ||
       (resolved.name === pending.pageView.name && resolved.source === pending.pageView.nameSource)
@@ -905,30 +951,31 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       nameSource: resolved.source,
     };
     pending.pageView = updated;
-    this.context.setCurrentPageView(updated);
+    this.#context.setCurrentPageView(updated);
+    this.#visit?.update(updated);
     return updated;
   }
 
-  private emit(
+  #emit(
     pending: PendingPageView,
     durationMs: number,
     durationSource: PageViewDurationSource,
     additionalAttributes: Readonly<Record<string, number>> = {},
   ): void {
-    if (this.pending !== pending) {
+    if (this.#pending !== pending) {
       return;
     }
-    this.clearPending();
+    this.#clearPending();
 
     if (!pending.pageView.sameDocument) {
       // Records the document load exactly once, whichever path closed it out.
-      this.documentLoadReported = true;
+      this.#documentLoadReported = true;
     }
 
     // Re-resolve: a router typically sets `document.title` and commits its route *after* the URL
     // changes, so the name captured when the navigation started is the previous page's. Resolving
     // again here, once the navigation has settled, is what makes the name describe this page.
-    const pageView = this.finalizeName(pending);
+    const pageView = this.#finalizeName(pending);
     const logRecord: LogRecord = {
       eventName: EVENT_BROWSER_PAGE_VIEW,
       severityNumber: SEVERITY_NUMBER_INFO,
@@ -950,37 +997,32 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       },
     };
 
+    this.#emitLogRecord(logRecord);
+  }
+
+  #emitLogRecord(logRecord: LogRecord): void {
     const hook = this.getConfig().applyCustomLogRecordData;
     if (hook) {
-      safeExecuteInTheMiddle(
-        () => {
-          hook(logRecord);
-        },
-        (error) => {
-          if (error) {
-            this._diag.error("applyCustomLogRecordData hook failed", error);
-          }
-        },
-        true,
-      );
+      this.#guard(() => hook(logRecord), "applyCustomLogRecordData hook failed");
     }
 
     // The log pipeline is application-supplied and reached synchronously from the app's own
     // `history.pushState`, so a throwing processor or exporter must not break navigation.
-    safeExecuteInTheMiddle(
-      () => {
-        this.logger.emit(logRecord);
-      },
+    this.#guard(() => this.logger.emit(logRecord), "failed to emit a page-view record");
+  }
+
+  /** Runs application-supplied code, logging rather than propagating a failure. */
+  #guard<T>(callback: () => T, message: string): T | undefined {
+    return safeExecuteInTheMiddle(
+      callback,
       (error) => {
-        if (error) {
-          this._diag.error("failed to emit a page-view record", error);
-        }
+        if (error) this._diag.error(message, error);
       },
       true,
     );
   }
-  private clearPending(): void {
-    const pending = this.pending;
+  #clearPending(): void {
+    const pending = this.#pending;
     if (!pending) {
       return;
     }
@@ -990,6 +1032,6 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     if (pending.taskTimerId !== undefined) clearTimeout(pending.taskTimerId);
     if (pending.frameId !== undefined) cancelAnimationFrame(pending.frameId);
     if (pending.idleId !== undefined) cancelIdleCallback(pending.idleId);
-    this.pending = undefined;
+    this.#pending = undefined;
   }
 }

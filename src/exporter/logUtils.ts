@@ -6,15 +6,22 @@ import type { ReadableLogRecord } from "@opentelemetry/sdk-logs";
 import { generatePageViewId } from "../instrumentation/pageView/pageViewContext.js";
 import {
   ATTR_PAGE_VIEW_DURATION,
+  ATTR_PAGE_VIEW_DURATION_SOURCE,
   ATTR_PAGE_VIEW_ID,
+  ATTR_PAGE_VIEW_INDEX,
   ATTR_PAGE_VIEW_NAME,
+  ATTR_PAGE_VIEW_NAME_SOURCE,
   ATTR_PAGE_VIEW_PERF_DOM_PROCESSING,
   ATTR_PAGE_VIEW_PERF_NETWORK_CONNECT,
   ATTR_PAGE_VIEW_PERF_RECEIVED_RESPONSE,
   ATTR_PAGE_VIEW_PERF_SENT_REQUEST,
   ATTR_PAGE_VIEW_PERF_TOTAL,
   ATTR_PAGE_VIEW_REFERRER,
+  ATTR_PAGE_VIEW_SAME_DOCUMENT,
+  ATTR_PAGE_VIEW_TYPE,
   EVENT_BROWSER_PAGE_VIEW,
+  NAME_SOURCE_EXPLICIT,
+  NAME_SOURCE_ROUTE,
 } from "../instrumentation/pageView/semconv.js";
 import {
   createEnvelope,
@@ -24,11 +31,14 @@ import {
   mapAttributes,
   millisecondsToTimeSpan,
   serializeAttribute,
+  truncateCustomDimensions,
+  truncateToLength,
 } from "./common.js";
 import {
   EXCEPTION_MESSAGE,
   EXCEPTION_STACKTRACE,
   EXCEPTION_TYPE,
+  MaxPropertyLengths,
   MAX_BEACON_BODY_SIZE,
   NAVIGATION_DURATION,
   NAVIGATION_EVENT_NAME,
@@ -40,29 +50,36 @@ import type {
   CustomEventData,
   ExceptionData,
   MessageData,
+  MetricData,
   PageViewData,
   PageViewPerformanceData,
   SeverityLevel,
   StackFrame,
 } from "./telemetryModels.js";
-import {
-  ATTR_ENDUSER_ID,
-  ATTR_ENDUSER_PSEUDO_ID,
-  ATTR_USER_ACCOUNT_ID,
-  ATTR_USER_ID,
-} from "../user/constants.js";
+import { USER_ATTRIBUTES } from "../user/constants.js";
 import { AZURE_MONITOR_SAMPLE_RATE } from "../sampling.js";
+import { getManagedOperationName } from "../context/operationName.js";
+import type { ItemType } from "./customerSdkStats.js";
 
 const promotedLogAttributes = /* @__PURE__ */ new Set([
   EXCEPTION_MESSAGE,
   EXCEPTION_STACKTRACE,
   EXCEPTION_TYPE,
   NAVIGATION_DURATION,
-  ATTR_ENDUSER_ID,
-  ATTR_ENDUSER_PSEUDO_ID,
-  ATTR_USER_ACCOUNT_ID,
-  ATTR_USER_ID,
+  ...USER_ATTRIBUTES,
   AZURE_MONITOR_SAMPLE_RATE,
+]);
+const promotedPageVisitAttributes = /* @__PURE__ */ new Set([
+  EXCEPTION_MESSAGE,
+  EXCEPTION_STACKTRACE,
+  EXCEPTION_TYPE,
+  NAVIGATION_DURATION,
+  ...USER_ATTRIBUTES,
+  AZURE_MONITOR_SAMPLE_RATE,
+  "browser.page_visit.duration",
+  ATTR_PAGE_VIEW_NAME,
+  ATTR_PAGE_VIEW_ID,
+  URL_FULL,
 ]);
 const promotedPageViewAttributes = /* @__PURE__ */ new Set([
   EXCEPTION_MESSAGE,
@@ -70,20 +87,22 @@ const promotedPageViewAttributes = /* @__PURE__ */ new Set([
   EXCEPTION_TYPE,
   NAVIGATION_DURATION,
   ATTR_PAGE_VIEW_DURATION,
+  ATTR_PAGE_VIEW_DURATION_SOURCE,
   ATTR_PAGE_VIEW_ID,
+  ATTR_PAGE_VIEW_INDEX,
   ATTR_PAGE_VIEW_NAME,
+  ATTR_PAGE_VIEW_NAME_SOURCE,
   ATTR_PAGE_VIEW_PERF_DOM_PROCESSING,
   ATTR_PAGE_VIEW_PERF_NETWORK_CONNECT,
   ATTR_PAGE_VIEW_PERF_RECEIVED_RESPONSE,
   ATTR_PAGE_VIEW_PERF_SENT_REQUEST,
   ATTR_PAGE_VIEW_PERF_TOTAL,
   ATTR_PAGE_VIEW_REFERRER,
+  ATTR_PAGE_VIEW_SAME_DOCUMENT,
+  ATTR_PAGE_VIEW_TYPE,
   URL_FULL,
   AZURE_MONITOR_SAMPLE_RATE,
-  ATTR_ENDUSER_ID,
-  ATTR_ENDUSER_PSEUDO_ID,
-  ATTR_USER_ACCOUNT_ID,
-  ATTR_USER_ID,
+  ...USER_ATTRIBUTES,
 ]);
 // Azure Monitor ExceptionDetails schema limits (character lengths).
 const MAX_EXCEPTION_TYPE_LENGTH = 1024;
@@ -120,15 +139,9 @@ function mapSeverity(severityNumber: number | undefined): SeverityLevel | undefi
   return 4;
 }
 
-function getUtf8Size(value: string): number {
+export function getUtf8Size(value: string): number {
   textEncoder ??= new TextEncoder();
   return textEncoder.encode(value).byteLength;
-}
-
-function truncateToLength(value: string, maxLength: number): string {
-  if (value.length <= maxLength) return value;
-  const truncated = value.slice(0, maxLength);
-  return /[\uD800-\uDBFF]$/.test(truncated) ? truncated.slice(0, -1) : truncated;
 }
 
 function truncateJsonStringToSize(value: string, maxSizeInBytes: number): string | undefined {
@@ -323,7 +336,7 @@ function parseStack(stack: string, maxSizeInBytes: number): readonly StackFrame[
  * allocated in priority order: type name, raw stack (up to its distro byte cap), message, and
  * finally parsed frames from whatever space is left.
  */
-function createExceptionDetails(
+export function createExceptionDetails(
   attributes: ReadableLogRecord["attributes"],
   body: ReadableLogRecord["body"],
   maxSizeInBytes: number,
@@ -387,13 +400,32 @@ function createExceptionDetails(
   return { ...exception, parsedStack };
 }
 
+export function logItemType(logRecord: ReadableLogRecord): ItemType {
+  if (logRecord.eventName === "exception" || logRecord.attributes[EXCEPTION_TYPE])
+    return "EXCEPTION";
+  if (isPageView(logRecord.eventName)) return "PAGE_VIEW";
+  if (logRecord.eventName === "browser.page_visit") {
+    const duration = logRecord.attributes["browser.page_visit.duration"];
+    if (typeof duration === "number" && Number.isFinite(duration) && duration >= 0)
+      return "CUSTOM_METRIC";
+  }
+  return logRecord.eventName && logRecord.eventName !== "browser.console"
+    ? "CUSTOM_EVENT"
+    : "TRACE";
+}
+
 export function logToEnvelope(
   logRecord: ReadableLogRecord,
   instrumentationKey: string,
-): AzureMonitorEnvelope<MessageData | ExceptionData | PageViewData | CustomEventData> {
+): AzureMonitorEnvelope<MessageData | ExceptionData | PageViewData | CustomEventData | MetricData> {
   const customFields = mapAttributes(
     logRecord.attributes as Attributes,
-    isPageView(logRecord.eventName) ? promotedPageViewAttributes : promotedLogAttributes,
+    isPageView(logRecord.eventName)
+      ? promotedPageViewAttributes
+      : logRecord.eventName === "browser.page_visit"
+        ? promotedPageVisitAttributes
+        : promotedLogAttributes,
+    true,
   );
   const sampleRate = getSampleRate(logRecord.attributes as Attributes);
   const tags = createTags(
@@ -402,15 +434,16 @@ export function logToEnvelope(
     logRecord.resource.attributes["service.name"],
     logRecord.attributes as Attributes,
     logRecord.resource.attributes,
+    getManagedOperationName(logRecord),
   );
   const severityLevel = mapSeverity(logRecord.severityNumber);
   const time = hrTimeToDate(logRecord.hrTime);
-  let name: string;
+  const visitDuration = logRecord.attributes["browser.page_visit.duration"];
   let baseType: AzureMonitorEnvelope["data"]["baseType"];
-  let baseData: MessageData | ExceptionData | PageViewData | CustomEventData;
+  let baseData: MessageData | ExceptionData | PageViewData | CustomEventData | MetricData;
+  const itemType = logItemType(logRecord);
 
-  if (logRecord.eventName === "exception" || logRecord.attributes[EXCEPTION_TYPE]) {
-    name = "Microsoft.ApplicationInsights.Exception";
+  if (itemType === "EXCEPTION") {
     baseType = "ExceptionData";
     const baseDataWithoutException: ExceptionData = {
       ver: 2,
@@ -419,7 +452,6 @@ export function logToEnvelope(
     };
     const envelopeWithoutException = createEnvelope(
       instrumentationKey,
-      name,
       time,
       tags,
       baseType,
@@ -435,42 +467,76 @@ export function logToEnvelope(
       exceptions: [createExceptionDetails(logRecord.attributes, logRecord.body, maxExceptionSize)],
       ...customFields,
     };
-  } else if (isPageView(logRecord.eventName)) {
+  } else if (itemType === "PAGE_VIEW") {
     const duration =
       logRecord.attributes[ATTR_PAGE_VIEW_DURATION] ?? logRecord.attributes[NAVIGATION_DURATION];
     const explicitId = logRecord.attributes[ATTR_PAGE_VIEW_ID];
     const pageViewId =
       explicitId === undefined || explicitId === "" ? logRecord.spanContext?.traceId : explicitId;
     const referrer = logRecord.attributes[ATTR_PAGE_VIEW_REFERRER];
-    name = "Microsoft.ApplicationInsights.PageView";
+    const referrerValue =
+      referrer === undefined
+        ? undefined
+        : truncateToLength(serializeAttribute(referrer), MaxPropertyLengths.THIRTEEN_BIT);
+    const pageViewName = serializeAttribute(
+      logRecord.body ??
+        logRecord.attributes[ATTR_PAGE_VIEW_NAME] ??
+        logRecord.attributes[URL_FULL] ??
+        "Page View",
+    );
+    const pageViewNameSource = logRecord.attributes[ATTR_PAGE_VIEW_NAME_SOURCE];
+    if (pageViewNameSource === NAME_SOURCE_EXPLICIT || pageViewNameSource === NAME_SOURCE_ROUTE) {
+      tags["ai.operation.name"] = truncateToLength(pageViewName, MaxPropertyLengths.TEN_BIT);
+    } else if (logRecord.eventName !== NAVIGATION_EVENT_NAME) {
+      delete tags["ai.operation.name"];
+    }
     baseType = "PageViewData";
     baseData = {
       ver: 2,
       id: pageViewId === undefined ? generatePageViewId() : serializeAttribute(pageViewId),
-      name: serializeAttribute(
-        logRecord.body ??
-          logRecord.attributes[ATTR_PAGE_VIEW_NAME] ??
-          logRecord.attributes[URL_FULL] ??
-          "Page View",
-      ),
+      name: pageViewName,
       url:
         logRecord.attributes[URL_FULL] === undefined
           ? undefined
           : serializeAttribute(logRecord.attributes[URL_FULL]),
       duration: typeof duration === "number" ? millisecondsToTimeSpan(duration) : undefined,
-      ...(referrer === undefined ? {} : { referredUri: serializeAttribute(referrer) }),
+      ...(referrerValue === undefined ? {} : { referredUri: referrerValue }),
       ...customFields,
+      properties:
+        referrerValue === undefined
+          ? customFields.properties
+          : truncateCustomDimensions({ ...customFields.properties, refUri: referrerValue }),
     };
-  } else if (logRecord.eventName && logRecord.eventName !== "browser.console") {
-    name = "Microsoft.ApplicationInsights.Event";
+  } else if (itemType === "CUSTOM_METRIC" && typeof visitDuration === "number") {
+    const pageUrl = logRecord.attributes[URL_FULL];
+    baseType = "MetricData";
+    baseData = {
+      ver: 2,
+      metrics: [
+        {
+          name: "PageVisitTime",
+          kind: 0,
+          value: visitDuration,
+          count: 1,
+          min: visitDuration,
+          max: visitDuration,
+        },
+      ],
+      ...customFields,
+      properties: truncateCustomDimensions({
+        ...customFields.properties,
+        PageName: serializeAttribute(logRecord.attributes[ATTR_PAGE_VIEW_NAME] ?? ""),
+        ...(typeof pageUrl === "string" && pageUrl.length > 0 ? { PageUrl: pageUrl } : {}),
+      }),
+    };
+  } else if (itemType === "CUSTOM_EVENT" && logRecord.eventName) {
     baseType = "EventData";
     baseData = {
       ver: 2,
-      name: logRecord.eventName,
+      name: truncateToLength(logRecord.eventName, MaxPropertyLengths.NINE_BIT),
       ...customFields,
     };
   } else {
-    name = "Microsoft.ApplicationInsights.Message";
     baseType = "MessageData";
     const message =
       logRecord.body === undefined || logRecord.body === null
@@ -478,32 +544,43 @@ export function logToEnvelope(
         : serializeAttribute(logRecord.body) || DEFAULT_LOG_MESSAGE;
     baseData = {
       ver: 2,
-      message,
+      message: truncateToLength(message, MaxPropertyLengths.FIFTEEN_BIT),
       severityLevel,
       ...customFields,
     };
   }
 
-  return createEnvelope(instrumentationKey, name, time, tags, baseType, baseData, sampleRate);
+  return createEnvelope(instrumentationKey, time, tags, baseType, baseData, sampleRate);
 }
 
 export function logToEnvelopes(
   logRecord: ReadableLogRecord,
   instrumentationKey: string,
 ): readonly AzureMonitorEnvelope[] {
+  const envelopes: AzureMonitorEnvelope[] = [];
+  appendLogEnvelopes(logRecord, instrumentationKey, envelopes);
+  return envelopes;
+}
+
+export function appendLogEnvelopes(
+  logRecord: ReadableLogRecord,
+  instrumentationKey: string,
+  envelopes: AzureMonitorEnvelope[],
+): void {
   const pageViewEnvelope = logToEnvelope(logRecord, instrumentationKey);
+  envelopes.push(pageViewEnvelope);
   if (
     logRecord.eventName !== EVENT_BROWSER_PAGE_VIEW ||
     pageViewEnvelope.data.baseType !== "PageViewData"
   ) {
-    return [pageViewEnvelope];
+    return;
   }
 
   const durations = pageViewPerformanceAttributes.map(
     (attribute) => logRecord.attributes[attribute],
   );
   if (!durations.every((duration) => typeof duration === "number" && Number.isFinite(duration))) {
-    return [pageViewEnvelope];
+    return;
   }
 
   const pageView = pageViewEnvelope.data.baseData as PageViewData;
@@ -525,12 +602,11 @@ export function logToEnvelopes(
   };
   const performanceEnvelope = createEnvelope(
     instrumentationKey,
-    "Microsoft.ApplicationInsights.PageviewPerformance",
     pageViewEnvelope.time,
     pageViewEnvelope.tags,
     "PageviewPerformanceData",
     performanceData,
     pageViewEnvelope.sampleRate,
   );
-  return [pageViewEnvelope, performanceEnvelope];
+  envelopes.push(performanceEnvelope);
 }

@@ -19,16 +19,25 @@ export interface KeyValueStorage {
   removeItem(key: string): boolean;
 }
 
-export function createLocalStorageKeyValueStorage(unavailableMessage: string): KeyValueStorage {
-  // After a quota or security write failure, pause writes briefly instead of retrying every activity.
+/** Same-origin Web Storage with key listing, used to discover records written by earlier pages. */
+export interface WebKeyValueStorage extends KeyValueStorage {
+  /** Keys that start with the storage name prefix, without that prefix. */
+  keys(): string[];
+}
+
+/**
+ * Wraps `localStorage` or `sessionStorage` so storage failures never reach callers. Any error,
+ * including unavailable, blocked or full storage, logs `unavailableMessage` once and returns a
+ * failure result. Keys are prefixed with `namePrefix`.
+ */
+export function createKeyValueStorage(
+  area: "localStorage" | "sessionStorage",
+  unavailableMessage: string,
+  namePrefix = "",
+): WebKeyValueStorage {
+  // After a write failure, pause writes briefly instead of retrying every activity.
   let writesPausedUntil = 0;
   let warned = false;
-
-  function warnOnce(): void {
-    if (warned) return;
-    warned = true;
-    diag.warn(unavailableMessage);
-  }
 
   function useStorage<T>(
     operation: (storage: Storage) => T,
@@ -45,41 +54,37 @@ export function createLocalStorageKeyValueStorage(unavailableMessage: string): K
       return fallback;
     }
     try {
-      if (typeof localStorage !== "undefined") {
-        const result = operation(localStorage);
+      const storage = globalThis[area];
+      if (storage) {
+        const result = operation(storage);
         if (operationType === "remove") writesPausedUntil = 0;
         return result;
       }
-    } catch (error) {
-      const errorName =
-        typeof error === "object" &&
-        error !== null &&
-        "name" in error &&
-        typeof error.name === "string"
-          ? error.name
-          : undefined;
-      if (errorName !== "SecurityError" && errorName !== "QuotaExceededError") {
-        throw error;
-      }
-      if (operationType === "write") {
-        writesPausedUntil = Date.now() + WRITE_BACKOFF_MS;
+    } catch {
+      if (operationType === "write") writesPausedUntil = Date.now() + WRITE_BACKOFF_MS;
+    }
+    if (!warned) {
+      warned = true;
+      try {
+        diag.warn(unavailableMessage);
+      } catch {
+        // A diagnostic hook must not turn a storage failure into a delivery failure.
       }
     }
-    warnOnce();
     return fallback;
   }
 
   return {
     getItem: (key) =>
       useStorage<StorageReadResult>(
-        (storage) => ({ success: true as const, value: storage.getItem(key) }),
+        (storage) => ({ success: true as const, value: storage.getItem(namePrefix + key) }),
         { success: false as const },
         "read",
       ),
     setItem: (key, value) =>
       useStorage(
         (storage) => {
-          storage.setItem(key, value);
+          storage.setItem(namePrefix + key, value);
           return true;
         },
         false,
@@ -88,11 +93,20 @@ export function createLocalStorageKeyValueStorage(unavailableMessage: string): K
     removeItem: (key) =>
       useStorage(
         (storage) => {
-          storage.removeItem(key);
+          storage.removeItem(namePrefix + key);
           return true;
         },
         false,
         "remove",
+      ),
+    keys: () =>
+      useStorage(
+        (storage) =>
+          Array.from({ length: storage.length }, (_, index) => storage.key(index) ?? "")
+            .filter((key) => key.startsWith(namePrefix))
+            .map((key) => key.slice(namePrefix.length)),
+        [],
+        "read",
       ),
   };
 }

@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { context, diag, propagation, trace } from "@opentelemetry/api";
+import { context, diag, propagation, SpanKind, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { startBrowserSdk } from "@opentelemetry/browser-sdk";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
@@ -79,13 +79,13 @@ function findUndeclaredRequireCalls(code) {
   return [...undeclared].sort();
 }
 
-test("the package is configured for a public alpha release", () => {
+test("the package is configured for a public beta release", () => {
   assert.equal(pkg.name, "@microsoft/opentelemetry-browser");
-  assert.equal(pkg.version, "0.1.0-alpha.3");
+  assert.equal(pkg.version, "0.1.0-beta.2");
   assert.equal(Object.hasOwn(pkg, "private"), false);
   assert.deepEqual(pkg.publishConfig, {
     access: "public",
-    tag: "alpha",
+    tag: "beta",
   });
 });
 
@@ -161,6 +161,25 @@ test("the package exposes ESM and CommonJS entry points", () => {
   assert.equal(pkg.types, pkg.exports["."].import.types);
 });
 
+test("customer SDK stats expose configuration only, not internal reporting controls", async () => {
+  for (const file of ["dist/esm/index.d.ts", "dist/commonjs/index.d.cts"]) {
+    const declarations = await readFile(new URL(file, root), "utf8");
+    assert.match(declarations, /sdkStats\?: AzureMonitorSdkStatsOptions/);
+    assert.doesNotMatch(declarations, /InternalSdkStats|createCustomerSdkStats|CustomerSdkStats/);
+  }
+  const snippetDeclarations = await readFile(new URL("dist/esm/snippet.d.ts", root), "utf8");
+  assert.doesNotMatch(snippetDeclarations, /sdkStats|SdkStats/);
+  for (const distro of [
+    await import(new URL("dist/esm/index.js", root).href),
+    require(fileURLToPath(new URL("dist/commonjs/index.cjs", root))),
+  ]) {
+    assert.equal(
+      Object.keys(distro).some((name) => /sdkstats/i.test(name)),
+      false,
+    );
+  }
+});
+
 test("the build produces ESM, CommonJS, UMD, and IIFE artifacts", async () => {
   assert.deepEqual((await readdir(new URL("dist/", root))).sort(), ["browser", "commonjs", "esm"]);
   assert.deepEqual((await readdir(new URL("dist/esm/", root))).sort(), [
@@ -219,6 +238,91 @@ test("browser bundles contain only ES2022 syntax and have size budgets", async (
     Object.keys(browserBundleBudgets).sort(),
     files.filter((file) => file.endsWith(".min.js")).map((file) => `dist/browser/${file}`),
   );
+});
+
+// Post-ES2022 built-ins. Names that collide with common APIs (`with`, `transfer`, `union`) are
+// omitted to avoid false positives such as OpenTelemetry's `context.with`.
+const newerPrototypeMethods = new Set([
+  "findLast",
+  "findLastIndex",
+  "toReversed",
+  "toSorted",
+  "toSpliced",
+  "isWellFormed",
+  "toWellFormed",
+  "transferToFixedLength",
+  "symmetricDifference",
+  "isSubsetOf",
+  "isSupersetOf",
+  "isDisjointFrom",
+  "getOrInsert",
+  "getOrInsertComputed",
+  "toBase64",
+  "toHex",
+]);
+const newerStaticMethods = new Set([
+  "Object.groupBy",
+  "Map.groupBy",
+  "Promise.withResolvers",
+  "Promise.try",
+  "Array.fromAsync",
+  "Iterator.from",
+  "RegExp.escape",
+  "Math.sumPrecise",
+  "Math.f16round",
+  "Error.isError",
+  "Uint8Array.fromBase64",
+  "Uint8Array.fromHex",
+  "Atomics.pause",
+]);
+// ES2023 `Array.prototype.findLast` ships in web-vitals (via @opentelemetry/browser-instrumentation)
+// and is available in every supported latest-stable browser.
+const allowedNewerBuiltIns = new Set(["findLast"]);
+
+function findNewerBuiltIns(code) {
+  const found = new Set();
+  const visit = (node) => {
+    if (Array.isArray(node)) return node.forEach(visit);
+    if (!node || typeof node.type !== "string") return;
+    const { property } = node;
+    const name =
+      node.type !== "MemberExpression"
+        ? undefined
+        : !node.computed && property.type === "Identifier"
+          ? property.name
+          : node.computed && property.type === "Literal" && typeof property.value === "string"
+            ? property.value
+            : undefined;
+    if (name !== undefined) {
+      const qualified = node.object.type === "Identifier" ? `${node.object.name}.${name}` : "";
+      if (newerStaticMethods.has(qualified)) found.add(qualified);
+      else if (newerPrototypeMethods.has(name) && !allowedNewerBuiltIns.has(name)) found.add(name);
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (key !== "type" && value && typeof value === "object") visit(value);
+    }
+  };
+  visit(parseScript(code, { ecmaVersion: 2022, sourceType: "script" }));
+  return [...found].sort();
+}
+
+test("browser bundles use only ES2022 built-ins apart from documented exceptions", async () => {
+  assert.deepEqual(
+    findNewerBuiltIns(
+      "a.findLast(f); a.toSorted(); b.findLastIndex(f); Object.groupBy(a, f); context.with(c, f);",
+    ),
+    ["Object.groupBy", "findLastIndex", "toSorted"],
+  );
+  assert.deepEqual(findNewerBuiltIns('Object["groupBy"](a, f);'), ["Object.groupBy"]);
+  assert.deepEqual(findNewerBuiltIns('a["toSorted"]();'), ["toSorted"]);
+  assert.deepEqual(findNewerBuiltIns('a["findLast"](f); a[name](); c["with"](f);'), []);
+  const files = (await readdir(new URL("dist/browser/", root))).filter((file) =>
+    file.endsWith(".js"),
+  );
+  for (const file of files) {
+    const code = await readFile(new URL(`dist/browser/${file}`, root), "utf8");
+    assert.deepEqual(findNewerBuiltIns(code), [], `${file} uses post-ES2022 built-ins`);
+  }
 });
 
 async function exerciseNpmPackage(distro) {
@@ -343,7 +447,141 @@ test("standard OTLP processors export alongside other processors", async (t) => 
   );
 });
 
-test("using the initializer includes both SDKs and their default exporters", async () => {
+test("the built package redacts only upstream fetch/XHR URLs before OTLP export", async (t) => {
+  const requests = [];
+  const server = createServer((request, response) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", () => {
+      requests.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end("{}");
+    });
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(
+    () =>
+      new Promise((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      }),
+  );
+  t.after(() => {
+    trace.disable();
+    logs.disable();
+    propagation.disable();
+    context.disable();
+    diag.disable();
+  });
+
+  const distro = await import(pkg.name);
+  const spans = new InMemorySpanExporter();
+  const telemetry = await distro.useMicrosoftOpenTelemetry({
+    spanProcessors: [
+      new SimpleSpanProcessor(spans),
+      new BatchSpanProcessor(
+        new OTLPTraceExporter({ url: `http://127.0.0.1:${server.address().port}/v1/traces` }),
+      ),
+    ],
+  });
+  const sensitiveUrl = "https://user:secret@example.test/app.js?token=private";
+  const redactedUrl = "https://REDACTED:REDACTED@example.test/app.js?token=REDACTED";
+  const eventAttributes = Object.freeze({ "exception.message": `Failed ${sensitiveUrl}` });
+  try {
+    const scopeNames = [
+      "@opentelemetry/browser-instrumentation/fetch",
+      "@opentelemetry/browser-instrumentation/xhr",
+      "application-http-client",
+      "@third-party/http-client",
+    ];
+    const createdSpans = scopeNames.map((scopeName) => {
+      const span = trace.getTracer(scopeName).startSpan("dependency", {
+        kind: SpanKind.CLIENT,
+        attributes: { "url.full": sensitiveUrl, "http.request.method": "GET" },
+      });
+      span.addEvent("exception", eventAttributes);
+      span.end();
+      return span;
+    });
+    await telemetry.forceFlush();
+
+    assert.deepEqual(spans.getFinishedSpans(), createdSpans);
+    assert.equal(eventAttributes["exception.message"], `Failed ${sensitiveUrl}`);
+    assert.equal(requests.length, 1);
+    const scopeSpans = requests[0].resourceSpans[0].scopeSpans;
+    assert.equal(scopeSpans.length, scopeNames.length);
+    for (const [index, scopeName] of scopeNames.entries()) {
+      const expectedUrl = index < 2 ? redactedUrl : sensitiveUrl;
+      assert.equal(createdSpans[index].attributes["url.full"], expectedUrl);
+      const exportedScope = scopeSpans.find((entry) => entry.scope.name === scopeName);
+      assert.equal(exportedScope.spans.length, 1);
+      const exportedSpan = exportedScope.spans[0];
+      assert.deepEqual(
+        exportedSpan.attributes.find((attribute) => attribute.key === "url.full"),
+        { key: "url.full", value: { stringValue: expectedUrl } },
+      );
+      assert.deepEqual(exportedSpan.events[0].attributes, [
+        { key: "exception.message", value: { stringValue: `Failed ${sensitiveUrl}` } },
+      ]);
+    }
+  } finally {
+    await telemetry.shutdown();
+  }
+});
+
+test("ESM and CommonJS clear dependency URLs that cannot be redacted without a browser base", async () => {
+  assert.equal(typeof document, "undefined");
+  assert.equal(typeof location, "undefined");
+  for (const distro of [
+    await import(pkg.name),
+    await import(new URL("dist/esm/index.min.js", root).href),
+    require(pkg.name),
+  ]) {
+    const exporter = new InMemorySpanExporter();
+    const telemetry = await distro.useMicrosoftOpenTelemetry({
+      pageView: { enabled: false },
+      session: { enabled: false },
+      userContext: { enabled: false },
+      instrumentations: [],
+      spanProcessors: [new SimpleSpanProcessor(exporter)],
+    });
+    try {
+      for (const name of ["fetch", "xhr"]) {
+        for (const [url, expected] of [
+          ["https://[redacted]/resource?token=private", ""],
+          ["//[redacted]/resource?token=private", ""],
+          ["/resource?token=private", ""],
+          [
+            "https://example.test/resource?token=private",
+            "https://example.test/resource?token=REDACTED",
+          ],
+          ["", ""],
+          [" \t ", " \t "],
+        ]) {
+          trace
+            .getTracer(`@opentelemetry/browser-instrumentation/${name}`)
+            .startSpan("request", {
+              kind: SpanKind.CLIENT,
+              attributes: { "url.full": url, "http.url": url, "http.request.method": "GET" },
+            })
+            .end();
+          const span = exporter.getFinishedSpans().at(-1);
+          assert.equal(span.attributes["url.full"], expected);
+          assert.equal(span.attributes["http.url"], expected);
+        }
+      }
+    } finally {
+      await telemetry.shutdown();
+      trace.disable();
+      logs.disable();
+      propagation.disable();
+      context.disable();
+      diag.disable();
+    }
+  }
+});
+
+test("using the initializer includes both SDKs but not the OTLP exporters", async () => {
   const chunk = await bundleConsumer('export { useMicrosoftOpenTelemetry } from "distro";');
   assert.doesNotMatch(chunk.code, /BrowserDetector|UserAgentDetector/);
   const modules = Object.entries(chunk.modules)
@@ -352,17 +590,16 @@ test("using the initializer includes both SDKs and their default exporters", asy
   // The initializer deliberately pulls in the instrumentations this distribution owns and turns
   // on by itself. They are selected by configuration, not by import, so they are part of the
   // initializer's cost by design rather than an accidental dependency.
-  for (const name of [
-    "sdk-trace",
-    "sdk-logs",
-    "exporter-trace-otlp-http",
-    "exporter-logs-otlp-http",
-  ]) {
+  for (const name of ["sdk-trace", "sdk-logs"]) {
     assert.ok(
       modules.some((id) => id.includes(`/@opentelemetry/${name}/`)),
       `${name} must be included by the combined initializer`,
     );
   }
+  assert.ok(
+    !modules.some((id) => /\/@opentelemetry\/(otlp-|exporter-.*-otlp-)/.test(id)),
+    "OTLP exporters are opt-in through caller processors",
+  );
 });
 
 test("individual upstream instrumentation imports do not retain other instrumentations", async () => {
@@ -515,6 +752,7 @@ for (const [name, module, moduleResolution] of [
         module,
         moduleResolution,
         strict: true,
+        exactOptionalPropertyTypes: true,
         noEmit: true,
         types: [],
       },
@@ -544,6 +782,7 @@ for (const [name, module, moduleResolution] of [
         module,
         moduleResolution,
         strict: true,
+        exactOptionalPropertyTypes: true,
         noEmit: true,
         types: ["node"],
       },

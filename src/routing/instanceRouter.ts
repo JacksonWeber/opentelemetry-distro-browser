@@ -101,9 +101,7 @@ export function addInstance(instance: InstancePipelines): () => void {
         state.traceRegistration = getRegisteredGlobal("trace");
       } else if (!traceRegistration || traceRegistration !== state.foreignTracerProvider) {
         state.foreignTracerProvider = traceRegistration;
-        diag.error(
-          "[tracer-provider-conflict] Global traces remain with another installation. Instance pipelines are isolated.",
-        );
+        diag.error("[tracer-provider-conflict] Global traces owned by another installation.");
       }
     }
     const logsRegistration = getRegisteredGlobal("logs");
@@ -119,9 +117,7 @@ export function addInstance(instance: InstancePipelines): () => void {
         state.logsRegistration = installedLogs;
       } else if (!logsRegistration || logsRegistration !== state.foreignLoggerProvider) {
         state.foreignLoggerProvider = logsRegistration;
-        diag.warn(
-          "[logger-provider-conflict] Global logs remain with another installation. Instance pipelines are isolated.",
-        );
+        diag.warn("[logger-provider-conflict] Global logs owned by another installation.");
       }
     }
     state.reportedDrops.clear();

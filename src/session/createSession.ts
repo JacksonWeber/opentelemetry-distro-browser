@@ -7,10 +7,7 @@ import {
   createSessionManager,
 } from "@opentelemetry/browser-sdk/session";
 import type { Session, SessionStore } from "@opentelemetry/browser-sdk/session";
-import {
-  createLocalStorageKeyValueStorage,
-  type KeyValueStorage,
-} from "../storage/keyValueStorage.js";
+import { createKeyValueStorage, type KeyValueStorage } from "../storage/keyValueStorage.js";
 import type { MicrosoftOpenTelemetryBrowserSessionOptions } from "../types.js";
 
 const storageKey = "opentelemetry-session";
@@ -25,26 +22,30 @@ function lifetimeSeconds(value: number | undefined, fallback: number, name: stri
 
 export function createSession(
   options: MicrosoftOpenTelemetryBrowserSessionOptions,
-  storage: KeyValueStorage = createLocalStorageKeyValueStorage(
+  storage: KeyValueStorage = createKeyValueStorage(
+    "localStorage",
     "Session storage unavailable; using an in-memory session.",
   ),
+  readLifetimes?: () => { readonly inactivityTimeout: number; readonly maxDuration: number },
 ) {
   const inactivityTimeout = lifetimeSeconds(
     options.inactivityTimeout,
     30 * 60,
     "inactivityTimeout",
   );
-  const maxDuration = lifetimeSeconds(options.maxDuration, 0, "maxDuration");
+  const maxDuration = lifetimeSeconds(options.maxDuration, 24 * 60 * 60, "maxDuration");
   const persist = options.persist === undefined ? true : options.persist;
   if (typeof persist !== "boolean") throw new TypeError("session.persist must be a boolean.");
   let lastActivityTimestamp = Date.now();
 
   function expired(session: Session, now: number): boolean {
+    const policy = readLifetimes?.() ?? { inactivityTimeout, maxDuration };
     return (
       now < session.startTimestamp ||
       now < lastActivityTimestamp ||
-      (inactivityTimeout > 0 && (now - lastActivityTimestamp) / 1000 >= inactivityTimeout) ||
-      (maxDuration > 0 && (now - session.startTimestamp) / 1000 >= maxDuration)
+      (policy.inactivityTimeout > 0 &&
+        (now - lastActivityTimestamp) / 1000 >= policy.inactivityTimeout) ||
+      (policy.maxDuration > 0 && (now - session.startTimestamp) / 1000 >= policy.maxDuration)
     );
   }
 

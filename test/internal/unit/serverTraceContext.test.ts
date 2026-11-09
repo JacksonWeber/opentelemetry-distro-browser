@@ -15,7 +15,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { logToEnvelope } from "../../../src/exporter/logUtils.js";
 import { spanToEnvelope } from "../../../src/exporter/spanUtils.js";
 import { PageViewInstrumentation } from "../../../src/instrumentation/pageView/pageViewInstrumentation.js";
-import { readServerTraceContext } from "../../../src/instrumentation/pageView/serverTraceContext.js";
+import { readServerTraceContext as extractServerTraceContext } from "../../../src/instrumentation/pageView/serverTraceContext.js";
 import { useMicrosoftOpenTelemetry } from "../../../src/useMicrosoftOpenTelemetry.js";
 import type {
   MicrosoftOpenTelemetryBrowser,
@@ -31,6 +31,11 @@ const originalPush = history.pushState;
 const originalReplace = history.replaceState;
 const handles: MicrosoftOpenTelemetryBrowser[] = [];
 const metaTags: HTMLMetaElement[] = [];
+
+function readServerTraceContext() {
+  const [navigation] = performance.getEntriesByType("navigation") as PerformanceNavigationTiming[];
+  return extractServerTraceContext(navigation);
+}
 
 function meta(name: string, content: string): void {
   const element = document.createElement("meta");

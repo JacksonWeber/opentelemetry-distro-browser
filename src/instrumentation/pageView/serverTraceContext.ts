@@ -1,20 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import {
-  defaultTextMapGetter,
-  diag,
-  ROOT_CONTEXT,
-  trace,
-  TraceFlags,
-  type SpanContext,
-} from "@opentelemetry/api";
-import { W3CTraceContextPropagator } from "@opentelemetry/core";
+import { diag, TraceFlags, type SpanContext } from "@opentelemetry/api";
+import { parseTraceParent, TraceState } from "@opentelemetry/core";
 
 /** Reads the initial document's remote parent without changing global propagation. */
-export function readServerTraceContext(): SpanContext | undefined {
-  const [navigation] = (performance.getEntriesByType?.("navigation") ??
-    []) as PerformanceNavigationTiming[];
+export function readServerTraceContext(
+  navigation?: PerformanceNavigationTiming,
+): SpanContext | undefined {
   // A late initialization on a different SPA route must not reuse the document's server parent.
   if (navigation?.name && navigation.name.split("#")[0] !== location.href.split("#")[0]) {
     return undefined;
@@ -25,18 +18,15 @@ export function readServerTraceContext(): SpanContext | undefined {
   ];
   for (const get of sources) {
     const traceparent = get("traceparent");
-    if (!traceparent) continue;
-    const extracted = new W3CTraceContextPropagator().extract(
-      ROOT_CONTEXT,
-      { traceparent, tracestate: get("tracestate") },
-      defaultTextMapGetter,
-    );
-    const parent = trace.getSpanContext(extracted);
+    const parent = traceparent && parseTraceParent(traceparent);
     if (parent) {
+      parent.isRemote = true;
       parent.traceFlags &= TraceFlags.SAMPLED;
+      const state = get("tracestate");
+      if (state) parent.traceState = new TraceState(state);
       return parent;
     }
-    diag.warn("Ignoring invalid server traceparent.");
+    if (traceparent) diag.warn("Invalid server traceparent.");
   }
   return undefined;
 }

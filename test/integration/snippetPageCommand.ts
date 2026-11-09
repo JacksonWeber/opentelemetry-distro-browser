@@ -3,6 +3,7 @@
 
 import { defineBrowserCommand } from "@vitest/browser";
 import type {} from "vitest/browser";
+import { SDK_STATS_ENDPOINT } from "../fixtures/sdkStats.js";
 
 declare module "vitest/browser" {
   interface BrowserCommands {
@@ -18,6 +19,16 @@ export const loadSnippetPage = defineBrowserCommand(
     snippetPage.on("console", (message) => diagnostics.push(`console: ${message.text()}`));
     snippetPage.on("pageerror", (error) => diagnostics.push(`pageerror: ${error.message}`));
     try {
+      await snippetPage.route(SDK_STATS_ENDPOINT, (route) =>
+        route.fulfill({
+          status: route.request().method() === "OPTIONS" ? 204 : 200,
+          headers: {
+            "access-control-allow-origin": "*",
+            "access-control-allow-methods": "POST",
+            "access-control-allow-headers": "content-type,content-encoding",
+          },
+        }),
+      );
       await snippetPage.goto(pageUrl);
       await snippetPage.waitForFunction(() => document.body?.dataset.state, undefined, {
         timeout: 10_000,
