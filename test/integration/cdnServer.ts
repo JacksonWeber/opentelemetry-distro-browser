@@ -117,6 +117,13 @@ async function writeServerTracePage(
 <script>
 (async function () {
   const sdk = Microsoft.OpenTelemetry;
+  const lateHash = new URL(location.href).searchParams.get("lateHash");
+  if (lateHash && lateHash !== location.hash) {
+    await new Promise(resolve => {
+      window.addEventListener("hashchange", resolve, { once: true });
+      location.hash = lateHash;
+    });
+  }
   const endpoint = ${JSON.stringify(endpoint)};
   const instrumentations = await Microsoft.OpenTelemetryInstrumentations.getInstrumentations({
     fetch: { propagateTraceHeaderCorsUrls: [endpoint] },

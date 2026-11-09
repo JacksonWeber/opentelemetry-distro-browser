@@ -21,12 +21,25 @@ interface Envelope {
   };
 }
 
-it.each(["meta", "header", "both", "invalid", "missing", "opt-out"])(
-  "correlates a served document and real fetch/XHR calls with %s context",
-  async (scenario) => {
+it.each([
+  ...["meta", "header", "both", "invalid", "missing", "opt-out"].map((scenario) => ({
+    scenario,
+    hash: "",
+    lateHash: "",
+  })),
+  ...["meta", "header"].flatMap((scenario) => [
+    { scenario, hash: "#/home", lateHash: "" },
+    { scenario, hash: "#/home", lateHash: "#/checkout" },
+    { scenario, hash: "", lateHash: "#/checkout" },
+  ]),
+])(
+  "correlates a served document and real fetch/XHR calls ($scenario, hash=$hash, lateHash=$lateHash)",
+  async ({ scenario, hash, lateHash }) => {
     const runId = crypto.randomUUID();
     const ingestionOrigin = new URL(inject("ingestionEndpoint")).origin;
     const pageUrl = new URL("/server-trace.html", inject("cdnPageOrigin"));
+    pageUrl.hash = hash;
+    if (lateHash) pageUrl.searchParams.set("lateHash", lateHash);
     pageUrl.searchParams.set("scenario", scenario);
     pageUrl.searchParams.set("ingestionEndpoint", `${inject("ingestionEndpoint")}${runId}`);
     pageUrl.searchParams.set(
@@ -36,7 +49,7 @@ it.each(["meta", "header", "both", "invalid", "missing", "opt-out"])(
     const { state, diagnostics } = await commands.loadSnippetPage(pageUrl.href);
     expect(state, diagnostics.join("\n")).not.toMatch(/^failed:/);
     const result = JSON.parse(state) as PageResult;
-    const continued = ["meta", "header", "both"].includes(scenario);
+    const continued = ["meta", "header", "both"].includes(scenario) && !lateHash;
     const expectedTrace = scenario === "header" ? "3".repeat(32) : "1".repeat(32);
     const expectedParent = scenario === "header" ? "4".repeat(16) : "2".repeat(16);
     if (continued) {

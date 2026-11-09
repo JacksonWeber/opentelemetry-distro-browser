@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { context, diag, propagation, trace } from "@opentelemetry/api";
+import { context, createContextKey, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { BatchLogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
@@ -247,6 +247,53 @@ it("hands page correlation to a surviving distribution copy", async () => {
     history.replaceState(null, "", originalUrl);
   }
 });
+
+it.each(["shared", "isolated"])(
+  "removes captured server parents across distribution copies with %s APIs",
+  async (mode) => {
+    const meta = document.createElement("meta");
+    meta.name = "traceparent";
+    meta.content = `00-${"1".repeat(32)}-${"2".repeat(16)}-01`;
+    document.head.append(meta);
+    try {
+      const [host, remote] = await loadCopies(mode);
+      const first = createPipeline();
+      const second = createPipeline();
+      const owner = await host.useMicrosoftOpenTelemetry({ ...first.options, pageView: {} });
+      handles.push(owner);
+      const survivor = await remote.useMicrosoftOpenTelemetry(second.options);
+      handles.push(survivor);
+      const key = createContextKey("application-data");
+      const captured = host.context.active().setValue(key, "retained");
+      const parent = host.trace.getSpanContext(captured)!;
+      expect(parent).toMatchObject({
+        traceId: "1".repeat(32),
+        spanId: "2".repeat(16),
+        isRemote: true,
+      });
+      const pageCallback = remote.context.bind(captured, () => remote.context.active());
+      const explicit = remote.trace.setSpanContext(captured, { ...parent });
+      const applicationCallback = remote.context.bind(explicit, () => remote.context.active());
+      await owner.shutdown();
+      const remaining = pageCallback();
+      expect(remote.trace.getSpanContext(remaining)).toBeUndefined();
+      expect(remaining.getValue(key)).toBe("retained");
+      expect(applicationCallback()).toBe(explicit);
+      const headers: Record<string, string> = {};
+      remote.propagation.inject(remaining, headers);
+      expect(headers).toEqual({});
+      remote.context.with(captured, () => {
+        remote.trace.getTracer("survivor").startSpan("after shutdown").end();
+        remote.logs.getLogger("survivor").emit({ body: "after shutdown" });
+      });
+      await survivor.forceFlush();
+      expect(second.spans.getFinishedSpans()[0].parentSpanContext).toBeUndefined();
+      expect(second.records.getFinishedLogRecords()[0].spanContext).toBeUndefined();
+    } finally {
+      meta.remove();
+    }
+  },
+);
 
 it("recognizes another copy's page context when exporting to Azure Monitor", async () => {
   const [host, remote] = await loadCopies();

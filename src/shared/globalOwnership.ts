@@ -56,6 +56,8 @@ interface SharedRegistry {
   diagInitialized?: boolean;
   reportingSdkStats?: boolean;
   pageContexts?: WeakSet<SpanContext>;
+  /** Managed remote parents must not be treated as synthetic contexts by sampling or export. */
+  pageParents?: WeakSet<SpanContext>;
   operationNames?: WeakMap<object, string>;
   router?: RouterState;
   page?: PageContextState;
@@ -116,10 +118,12 @@ export function isSdkIngestionUrl(url: string): boolean {
   );
 }
 
-/** Exporter-only consumers may read page membership without initializing a distribution. */
-export function getPageContexts(): WeakSet<SpanContext> | undefined {
+/** Reads synthetic or server-parent membership without initializing a distribution. */
+export function getPageContexts(
+  key: "pageContexts" | "pageParents" = "pageContexts",
+): WeakSet<SpanContext> | undefined {
   const registry = realm[distroKey] as SharedRegistry | undefined;
-  return registry?.version === 1 ? registry.pageContexts : undefined;
+  return registry?.version === 1 ? registry[key] : undefined;
 }
 
 /** Prevents diagnostic feedback into telemetry. */

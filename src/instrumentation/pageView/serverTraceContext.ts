@@ -3,13 +3,14 @@
 
 import { diag, TraceFlags, type SpanContext } from "@opentelemetry/api";
 import { parseTraceParent, TraceState } from "@opentelemetry/core";
+import { getSharedRegistry } from "../../shared/globalOwnership.js";
 
 /** Reads the initial document's remote parent without changing global propagation. */
 export function readServerTraceContext(
   navigation?: PerformanceNavigationTiming,
 ): SpanContext | undefined {
   // A late initialization on a different SPA route must not reuse the document's server parent.
-  if (navigation?.name && navigation.name.split("#")[0] !== location.href.split("#")[0]) {
+  if (navigation?.name && navigation.name !== location.href) {
     return undefined;
   }
   const sources = [
@@ -24,6 +25,8 @@ export function readServerTraceContext(
       parent.traceFlags &= TraceFlags.SAMPLED;
       const state = get("tracestate");
       if (state) parent.traceState = new TraceState(state);
+      const registry = getSharedRegistry();
+      (registry.pageParents ??= new WeakSet<SpanContext>()).add(parent);
       return parent;
     }
     if (traceparent) diag.warn("Invalid server traceparent.");

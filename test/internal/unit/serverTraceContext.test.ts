@@ -3,6 +3,7 @@
 
 import {
   context,
+  createContextKey,
   diag,
   isSpanContextValid,
   propagation,
@@ -213,6 +214,66 @@ it.each([false, true])(
   },
 );
 
+it.each([0, 1])(
+  "removes captured server page context when its last owner stops (sampled=%s)",
+  async (sampled) => {
+    meta("traceparent", `00-${traceId}-${spanId}-0${sampled}`);
+    const owner = await start();
+    const key = createContextKey("application-data");
+    const captured = context.active().setValue(key, "retained");
+    const parent = trace.getSpanContext(captured)!;
+    const pageCallback = context.bind(captured, () => {
+      const active = context.active();
+      expect(trace.getSpanContext(active)).toBeUndefined();
+      expect(active.getValue(key)).toBe("retained");
+      const headers: Record<string, string> = {};
+      propagation.inject(active, headers);
+      expect(headers).toEqual({});
+      const span = trace.getTracer("survivor").startSpan("after shutdown");
+      expect(span.isRecording()).toBe(true);
+      expect(span.spanContext().traceId).not.toBe(traceId);
+      span.end();
+      logs.getLogger("survivor").emit({ body: "after shutdown" });
+    });
+    const explicit = trace.setSpanContext(captured, { ...parent });
+    const applicationCallback = context.bind(explicit, () => context.active());
+    const applicationSpan = trace.getTracer("owner").startSpan("application span");
+    const applicationContext = trace.setSpan(captured, applicationSpan);
+    const spanCallback = context.bind(applicationContext, () => context.active());
+    applicationSpan.end();
+    window.dispatchEvent(new Event("pagehide"));
+    await owner.handle.forceFlush();
+    const bufferedLogs = owner.logExporter.getFinishedLogRecords().slice();
+    const bufferedSpans = owner.spanExporter.getFinishedSpans().slice();
+
+    const survivor = await start({ pageView: { enabled: false } });
+    const stopping = owner.handle.shutdown();
+    pageCallback();
+    await stopping;
+    pageCallback();
+    expect(applicationCallback()).toBe(explicit);
+    expect(spanCallback()).toBe(applicationContext);
+    expect(trace.getSpanContext(captured)).toBe(parent);
+    const explicitHeaders: Record<string, string> = {};
+    propagation.inject(applicationCallback(), explicitHeaders);
+    expect(explicitHeaders.traceparent).toBe(`00-${traceId}-${spanId}-0${sampled}`);
+
+    await survivor.handle.forceFlush();
+    for (const record of survivor.logExporter.getFinishedLogRecords()) {
+      expect(record.spanContext).toBeUndefined();
+    }
+    expect(bufferedLogs.length).toBeGreaterThan(0);
+    for (const record of bufferedLogs) {
+      expect(logToEnvelope(record, "key").tags["ai.operation.parentId"]).toBe(spanId);
+      expect(record.spanContext?.traceFlags).toBe(sampled);
+    }
+    expect(bufferedSpans).toHaveLength(sampled);
+    for (const span of bufferedSpans) {
+      expect(spanToEnvelope(span, "key").tags["ai.operation.parentId"]).toBe(spanId);
+    }
+  },
+);
+
 it("opts out without disabling page correlation or outgoing propagation", async () => {
   meta("traceparent", traceparent);
   const read = vi.spyOn(document, "querySelector");
@@ -296,6 +357,20 @@ it("does not adopt document context when first initialized on a different SPA ro
   await start();
   expect(trace.getSpanContext(context.active())?.traceId).not.toBe(traceId);
 });
+
+it.each([false, true])(
+  "distinguishes an initial fragment from a late hash route (late=%s)",
+  async (late) => {
+    const url = new URL(originalUrl);
+    url.hash = "/home";
+    history.replaceState(null, "", url.href);
+    meta("traceparent", traceparent);
+    serverTiming(undefined, undefined, url.href);
+    if (late) history.pushState(null, "", "#/checkout");
+    await start();
+    expect(trace.getSpanContext(context.active())?.traceId === traceId).toBe(!late);
+  },
+);
 
 it("starts a fresh operation when the document is restored from the back/forward cache", async () => {
   meta("traceparent", traceparent);
