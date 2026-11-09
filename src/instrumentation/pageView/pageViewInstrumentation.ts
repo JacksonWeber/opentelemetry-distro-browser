@@ -17,6 +17,7 @@ import { InstrumentationBase, safeExecuteInTheMiddle } from "@opentelemetry/inst
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../shared/constants.js";
 import { markPageContext } from "../../shared/pageOperationContext.js";
 import { createPageViewContext, generatePageViewId } from "./pageViewContext.js";
+import { readServerTraceContext } from "./serverTraceContext.js";
 import { redactUrl } from "./urlRedaction.js";
 import {
   ATTR_PAGE_VIEW_DURATION,
@@ -284,8 +285,14 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     }
     const active = trace.getSpanContext(this.initialContext ?? context.active());
     this.initialContext = undefined;
-    if (active && isSpanContextValid(active)) {
-      this.operation = active;
+    const initial =
+      (active && isSpanContextValid(active) ? active : undefined) ??
+      this.getConfig().sharedOperation?.() ??
+      (this.pageViewIndex === 0 && this.getConfig().useServerTraceContext !== false
+        ? readServerTraceContext()
+        : undefined);
+    if (initial) {
+      this.operation = initial;
       this.operationUrl = this.getNavigationApi()?.currentEntry?.url ?? location.href;
     }
     this.enabledState = true;

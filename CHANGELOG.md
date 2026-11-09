@@ -6,6 +6,9 @@ All notable changes to this package are documented in this file.
 
 ### Added
 
+- Continue server-provided W3C trace context from HTML meta tags or navigation `Server-Timing`
+  for initial page telemetry, with a `pageView.useServerTraceContext` opt-out. SPA routes retain
+  independent traces.
 - Classify named browser log events as Azure Monitor custom events regardless of severity, while
   preserving browser console records as trace messages with their severity.
 

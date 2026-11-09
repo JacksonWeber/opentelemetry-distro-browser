@@ -47,6 +47,10 @@ export default async function setup(project: TestProject): Promise<() => Promise
   const pageServer = createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? "/", "http://localhost");
+      if (request.method === "GET" && url.pathname === "/server-trace.html") {
+        await writeServerTracePage(response, cdnOrigin, url.searchParams);
+        return;
+      }
       if (request.method !== "GET" || url.pathname !== "/snippet.html") {
         response.writeHead(404).end();
         return;
@@ -61,6 +65,97 @@ export default async function setup(project: TestProject): Promise<() => Promise
   return async () => {
     await Promise.all([close(cdnServer), close(pageServer)]);
   };
+}
+
+async function writeServerTracePage(
+  response: ServerResponse,
+  cdnOrigin: string,
+  parameters: URLSearchParams,
+): Promise<void> {
+  const { version } = JSON.parse(await readFile(resolve(root, "package.json"), "utf8")) as {
+    version: string;
+  };
+  const scenario = required(parameters, "scenario");
+  const connectionString =
+    "InstrumentationKey=00000000-0000-0000-0000-000000000000;" +
+    `IngestionEndpoint=${required(parameters, "ingestionEndpoint")}`;
+  const endpoint = required(parameters, "requestEndpoint");
+  const metaParent = "00-11111111111111111111111111111111-2222222222222222-01";
+  const headerParent = "00-33333333333333333333333333333333-4444444444444444-01";
+  const hasMeta = ["meta", "both", "opt-out", "invalid"].includes(scenario);
+  const hasHeader = ["header", "both", "invalid"].includes(scenario);
+  response.writeHead(200, {
+    "content-type": "text/html; charset=utf-8",
+    ...(hasHeader
+      ? {
+          "server-timing":
+            `traceparent;desc="${scenario === "invalid" ? "invalid" : headerParent}", ` +
+            'tracestate;desc="header=state"',
+        }
+      : {}),
+  });
+  response.end(`<!doctype html>
+<html lang="en">
+<head>
+  <title>Server trace context</title>
+  ${
+    hasMeta
+      ? `<meta name="traceparent" content="${scenario === "invalid" ? "invalid" : metaParent}">
+  <meta name="tracestate" content="meta=state">`
+      : ""
+  }
+  <script src="${cdnOrigin}/opentelemetry-browser.${version}.min.js"></script>
+  <script src="${cdnOrigin}/opentelemetry-browser-instrumentations.${version}.min.js"></script>
+</head>
+<body>
+<script>
+(async function () {
+  const sdk = Microsoft.OpenTelemetry;
+  const endpoint = ${JSON.stringify(endpoint)};
+  const instrumentations = await Microsoft.OpenTelemetryInstrumentations.getInstrumentations({
+    fetch: { propagateTraceHeaderCorsUrls: [endpoint] },
+    xhr: { propagateTraceHeaderCorsUrls: [endpoint] }
+  });
+  const options = { azureMonitor: { connectionString: ${JSON.stringify(connectionString)} } };
+  const first = await sdk.useMicrosoftOpenTelemetry({
+    ...options, instrumentations, pageView: { useServerTraceContext: ${scenario !== "opt-out"} }
+  });
+  const second = await sdk.useMicrosoftOpenTelemetry(options);
+  try {
+    const operation = sdk.trace.getSpanContext(sdk.context.active());
+    sdk.logs.getLogger("server-trace-test").emit({ body: "during load" });
+    const fetchHeaders = await fetch(endpoint).then(response => response.json());
+    const xhrHeaders = await new Promise((resolve, reject) => {
+      const request = new XMLHttpRequest();
+      request.open("GET", endpoint);
+      request.onload = () => resolve(JSON.parse(request.responseText));
+      request.onerror = () => reject(new Error("XHR failed"));
+      request.send();
+    });
+    await new Promise(resolve => {
+      const settle = () => setTimeout(resolve, 0);
+      if (document.readyState === "complete") settle();
+      else window.addEventListener("load", settle, { once: true });
+    });
+    await Promise.all([first.forceFlush(), second.forceFlush()]);
+    history.pushState(null, "", "/spa");
+    const route = sdk.trace.getSpanContext(sdk.context.active());
+    sdk.trace.getTracer("server-trace-test").startSpan("route dependency").end();
+    window.dispatchEvent(new Event("pagehide"));
+    await Promise.all([first.forceFlush(), second.forceFlush()]);
+    document.body.dataset.state = JSON.stringify({
+      traceId: operation.traceId, parentId: operation.spanId, routeId: route.traceId,
+      fetchHeaders, xhrHeaders,
+      serverTiming: performance.getEntriesByType("navigation")[0].serverTiming.map(entry => entry.name)
+    });
+  } finally {
+    await second.shutdown();
+    await first.shutdown();
+  }
+})().catch(error => { document.body.dataset.state = "failed: " + error.stack; });
+</script>
+</body>
+</html>`);
 }
 
 async function writeSnippetPage(

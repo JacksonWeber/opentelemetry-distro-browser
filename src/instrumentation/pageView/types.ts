@@ -164,6 +164,19 @@ export interface PageViewInstrumentationConfig {
   readonly enabled?: boolean;
 
   /**
+   * Continues the initial document's server trace for its page view, spans, and logs.
+   *
+   * @remarks
+   * Reads W3C `traceparent` and optional `tracestate` from meta tags, falling back to entries with
+   * those names in the navigation's `Server-Timing` header. A valid meta parent takes precedence,
+   * and its trace state is never combined with the header's trace state. Missing or invalid
+   * parents fall back to a new trace. Explicit application span contexts take precedence.
+   *
+   * @defaultValue true
+   */
+  readonly useServerTraceContext?: boolean;
+
+  /**
    * Supplies the framework route pattern, such as `/orders/:id`. Called when the navigation is
    * observed and again when it settles, so a router that commits its route asynchronously is
    * still reflected. Must be cheap and free of side effects.
