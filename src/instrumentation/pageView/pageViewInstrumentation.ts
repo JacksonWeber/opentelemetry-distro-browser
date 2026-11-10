@@ -17,6 +17,7 @@ import { InstrumentationBase, safeExecuteInTheMiddle } from "@opentelemetry/inst
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../shared/constants.js";
 import { markPageContext } from "../../shared/pageOperationContext.js";
 import { createPageViewContext, generatePageViewId } from "./pageViewContext.js";
+import { readServerTraceContext } from "./serverTraceContext.js";
 import { redactUrl } from "../../shared/urlRedaction.js";
 import { createKeyValueStorage } from "../../storage/keyValueStorage.js";
 import { PageVisitTime } from "./pageVisitTime.js";
@@ -278,13 +279,20 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       this.#operation = shared;
       this.#operationUrl = url;
     } else if (!this.#operation || this.#operationUrl !== url) {
-      const traceId = this.#mintId(this.getConfig().generatePageViewId);
-      this.#operation = {
-        traceId,
-        spanId: new RandomIdGenerator().generateSpanId(),
-        traceFlags: this.isTraceSampled(traceId) ? TraceFlags.SAMPLED : TraceFlags.NONE,
-      };
-      markPageContext(this.#operation);
+      const config = this.getConfig();
+      this.#operation =
+        this.#pageViewIndex === 0 && config.useServerTraceContext !== false
+          ? readServerTraceContext(this.#getNavigationTiming())
+          : undefined;
+      if (!this.#operation) {
+        const traceId = this.#mintId(config.generatePageViewId);
+        this.#operation = {
+          traceId,
+          spanId: new RandomIdGenerator().generateSpanId(),
+          traceFlags: this.isTraceSampled(traceId) ? TraceFlags.SAMPLED : TraceFlags.NONE,
+        };
+        markPageContext(this.#operation);
+      }
       this.#operationUrl = url;
       this.#operationName = undefined;
       this.#operationName = this.#resolveOperationName();
@@ -562,11 +570,8 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
   }
 
   #getNavigationTiming(): PerformanceNavigationTiming | undefined {
-    if (typeof performance?.getEntriesByType !== "function") {
-      return undefined;
-    }
-    const [entry] = performance.getEntriesByType("navigation");
-    return entry as PerformanceNavigationTiming | undefined;
+    return performance.getEntriesByType?.("navigation")[0] as
+      PerformanceNavigationTiming | undefined;
   }
 
   #mapHardNavigationType(type: string | undefined): PageViewNavigationType {

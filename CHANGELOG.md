@@ -6,6 +6,9 @@ All notable changes to this package are documented in this file.
 
 ### Added
 
+- Continue server-provided W3C trace context from HTML meta tags or navigation `Server-Timing`
+  for initial page telemetry, with a `pageView.useServerTraceContext` opt-out. SPA routes retain
+  independent traces.
 - Document ApplicationInsights-JS migration paths, intentional exclusions and current gaps.
   Remove legacy correlation headers from the planned scope and retain W3C propagation.
 - Add opt-in HTTP(S) configuration synchronization through `extensionConfig.AppInsightsCfgSyncPlugin`,

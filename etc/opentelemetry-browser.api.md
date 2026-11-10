@@ -200,6 +200,7 @@ export interface PageViewInstrumentationConfig {
     readonly sanitizeUrl?: (url: string) => string;
     readonly softNavigationSettleTimeoutMs?: number;
     readonly useNavigationApiIfAvailable?: boolean;
+    readonly useServerTraceContext?: boolean;
 }
 
 // @public

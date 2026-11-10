@@ -165,6 +165,19 @@ export interface PageViewInstrumentationConfig {
   readonly enabled?: boolean;
 
   /**
+   * Continues the initial document's server trace for its page view, spans, and logs.
+   *
+   * @remarks
+   * Reads W3C `traceparent` and optional `tracestate` from meta tags, falling back to entries with
+   * those names in the navigation's `Server-Timing` header. A valid meta parent takes precedence,
+   * and its trace state is never combined with the header's trace state. Missing or invalid
+   * parents fall back to a new trace. Explicit application span contexts take precedence.
+   *
+   * @defaultValue true
+   */
+  readonly useServerTraceContext?: boolean;
+
+  /**
    * Reports the previous page's visit duration when the next page view starts, including SPA
    * routes. Azure Monitor receives a `PageVisitTime` custom metric in milliseconds with
    * `PageName` and `PageUrl` properties. This is elapsed time, including time in hidden tabs,

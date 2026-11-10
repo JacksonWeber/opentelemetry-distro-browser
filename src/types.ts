@@ -293,6 +293,8 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
    * and subsequent route changes. The page-view ID is its operation trace ID. Otherwise
    * unparented spans and logs share that operation; explicit span contexts are preserved.
    * Page URL and descriptive attributes stay on the page-view record, not on other telemetry.
+   * The initial page continues a valid server trace by default. Set `useServerTraceContext` to
+   * false to opt out. SPA routes start new traces.
    *
    * Collection and operation correlation are on by default; set `enabled: false` to turn both off.
    * Doing so stops collection

@@ -7,7 +7,7 @@ Applications create custom telemetry through standard OpenTelemetry APIs. Applic
 Insights-style convenience and manual tracking APIs such as `trackEvent`, `trackPageView`,
 `trackException`, `trackDependencyData` and `trackMetric` are out of scope.
 
-Status: in progress. The server-rooted page trace and exact supported browser versions remain. M1
+Status: in progress. Exact supported browser versions remain. M1
 preserves the `useMicrosoftOpenTelemetry(options)` initializer and adds
 a `userContext` property to the lifecycle handle for identity lifecycle and persistence, plus
 options for identity persistence and configurable sessions. The handle remains free of `track*`
@@ -21,7 +21,7 @@ and manual telemetry methods.
 | Sessions | Configurable session lifetimes, a persistence opt-out, and exporter-owned `session.id` to `ai.session.id` mapping. Sessions are on by default with a 30-minute inactivity timeout and a 24-hour maximum lifetime. | Done (#85, #106, #124) |
 | Page performance | Add Azure Monitor exporter support for `PageViewPerformanceData`: define its telemetry model and base type, map navigation timing phases to `perfTotal`, `networkConnect`, `sentRequest`, `receivedResponse` and `domProcessing`, correlate each record to its owning page view, and validate the customer-visible Azure Monitor fields. | Done (#58) |
 | Fixed-percentage sampling | Add fixed-percentage sampling equivalent in effect to Application Insights `samplingPercentage` without a proprietary tracking API. Compose the upstream sampler for spans; define the corresponding log-record policy and have the Azure Monitor exporter set envelope `sampleRate` to the effective percentage instead of hard-coded `100`. | Done (#57), through the `samplingPercentage` option |
-| Server-rooted page trace | Read a server-issued `traceparent` and `tracestate` from the initial document load, through a `<meta>` tag or the `Server-Timing` header, and parent the first page operation on the server request that rendered the page. Malformed or missing values fall back to a new trace, and the behavior can be disabled. Application Insights JavaScript does this by default through `traceHdrMode`; since 3.4 its `routeTraceStrategy` also parents SPA route page views on the server trace by default, with an option to chain page views instead. The distribution must choose and document its SPA route behavior. | Not started |
+| Server-rooted page trace | Read a server-issued `traceparent` and `tracestate` from the initial document load, through a `<meta>` tag or the `Server-Timing` header, and parent the first page operation on the server request that rendered the page. Malformed or missing values fall back to a new trace, and `pageView.useServerTraceContext: false` disables extraction. Application Insights JavaScript does this by default through `traceHdrMode`. Since 3.4 its `routeTraceStrategy` also parents SPA route page views on the server trace by default, with an option to chain page views instead. This distribution intentionally starts independent traces on SPA routes. | Implemented |
 
 Distribution-owned browser instrumentation event names and attribute keys pass through one internal
 semantic-conventions map. Application-supplied standard OpenTelemetry telemetry passes through
