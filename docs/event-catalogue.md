@@ -166,6 +166,11 @@ details are represented by string attributes `exception.type`, `exception.messag
 can add fields. Error messages and stacks may contain URLs and application data; review them before
 exporting. These are log records, not automatically created error spans.
 
+Opt-in [exception attachments](configuration-reference.md#exception-attachments) add
+`exceptionScripts` (JSON script metadata array) and `exceptionLog` (newline-separated application log text),
+each capped at 8 KiB UTF-8. These also apply to manually emitted exception logs and `exception`
+span events. Neither attachment is collected by default, and log text is not redacted.
+
 ## Navigation: `browser.navigation`
 
 Reports initial load and in-document navigation through History APIs, or the Navigation API when

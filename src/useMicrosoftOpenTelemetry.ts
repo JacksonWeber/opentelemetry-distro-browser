@@ -41,6 +41,7 @@ import {
 import { startTelemetryInstance, type TelemetryInstance } from "./routing/telemetryInstance.js";
 import { isTraceSampled, RuntimeSampler } from "./sampling.js";
 import { DEFAULT_QUERY_STRINGS_TO_REDACT } from "./shared/urlRedaction.js";
+import { createExceptionEnrichment } from "./exceptionEnrichment.js";
 import type {
   MicrosoftOpenTelemetryBrowser,
   MicrosoftOpenTelemetryBrowserOptions,
@@ -218,6 +219,7 @@ export async function useMicrosoftOpenTelemetry(
     ...DEFAULT_QUERY_STRINGS_TO_REDACT,
     ...(options.redactQueryParams ?? []),
   ];
+  const exceptionEnrichment = createExceptionEnrichment(options.expCfg, redactedQueryParams);
   if (
     options.storage !== undefined &&
     (typeof options.storage !== "object" ||
@@ -358,6 +360,9 @@ export async function useMicrosoftOpenTelemetry(
       const errors: unknown[] = [];
       for (const cleanup of [
         () => configSync?.shutdown(),
+        () => {
+          void exceptionEnrichment?.shutdown();
+        },
         () => {
           if (!initialized) pageViewInstrumentation?.rollbackStartup();
         },
@@ -537,9 +542,20 @@ export async function useMicrosoftOpenTelemetry(
       },
       sampler,
       // An empty list turns the signal off. Otherwise enrichment runs first.
-      spanProcessors: spanProcessors.length ? [contextSpanProcessor, ...spanProcessors] : [],
+      spanProcessors: spanProcessors.length
+        ? [
+            contextSpanProcessor,
+            ...(exceptionEnrichment ? [exceptionEnrichment] : []),
+            ...spanProcessors,
+          ]
+        : [],
       logRecordProcessors: logRecordProcessors.length
-        ? [contextLogRecordProcessor, ...(correlation ? [correlation] : []), ...logRecordProcessors]
+        ? [
+            contextLogRecordProcessor,
+            ...(correlation ? [correlation] : []),
+            ...(exceptionEnrichment ? [exceptionEnrichment] : []),
+            ...logRecordProcessors,
+          ]
         : [],
       contextManager: traceOptions?.contextManager,
       correlation,

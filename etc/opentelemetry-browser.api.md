@@ -132,6 +132,15 @@ export interface MicrosoftOpenTelemetryBrowserConfigurationUpdateResult {
 }
 
 // @public
+export interface MicrosoftOpenTelemetryBrowserExceptionOptions {
+    expLog?: () => {
+        logs: readonly string[];
+    };
+    inclScripts?: boolean;
+    maxLogs?: number;
+}
+
+// @public
 export interface MicrosoftOpenTelemetryBrowserInstrumentations {
     add(id: string, instrumentation: BrowserInstrumentation): Promise<void>;
     get(id: string): BrowserInstrumentation | undefined;
@@ -143,6 +152,7 @@ export interface MicrosoftOpenTelemetryBrowserInstrumentations {
 // @public
 export interface MicrosoftOpenTelemetryBrowserOptions {
     azureMonitor?: AzureMonitorOptions<string | Promise<string>>;
+    expCfg?: MicrosoftOpenTelemetryBrowserExceptionOptions;
     extensionConfig?: {
         AppInsightsCfgSyncPlugin?: MicrosoftOpenTelemetryBrowserConfigurationSyncOptions;
     };

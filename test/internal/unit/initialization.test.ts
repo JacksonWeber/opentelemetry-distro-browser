@@ -35,6 +35,7 @@ import { DEFAULT_QUERY_STRINGS_TO_REDACT } from "../../../src/shared/urlRedactio
 import { createInMemoryPipeline } from "../../fixtures/telemetry.js";
 import { AZURE_MONITOR_SAMPLE_RATE, RuntimeSampler } from "../../../src/sampling.js";
 import { AzureMonitorSamplingLogRecordProcessor } from "../../../src/samplingLogRecordProcessor.js";
+import { createExceptionEnrichment } from "../../../src/exceptionEnrichment.js";
 
 vi.mock("../../../src/routing/telemetryInstance.js", { spy: true });
 
@@ -112,6 +113,467 @@ it("prepends session enrichment without changing the caller's processor arrays",
   await handle.forceFlush();
   await handle.shutdown();
   expect(upstreamHandle.shutdown).toHaveBeenCalledOnce();
+});
+
+it.each([undefined, {}, { inclScripts: false }, { maxLogs: 0 }])(
+  "does not install exception enrichment without an enabled attachment: %j",
+  (options) => {
+    expect(createExceptionEnrichment(options, [])).toBeUndefined();
+  },
+);
+
+it.each([
+  null,
+  [],
+  { inclScripts: "true" },
+  { expLog: true },
+  { maxLogs: -1 },
+  { maxLogs: 1.5 },
+  { maxLogs: NaN },
+  { maxLogs: Infinity },
+  { maxLogs: Number.MAX_SAFE_INTEGER + 1 },
+])("rejects invalid exception configuration before provider startup: %j", async (expCfg) => {
+  await expect(
+    useMicrosoftOpenTelemetry({ expCfg } as unknown as MicrosoftOpenTelemetryBrowserOptions),
+  ).rejects.toThrow(TypeError);
+  expect(startTelemetryInstance).not.toHaveBeenCalled();
+});
+
+it("enriches exception logs and span events before application processors without changing ordinary records", async () => {
+  const pipeline = createInMemoryPipeline();
+  const expLog = vi.fn(() => ({ logs: ["newest", "older", "outside limit"] }));
+  const expCfg = { expLog, maxLogs: 2 };
+  const handle = await useMicrosoftOpenTelemetry({
+    ...pipeline.options,
+    expCfg,
+    pageView: { enabled: false },
+    session: { enabled: false },
+    userContext: { enabled: false },
+  });
+  handles.add(handle);
+  // Options are captured, but the callback still supplies live application state.
+  expCfg.maxLogs = 0;
+  const logger = logs.getLogger("exception-context");
+  logger.emit({ body: "ordinary" });
+  logger.emit({ eventName: "browser.console", body: "console" });
+  logger.emit({ eventName: "exception", body: "failure" });
+  logger.emit({ attributes: { "exception.type": "TypeError" } });
+  logger.emit({ eventName: "exception", attributes: { exceptionLog: "application value" } });
+  const span = trace.getTracer("exception-context").startSpan("operation");
+  const attributes = Object.freeze({ "exception.message": "span failure" });
+  span.addEvent("ordinary");
+  span.addEvent("exception", attributes);
+  span.addEvent("exception", { exceptionLog: "application event value" });
+  span.end();
+  await handle.forceFlush();
+
+  expect(
+    pipeline.logExporter.getFinishedLogRecords().map((record) => record.attributes.exceptionLog),
+  ).toEqual([undefined, undefined, "newest\nolder", "newest\nolder", "application value"]);
+  expect(
+    pipeline.spanExporter
+      .getFinishedSpans()[0]
+      .events.map((event) => event.attributes?.exceptionLog),
+  ).toEqual([undefined, "newest\nolder", "application event value"]);
+  expect(attributes).toEqual({ "exception.message": "span failure" });
+  expect(expLog).toHaveBeenCalledTimes(3);
+});
+
+it.each([126, 127, 128, 129])(
+  "preserves the SDK's span-event attribute limit with %s application attributes",
+  async (count) => {
+    const pipeline = createInMemoryPipeline();
+    const handle = await useMicrosoftOpenTelemetry({
+      ...pipeline.options,
+      expCfg: { inclScripts: true, expLog: () => ({ logs: ["context"] }) },
+      pageView: { enabled: false },
+      session: { enabled: false },
+      userContext: { enabled: false },
+    });
+    handles.add(handle);
+    const attributes = Object.fromEntries(
+      Array.from({ length: count }, (_, index) => [`application.${index}`, index]),
+    );
+    const span = trace.getTracer("exception-context").startSpan("attribute limit");
+    span.addEvent("exception", attributes);
+    span.end();
+    await handle.forceFlush();
+    const event = pipeline.spanExporter.getFinishedSpans()[0].events[0];
+    expect(Object.keys(event.attributes ?? {})).toHaveLength(128);
+    expect(event.attributes).toMatchObject(
+      Object.fromEntries(Object.entries(attributes).slice(0, 128)),
+    );
+    expect(event.attributes?.exceptionScripts).toEqual(
+      count < 128 ? expect.any(String) : undefined,
+    );
+    expect(event.attributes?.exceptionLog).toBe(count < 127 ? "context" : undefined);
+    expect(event.droppedAttributesCount).toBe(count + 2 - 128);
+  },
+);
+
+it("bounds default log count and UTF-8 attachment size without changing application logs", async () => {
+  const pipeline = createInMemoryPipeline();
+  const entries = Array.from({ length: 60 }, (_, index) => `entry ${index}`);
+  const expLog = vi.fn(() => ({ logs: entries }));
+  const handle = await useMicrosoftOpenTelemetry({
+    ...pipeline.options,
+    expCfg: { expLog },
+    pageView: { enabled: false },
+    session: { enabled: false },
+    userContext: { enabled: false },
+  });
+  handles.add(handle);
+  const logger = logs.getLogger("exception-context");
+  logger.emit({ eventName: "exception" });
+  expLog.mockReturnValueOnce({ logs: ["😀".repeat(10_000), "not retained"] });
+  logger.emit({ eventName: "exception" });
+  await handle.forceFlush();
+  const [countBound, byteBound] = pipeline.logExporter.getFinishedLogRecords();
+  expect(String(countBound.attributes.exceptionLog).split("\n")).toEqual(entries.slice(0, 50));
+  const attachment = String(byteBound.attributes.exceptionLog);
+  expect(new TextEncoder().encode(attachment).byteLength).toBeLessThanOrEqual(8192);
+  expect(attachment).toBe("😀".repeat(2048));
+  expect(entries).toHaveLength(60);
+});
+
+it.each([undefined, null, {}, { logs: "invalid" }, { logs: [42, {}, "valid"] }])(
+  "isolates malformed application log snapshots: %j",
+  async (snapshot) => {
+    const pipeline = createInMemoryPipeline();
+    const handle = await useMicrosoftOpenTelemetry({
+      ...pipeline.options,
+      expCfg: {
+        expLog: (() => snapshot) as unknown as NonNullable<
+          MicrosoftOpenTelemetryBrowserOptions["expCfg"]
+        >["expLog"],
+      },
+      pageView: { enabled: false },
+      session: { enabled: false },
+      userContext: { enabled: false },
+    });
+    handles.add(handle);
+    logs.getLogger("exception-context").emit({ eventName: "exception", body: "still exported" });
+    await handle.forceFlush();
+    const [record] = pipeline.logExporter.getFinishedLogRecords();
+    expect(record.body).toBe("still exported");
+    expect(record.attributes.exceptionLog).toBe(
+      Array.isArray(snapshot?.logs) ? "valid" : undefined,
+    );
+  },
+);
+
+it("isolates throwing and reentrant callbacks and stops enrichment on shutdown", async () => {
+  const pipeline = createInMemoryPipeline();
+  const expLog = vi.fn(() => ({ logs: ["context"] }));
+  const handle = await useMicrosoftOpenTelemetry({
+    ...pipeline.options,
+    expCfg: { expLog },
+    pageView: { enabled: false },
+    session: { enabled: false },
+    userContext: { enabled: false },
+  });
+  handles.add(handle);
+  const logger = logs.getLogger("exception-context");
+  expLog.mockImplementationOnce(() => {
+    throw new Error("private callback detail");
+  });
+  logger.emit({ eventName: "exception", body: "throwing callback" });
+  expLog.mockImplementationOnce(() => {
+    logger.emit({ eventName: "exception", body: "nested exception" });
+    return { logs: ["outer context"] };
+  });
+  logger.emit({ eventName: "exception", body: "outer exception" });
+  await handle.forceFlush();
+  expect(expLog).toHaveBeenCalledTimes(2);
+  expect(
+    pipeline.logExporter
+      .getFinishedLogRecords()
+      .map((record) => [record.body, record.attributes.exceptionLog]),
+  ).toEqual([
+    ["throwing callback", undefined],
+    ["nested exception", undefined],
+    ["outer exception", "outer context"],
+  ]);
+  const staleSpan = trace.getTracer("exception-context").startSpan("stale");
+  staleSpan.recordException(new Error("stopped"));
+  await handle.shutdown();
+  logger.emit({ eventName: "exception" });
+  staleSpan.end();
+  expect(expLog).toHaveBeenCalledTimes(2);
+});
+
+it("exports a span only once when its exception callback ends the same span", async () => {
+  const pipeline = createInMemoryPipeline();
+  const expLog = vi.fn(() => {
+    span.end();
+    return { logs: ["context"] };
+  });
+  const handle = await useMicrosoftOpenTelemetry({
+    ...pipeline.options,
+    expCfg: { expLog },
+    pageView: { enabled: false },
+    session: { enabled: false },
+    userContext: { enabled: false },
+  });
+  handles.add(handle);
+  const span = trace.getTracer("exception-context").startSpan("reentrant end");
+  span.recordException(new Error("failure"));
+  span.end();
+  await handle.forceFlush();
+  expect(expLog).toHaveBeenCalledOnce();
+  const exported = pipeline.spanExporter.getFinishedSpans();
+  expect(exported).toHaveLength(1);
+  expect(exported[0].events[0].attributes?.exceptionLog).toBe("context");
+});
+
+it.each([false, true])(
+  "ignores asynchronous log snapshots without unhandled rejections (rejects: %s)",
+  async (rejects) => {
+    const pipeline = createInMemoryPipeline();
+    const expLog = vi.fn(() => ({ logs: ["synchronous"] }));
+    const handle = await useMicrosoftOpenTelemetry({
+      ...pipeline.options,
+      expCfg: { expLog },
+      pageView: { enabled: false },
+      session: { enabled: false },
+      userContext: { enabled: false },
+    });
+    handles.add(handle);
+    const snapshot = rejects
+      ? Promise.reject(new Error("private async callback detail"))
+      : Promise.resolve({ logs: ["must not be attached"] });
+    // Keep a regression from leaking an unhandled rejection into unrelated tests.
+    void snapshot.catch(() => {});
+    const observeSnapshot = vi.spyOn(snapshot, "then");
+    expLog.mockReturnValueOnce(snapshot as unknown as { logs: string[] });
+    logs.getLogger("exception-context").emit({ eventName: "exception", body: "still exported" });
+    await handle.forceFlush();
+    const [record] = pipeline.logExporter.getFinishedLogRecords();
+    expect(record.body).toBe("still exported");
+    expect(record.attributes.exceptionLog).toBeUndefined();
+    expect(expLog).toHaveBeenCalledOnce();
+    expect(observeSnapshot).toHaveBeenCalledWith(undefined, expect.any(Function));
+  },
+);
+
+it("keeps script collection enabled when maxLogs is zero without calling the callback", async () => {
+  const expLog = vi.fn(() => ({ logs: ["must not be read"] }));
+  const pipeline = createInMemoryPipeline();
+  const handle = await useMicrosoftOpenTelemetry({
+    ...pipeline.options,
+    expCfg: { inclScripts: true, expLog, maxLogs: 0 },
+    pageView: { enabled: false },
+    session: { enabled: false },
+    userContext: { enabled: false },
+  });
+  handles.add(handle);
+  logs.getLogger("exception-context").emit({ eventName: "exception" });
+  await handle.forceFlush();
+  const [record] = pipeline.logExporter.getFinishedLogRecords();
+  expect(Array.isArray(JSON.parse(String(record.attributes.exceptionScripts)))).toBe(true);
+  expect(record.attributes.exceptionLog).toBeUndefined();
+  expect(expLog).not.toHaveBeenCalled();
+});
+
+it("discards attachments when the application callback synchronously starts shutdown", async () => {
+  const pipeline = createInMemoryPipeline();
+  let shutdown: Promise<void> | undefined;
+  const expLog = vi.fn(() => {
+    shutdown = handle.shutdown();
+    return { logs: ["after shutdown"] };
+  });
+  const handle = await useMicrosoftOpenTelemetry({
+    ...pipeline.options,
+    expCfg: { expLog },
+    pageView: { enabled: false },
+    session: { enabled: false },
+    userContext: { enabled: false },
+  });
+  handles.add(handle);
+  logs.getLogger("exception-context").emit({ eventName: "exception" });
+  await shutdown;
+  expect(expLog).toHaveBeenCalledOnce();
+  expect(pipeline.logExporter.getFinishedLogRecords()).toHaveLength(0);
+});
+
+it("captures bounded, redacted script metadata without inline source and preserves explicit attachments", async () => {
+  const script = (src: string, attributes: Record<string, string> = {}): HTMLScriptElement =>
+    ({
+      getAttribute: (name: string) => (name === "src" ? src : (attributes[name] ?? null)),
+      hasAttribute: (name: string) => Object.hasOwn(attributes, name),
+    }) as HTMLScriptElement;
+  const scripts = [
+    script("https://user:secret@example.test/app.js?token=private&tenant=private&safe=visible", {
+      crossorigin: "anonymous",
+      async: "false",
+      defer: "",
+      referrerpolicy: "no-referrer",
+    }),
+    script(""),
+    script("data:text/javascript,private-inline-code"),
+    script("blob:https://example.test/private"),
+    script("http://[invalid"),
+    script("https://example.test/" + "x".repeat(9000)),
+    ...Array.from({ length: 150 }, (_, index) => script(`https://example.test/${index}.js`)),
+  ];
+  const readScripts = vi
+    .spyOn(document, "scripts", "get")
+    .mockReturnValue(scripts as unknown as HTMLCollectionOf<HTMLScriptElement>);
+  const pipeline = createInMemoryPipeline();
+  const handle = await useMicrosoftOpenTelemetry({
+    ...pipeline.options,
+    expCfg: {
+      inclScripts: true,
+      expLog: () => {
+        throw new Error("unavailable");
+      },
+    },
+    redactQueryParams: ["tenant"],
+    pageView: { enabled: false },
+    session: { enabled: false },
+    userContext: { enabled: false },
+  });
+  handles.add(handle);
+  const logger = logs.getLogger("exception-context");
+  logger.emit({ eventName: "exception" });
+  logger.emit({
+    eventName: "exception",
+    attributes: { exceptionScripts: "application scripts", exceptionLog: "application logs" },
+  });
+  await handle.forceFlush();
+  const [collected, explicit] = pipeline.logExporter.getFinishedLogRecords();
+  const metadata = JSON.parse(String(collected.attributes.exceptionScripts));
+  expect(metadata).toHaveLength(95);
+  expect(metadata[0]).toEqual({
+    url: "https://REDACTED:REDACTED@example.test/app.js?token=REDACTED&tenant=REDACTED&safe=visible",
+    crossOrigin: "anonymous",
+    async: true,
+    defer: true,
+    referrerPolicy: "no-referrer",
+  });
+  expect(metadata[1]).toEqual({ url: "https://example.test/0.js" });
+  expect(JSON.stringify(metadata)).not.toContain("private");
+  expect(explicit.attributes).toMatchObject({
+    exceptionScripts: "application scripts",
+    exceptionLog: "application logs",
+  });
+  expect(readScripts).toHaveBeenCalledOnce();
+
+  readScripts.mockReturnValue(
+    Array.from({ length: 100 }, () =>
+      script(`https://example.test/${"😀".repeat(100)}.js`, {
+        crossorigin: "use-credentials",
+        referrerpolicy: '😀"\\'.repeat(100),
+      }),
+    ) as unknown as HTMLCollectionOf<HTMLScriptElement>,
+  );
+  logger.emit({ eventName: "exception" });
+  await handle.forceFlush();
+  const bounded = String(
+    pipeline.logExporter.getFinishedLogRecords().at(-1)!.attributes.exceptionScripts,
+  );
+  expect(new TextEncoder().encode(bounded).byteLength).toBeLessThanOrEqual(8192);
+  expect(JSON.parse(bounded).length).toBeGreaterThan(0);
+  expect(JSON.parse(bounded)[0]).toEqual({
+    url: new URL(`https://example.test/${"😀".repeat(100)}.js`).href,
+    crossOrigin: "use-credentials",
+    referrerPolicy: '😀"\\'.repeat(100),
+  });
+
+  const emptySource = document.createElement("script");
+  emptySource.setAttribute("src", "");
+  const missingSource = document.createElement("script");
+  const relativeSource = document.createElement("script");
+  relativeSource.setAttribute("src", "/relative.js?token=private");
+  readScripts.mockReturnValue([
+    emptySource,
+    missingSource,
+    relativeSource,
+    script("https://example.test/empty.js", { crossorigin: "", referrerpolicy: "" }),
+    script("https://example.test/oversized.js", { referrerpolicy: "x".repeat(8193) }),
+  ] as unknown as HTMLCollectionOf<HTMLScriptElement>);
+  logger.emit({ eventName: "exception" });
+  await handle.forceFlush();
+  expect(
+    JSON.parse(
+      String(pipeline.logExporter.getFinishedLogRecords().at(-1)!.attributes.exceptionScripts),
+    ),
+  ).toEqual([
+    { url: new URL("/relative.js?token=REDACTED", document.baseURI).href },
+    { url: "https://example.test/empty.js" },
+  ]);
+
+  readScripts.mockImplementation(() => {
+    throw new Error("DOM unavailable");
+  });
+  logger.emit({ eventName: "exception", body: "DOM failure" });
+  await handle.forceFlush();
+  expect(pipeline.logExporter.getFinishedLogRecords().at(-1)!.body).toBe("DOM failure");
+});
+
+it("keeps exception callbacks isolated between instances and does not enable disabled signals", async () => {
+  const firstPipeline = createInMemoryPipeline();
+  const firstLogs = vi.fn(() => ({ logs: ["first"] }));
+  const first = await useMicrosoftOpenTelemetry({
+    ...firstPipeline.options,
+    expCfg: { expLog: firstLogs },
+    pageView: { enabled: false },
+    session: { enabled: false },
+    userContext: { enabled: false },
+  });
+  handles.add(first);
+  const firstLogger = logs.getLogger("first-exception-context");
+  const secondPipeline = createInMemoryPipeline();
+  const secondLogs = vi.fn(() => ({ logs: ["second"] }));
+  let secondLogger!: ReturnType<typeof logs.getLogger>;
+  const second = await useMicrosoftOpenTelemetry({
+    ...secondPipeline.options,
+    expCfg: { expLog: secondLogs },
+    pageView: { enabled: false },
+    session: { enabled: false },
+    userContext: { enabled: false },
+    instrumentations: [
+      {
+        setTracerProvider() {},
+        setLoggerProvider(provider) {
+          secondLogger = provider.getLogger("second-exception-context");
+        },
+        getConfig: () => ({ enabled: false }),
+        enable() {},
+        disable() {},
+      },
+    ],
+  });
+  handles.add(second);
+  firstLogger.emit({ eventName: "exception" });
+  secondLogger.emit({ eventName: "exception" });
+  await Promise.all([first.forceFlush(), second.forceFlush()]);
+  expect(firstPipeline.logExporter.getFinishedLogRecords()[0].attributes.exceptionLog).toBe(
+    "first",
+  );
+  expect(secondPipeline.logExporter.getFinishedLogRecords()[0].attributes.exceptionLog).toBe(
+    "second",
+  );
+  await first.shutdown();
+  secondLogger.emit({ eventName: "exception" });
+  expect(secondLogs).toHaveBeenCalledTimes(2);
+  firstLogger.emit({ eventName: "exception" });
+  expect(firstLogs).toHaveBeenCalledOnce();
+
+  vi.mocked(startTelemetryInstance).mockResolvedValueOnce(fakeInstance());
+  const disabled = await useMicrosoftOpenTelemetry({
+    spanProcessors: [],
+    logRecordProcessors: [],
+    expCfg: { inclScripts: true, expLog: firstLogs },
+    pageView: { enabled: false },
+    session: { enabled: false },
+    userContext: { enabled: false },
+  });
+  handles.add(disabled);
+  expect(vi.mocked(startTelemetryInstance).mock.calls.at(-1)![0]).toMatchObject({
+    spanProcessors: [],
+    logRecordProcessors: [],
+  });
 });
 
 it("adds Azure Monitor batch exporters after context enrichment and caller processors", async () => {

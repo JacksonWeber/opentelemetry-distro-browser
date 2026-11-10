@@ -79,6 +79,76 @@ it.each(["index.js", "index.min.js"])(
   },
 );
 
+it.each(["index.js", "index.min.js"])(
+  "exports exception attachments from %s for logs and span events",
+  async (file) => {
+    const artifact =
+      file === "index.js"
+        ? new URL("../../dist/esm/index.js", import.meta.url).href
+        : new URL("../../dist/esm/index.min.js", import.meta.url).href;
+    const sdk = await import(/* @vite-ignore */ artifact);
+    const runId = crypto.randomUUID();
+    const ingestionEndpoint = `${inject("ingestionEndpoint")}${encodeURIComponent(runId)}`;
+    const expLog = vi.fn(() => ({
+      logs: ["checkout failed", "checkout started", "outside limit"],
+    }));
+    const telemetry = await sdk.useMicrosoftOpenTelemetry({
+      azureMonitor: {
+        connectionString: `InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=${ingestionEndpoint}`,
+      },
+      expCfg: { inclScripts: true, expLog, maxLogs: 2 },
+      pageView: { enabled: false },
+      session: { enabled: false },
+      userContext: { enabled: false },
+    });
+    const script = document.createElement("script");
+    // A data block exposes native script attributes without fetching or executing test code.
+    script.type = "application/json";
+    script.src = new URL("/exception-context.js?token=private", location.href).href;
+    script.crossOrigin = "anonymous";
+    script.setAttribute("async", "false");
+    script.defer = true;
+    script.referrerPolicy = "no-referrer";
+    try {
+      document.head.append(script);
+      logs.getLogger("exception-context").emit({
+        eventName: "exception",
+        attributes: { "exception.type": "TypeError", "exception.message": "log failure" },
+      });
+      const span = trace.getTracer("exception-context").startSpan("checkout");
+      span.recordException(new Error("span failure"));
+      span.end();
+      await telemetry.forceFlush();
+      const captured: AzureMonitorEnvelope[] = await fetch(
+        `${new URL(ingestionEndpoint).origin}/captured?runId=${encodeURIComponent(runId)}`,
+      ).then((response) => response.json());
+      const exceptions = captured.filter((envelope) => envelope.data.baseType === "ExceptionData");
+      expect(exceptions).toHaveLength(2);
+      for (const exception of exceptions) {
+        expect(exception.data.baseData.properties).toMatchObject({
+          exceptionLog: "checkout failed\ncheckout started",
+          exceptionScripts: expect.any(String),
+        });
+        const serializedScripts = String(exception.data.baseData.properties!.exceptionScripts);
+        const scripts = JSON.parse(serializedScripts);
+        expect(Array.isArray(scripts)).toBe(true);
+        expect(scripts).toContainEqual({
+          url: new URL("/exception-context.js?token=REDACTED", location.href).href,
+          crossOrigin: "anonymous",
+          async: true,
+          defer: true,
+          referrerPolicy: "no-referrer",
+        });
+        expect(new TextEncoder().encode(serializedScripts).byteLength).toBeLessThanOrEqual(8192);
+      }
+      expect(expLog).toHaveBeenCalledTimes(2);
+    } finally {
+      script.remove();
+      await telemetry.shutdown();
+    }
+  },
+);
+
 it("sends telemetry from a browser interaction to Azure Monitor ingestion", async () => {
   const runId = crypto.randomUUID();
   const ingestionEndpoint = `${inject("ingestionEndpoint")}${encodeURIComponent(runId)}`;

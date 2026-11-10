@@ -20,6 +20,7 @@ import {
   type MicrosoftOpenTelemetryBrowserConfigurationSyncOptions,
   type MicrosoftOpenTelemetryBrowserConfigurationUpdateResult,
   type MicrosoftOpenTelemetryBrowserInstrumentations,
+  type MicrosoftOpenTelemetryBrowserExceptionOptions,
   type MicrosoftOpenTelemetryBrowserOptions,
   type MicrosoftOpenTelemetryBrowserSessionOptions,
   type MicrosoftOpenTelemetryBrowserTraceOptions,
@@ -50,7 +51,16 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
     | "traces"
     | "redactQueryParams"
     | "extensionConfig"
+    | "expCfg"
   >();
+  expectTypeOf<MicrosoftOpenTelemetryBrowserOptions["expCfg"]>().toEqualTypeOf<
+    MicrosoftOpenTelemetryBrowserExceptionOptions | undefined
+  >();
+  expectTypeOf<MicrosoftOpenTelemetryBrowserExceptionOptions>().toEqualTypeOf<{
+    inclScripts?: boolean;
+    expLog?: () => { logs: readonly string[] };
+    maxLogs?: number;
+  }>();
   expectTypeOf<MicrosoftOpenTelemetryBrowserOptions["redactQueryParams"]>().toEqualTypeOf<
     readonly string[] | undefined
   >();

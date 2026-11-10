@@ -18,21 +18,63 @@ supports [pause/resume for supported instrumentations](#runtime-instrumentation-
 options remain startup-only. Importing the package has no initialization side effects. Initialize
 only in client-side code, before importing application code to instrument.
 
-| Option                | Type                                          | Default and behavior                                                                                                                                                                                                      |
-| --------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `azureMonitor`        | `AzureMonitorOptions`                         | Omitted: no default Azure Monitor exporters. See [destination](#azure-monitor-destination).                                                                                                                               |
-| `resource`            | OpenTelemetry `Resource`                      | SDK defaults. Supplied attributes merge over defaults; use `service.name` and `service.version` to identify the application. Attributes resolve once; the resource schema URL is not carried through.                     |
-| `samplingPercentage`  | `number`                                      | Omitted: parent-based always-on trace sampling and no percentage sampling of Azure Monitor logs. See [sampling](#sampling).                                                                                               |
-| `session`             | `MicrosoftOpenTelemetryBrowserSessionOptions` | Enabled and persisted, with 30-minute inactivity expiry and 24-hour maximum lifetime.                                                                                                                                     |
-| `sessionRenewalMs`    | `number`, milliseconds                        | Application Insights alias for `session.inactivityTimeout`. Default: `1800000` (30 minutes); `0` restores this default. See [session options](#session-options).                                                          |
-| `sessionExpirationMs` | `number`, milliseconds                        | Application Insights alias for `session.maxDuration`. Default: `86400000` (24 hours); `0` restores this default. See [session options](#session-options).                                                                 |
-| `storage`             | `{ enabled?: boolean; namePrefix?: string }`  | Enabled, with unprefixed keys. See [browser storage](#browser-storage).                                                                                                                                                   |
-| `userContext`         | `{ enabled?: boolean }`                       | Enabled: managed anonymous identity and authenticated identity set through the handle persist in same-origin storage.                                                                                                     |
-| `traces`              | `MicrosoftOpenTelemetryBrowserTraceOptions`   | Synchronous context tracking, W3C Trace Context and Baggage propagation.                                                                                                                                                  |
-| `spanProcessors`      | `SpanProcessor[]`                             | Additional trace processors. They run before the Azure Monitor default when configured, unless `[]` disables traces. Without Azure Monitor, only supplied processors export. See [enrichment](#enrichment-and-filtering). |
-| `logRecordProcessors` | `LogRecordProcessor[]`                        | Additional log processors. They run before the Azure Monitor default when configured, unless `[]` disables logs. Without Azure Monitor, only supplied processors export. See [enrichment](#enrichment-and-filtering).     |
-| `instrumentations`    | `readonly BrowserInstrumentation[]`           | Empty. Pass instances returned by `getInstrumentations()` or compatible upstream instances. Built-in page views are configured separately.                                                                                |
-| `pageView`            | `PageViewInstrumentationConfig`               | Collection and page-operation correlation enabled. Requires a log pipeline to export page-view records.                                                                                                                   |
+| Option                | Type                                            | Default and behavior                                                                                                                                                                                                      |
+| --------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `azureMonitor`        | `AzureMonitorOptions`                           | Omitted: no default Azure Monitor exporters. See [destination](#azure-monitor-destination).                                                                                                                               |
+| `resource`            | OpenTelemetry `Resource`                        | SDK defaults. Supplied attributes merge over defaults; use `service.name` and `service.version` to identify the application. Attributes resolve once; the resource schema URL is not carried through.                     |
+| `samplingPercentage`  | `number`                                        | Omitted: parent-based always-on trace sampling and no percentage sampling of Azure Monitor logs. See [sampling](#sampling).                                                                                               |
+| `session`             | `MicrosoftOpenTelemetryBrowserSessionOptions`   | Enabled and persisted, with 30-minute inactivity expiry and 24-hour maximum lifetime.                                                                                                                                     |
+| `sessionRenewalMs`    | `number`, milliseconds                          | Application Insights alias for `session.inactivityTimeout`. Default: `1800000` (30 minutes); `0` restores this default. See [session options](#session-options).                                                          |
+| `sessionExpirationMs` | `number`, milliseconds                          | Application Insights alias for `session.maxDuration`. Default: `86400000` (24 hours); `0` restores this default. See [session options](#session-options).                                                                 |
+| `storage`             | `{ enabled?: boolean; namePrefix?: string }`    | Enabled, with unprefixed keys. See [browser storage](#browser-storage).                                                                                                                                                   |
+| `userContext`         | `{ enabled?: boolean }`                         | Enabled: managed anonymous identity and authenticated identity set through the handle persist in same-origin storage.                                                                                                     |
+| `traces`              | `MicrosoftOpenTelemetryBrowserTraceOptions`     | Synchronous context tracking, W3C Trace Context and Baggage propagation.                                                                                                                                                  |
+| `spanProcessors`      | `SpanProcessor[]`                               | Additional trace processors. They run before the Azure Monitor default when configured, unless `[]` disables traces. Without Azure Monitor, only supplied processors export. See [enrichment](#enrichment-and-filtering). |
+| `logRecordProcessors` | `LogRecordProcessor[]`                          | Additional log processors. They run before the Azure Monitor default when configured, unless `[]` disables logs. Without Azure Monitor, only supplied processors export. See [enrichment](#enrichment-and-filtering).     |
+| `instrumentations`    | `readonly BrowserInstrumentation[]`             | Empty. Pass instances returned by `getInstrumentations()` or compatible upstream instances. Built-in page views are configured separately.                                                                                |
+| `pageView`            | `PageViewInstrumentationConfig`                 | Collection and page-operation correlation enabled. Requires a log pipeline to export page-view records.                                                                                                                   |
+| `expCfg`              | `MicrosoftOpenTelemetryBrowserExceptionOptions` | Omitted: no exception attachments. Opt in to script URLs and application-supplied recent logs. See [exception attachments](#exception-attachments).                                                                       |
+
+### Exception attachments
+
+`expCfg` is startup-only and follows the ApplicationInsights-JS names:
+
+| Option               | Default and behavior                                                                                                                                                                                                                                                                                                                                                                             |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `expCfg.inclScripts` | `false`. Attach `exceptionScripts`, a JSON array of external HTTP(S) script data currently in the document. Inspect at most the first 100 script elements. Inline code, data/blob URLs and URLs longer than 8192 characters are excluded. This is a document snapshot, not proof that each script finished loading; removed scripts and module imports without script elements are not included. |
+| `expCfg.expLog`      | Omitted. Synchronous callback returning `{ logs: readonly string[] }`, most recent first. The first `maxLogs` entries become the newline-separated `exceptionLog` attribute. The SDK does not intercept console calls or keep a log history.                                                                                                                                                     |
+| `expCfg.maxLogs`     | `50`. Nonnegative safe integer; `0` disables log attachment without calling `expLog`.                                                                                                                                                                                                                                                                                                            |
+
+Script entries follow the ApplicationInsights-JS object shape: `url`, plus `crossOrigin` and
+`referrerPolicy` when their attributes are nonempty, and `async: true` and `defer: true` when those
+boolean attributes are present. Absent or empty optional fields are omitted. Unlike the legacy
+collector, URLs are resolved to absolute HTTP(S) URLs and redacted before export; script metadata
+also counts toward the 8 KiB attachment limit. Entries with optional metadata values longer than
+8192 characters are excluded.
+
+Attachments are added before application log processors' `onEmit` and span processors' `onEnd`
+to exception logs (`eventName: "exception"` or a truthy `exception.type`) and to `exception` span
+events when the span ends. Each event gets a fresh snapshot at span end, not at `recordException()`
+time. Both attributes are portable to OTLP and map to Azure Monitor exception custom properties.
+Existing application attributes win;
+application processors can remove or replace managed attachments. Enrichment never enables a
+disabled signal or error instrumentation.
+
+Each attachment is capped at **8 KiB UTF-8**. Script collection stops before exceeding its JSON
+budget; the array remains valid JSON. Logs may be truncated within the last retained entry without
+splitting a Unicode character. Azure Monitor's existing unload fitting may discard these optional
+custom properties to preserve core exception data. The SDK's attribute count limits still apply;
+attachments that do not fit are dropped, preserving application attributes.
+
+Script URLs use built-in credential/signing/OAuth redaction and additional `redactQueryParams`.
+Script paths and other parameters may still contain sensitive data. **Log text is not redacted**:
+provide only entries safe to export, without secrets or personal data. The callback owns its log
+history and should keep it bounded. Throwing callbacks, malformed snapshots and inaccessible DOM
+data do not prevent exception export. Asynchronous snapshots are ignored and their rejections
+consumed. Reentrant exceptions skip attachments; callbacks stop when the owning instance shuts down.
+Disabled browser storage does not disable these in-memory
+attachments. The generated CDN loader does not accept `expCfg`; npm and direct bundle
+initialization do.
 
 ### Azure Monitor destination
 

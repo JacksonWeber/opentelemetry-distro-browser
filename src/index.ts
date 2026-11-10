@@ -30,6 +30,7 @@ export type {
   MicrosoftOpenTelemetryBrowser,
   MicrosoftOpenTelemetryBrowserInstrumentations,
   MicrosoftOpenTelemetryBrowserOptions,
+  MicrosoftOpenTelemetryBrowserExceptionOptions,
   MicrosoftOpenTelemetryBrowserSessionOptions,
   MicrosoftOpenTelemetryBrowserTraceOptions,
   MicrosoftOpenTelemetryBrowserUserContext,

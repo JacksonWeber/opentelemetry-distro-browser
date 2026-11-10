@@ -186,10 +186,33 @@ export interface MicrosoftOpenTelemetryBrowserConfigurationSync {
 }
 
 /**
+ * Optional, startup-only exception attachments. No console interception or log storage is installed.
+ * @public
+ */
+export interface MicrosoftOpenTelemetryBrowserExceptionOptions {
+  /** Include metadata for up to 100 external HTTP(S) scripts currently in the document. Defaults to false. */
+  inclScripts?: boolean;
+  /**
+   * Synchronous application log snapshot, most recent first. Called for each exception log or
+   * when a span containing exception events ends. Failures do not suppress the exception.
+   * Logs are not redacted: return only entries safe to export, without secrets or personal data.
+   */
+  expLog?: () => { logs: readonly string[] };
+  /** Maximum entries from the start of expLog().logs. Defaults to 50; zero disables log attachment. */
+  maxLogs?: number;
+}
+
+/**
  * Microsoft browser distribution configuration for traces and logs.
  * @public
  */
 export interface MicrosoftOpenTelemetryBrowserOptions {
+  /**
+   * Opt-in exceptionScripts (JSON script metadata) and exceptionLog (newline-separated text).
+   * Each attachment is limited to 8 KiB UTF-8. Script URLs use built-in and redactQueryParams
+   * redaction; inline code and non-HTTP(S) URLs are excluded. Existing attributes take precedence.
+   */
+  expCfg?: MicrosoftOpenTelemetryBrowserExceptionOptions;
   /** Explicit opt-in; absent configuration installs no synchronization adapter or listener. */
   extensionConfig?: {
     AppInsightsCfgSyncPlugin?: MicrosoftOpenTelemetryBrowserConfigurationSyncOptions;

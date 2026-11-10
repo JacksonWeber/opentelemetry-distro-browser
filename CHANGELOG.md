@@ -14,6 +14,10 @@ All notable changes to this package are documented in this file.
 - Add opt-in HTTP(S) configuration synchronization through `extensionConfig.AppInsightsCfgSyncPlugin`,
   with credential-free downloads, bounded polling and requests, local precedence, and cancellation
   on pause or shutdown.
+- Add opt-in exception context through startup-only `expCfg.inclScripts`, `expCfg.expLog` and
+  `expCfg.maxLogs`. Attach script metadata and application-supplied recent logs to exception logs
+  and span events, bounded to 8 KiB UTF-8 per attachment. Redact credentials and selected parameters
+  in script URLs; preserve application-provided attributes.
 
 ## 0.1.0-beta.2 - 2026-11-05
 
