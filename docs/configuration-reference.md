@@ -27,7 +27,8 @@ only in client-side code, before importing application code to instrument.
 | `sessionRenewalMs`    | `number`, milliseconds                          | Application Insights alias for `session.inactivityTimeout`. Default: `1800000` (30 minutes); `0` restores this default. See [session options](#session-options).                                                          |
 | `sessionExpirationMs` | `number`, milliseconds                          | Application Insights alias for `session.maxDuration`. Default: `86400000` (24 hours); `0` restores this default. See [session options](#session-options).                                                                 |
 | `storage`             | `{ enabled?: boolean; namePrefix?: string }`    | Enabled, with unprefixed keys. See [browser storage](#browser-storage).                                                                                                                                                   |
-| `userContext`         | `{ enabled?: boolean }`                         | Enabled: managed anonymous identity and authenticated identity set through the handle persist in same-origin storage.                                                                                                     |
+| `cookieCfg`           | `MicrosoftOpenTelemetryBrowserCookieConfig`     | Enabled independently of Web Storage. See [cookie configuration](#cookie-configuration-and-controls).                                                                                                                     |
+| `userContext`         | `{ enabled?: boolean }`                         | Enabled: managed anonymous identity persists in a cookie; authenticated identity is memory-only unless explicitly opted into a cookie.                                                                                    |
 | `traces`              | `MicrosoftOpenTelemetryBrowserTraceOptions`     | Synchronous context tracking, W3C Trace Context and Baggage propagation.                                                                                                                                                  |
 | `spanProcessors`      | `SpanProcessor[]`                               | Additional trace processors. They run before the Azure Monitor default when configured, unless `[]` disables traces. Without Azure Monitor, only supplied processors export. See [enrichment](#enrichment-and-filtering). |
 | `logRecordProcessors` | `LogRecordProcessor[]`                          | Additional log processors. They run before the Azure Monitor default when configured, unless `[]` disables logs. Without Azure Monitor, only supplied processors export. See [enrichment](#enrichment-and-filtering).     |
@@ -399,39 +400,92 @@ responsibilities. Do not treat either transport as confidential or use it for se
 
 ### Browser storage
 
-| Option               | Type      | Default | Behavior                                                                                                                                                                                                                                                 |
-| -------------------- | --------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `storage.enabled`    | `boolean` | `true`  | `false` blocks all SDK-managed browser storage access for this handle, including later identity-control calls, the unsent telemetry buffer and page-visit persistence. Sessions and SPA visit timing use memory; managed anonymous identity is disabled. |
-| `storage.namePrefix` | `string`  | `""`    | Literal prefix for `opentelemetry-session`, `opentelemetry-user`, unsent telemetry buffer and page-visit state keys. For example, `"shop-"` produces `shop-opentelemetry-session` and `shop-opentelemetry-user`.                                         |
+| Option               | Type      | Default | Behavior                                                                                                                                                                                                                                                                    |
+| -------------------- | --------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `storage.enabled`    | `boolean` | `true`  | `false` blocks SDK-managed Web Storage access for this handle, including the localStorage session backup, legacy identity cleanup, unsent telemetry buffer and page-visit persistence, not cookies. SPA visit timing then uses memory.                                      |
+| `storage.namePrefix` | `string`  | `""`    | Literal prefix for cookie names `ai_user`, `ai_authUser` and `ai_session`, and session, legacy identity, unsent telemetry buffer and page-visit Web Storage keys. For example, `"shop-"` produces the `shop-ai_session` cookie and `shop-opentelemetry-session` backup key. |
 
-Settings are captured at initialization and apply independently to each handle. A prefix isolates
-stored sessions and identities for applications on the same origin; it is not a security boundary.
-No data is migrated or removed from other prefixes. The default empty prefix preserves existing data.
+Settings are captured at initialization and apply independently to each handle. A prefix namespaces
+stored sessions and identities; it does not provide origin isolation or a security boundary. No data
+is read, migrated or removed from other prefixes.
+Prefixes must contain only cookie-name token characters; invalid prefixes are rejected before
+browser persistence is accessed.
 
-Like Application Insights JavaScript, browser persistence is enabled by default. Unlike its
-`isStorageUseDisabled` global helper, `storage.enabled` is instance-scoped so one application cannot
-change another handle's policy. Setting it to `false` takes precedence over `session.persist` and
-`userContext.enabled`; `userContext.setEnabled()` then has no effect. Authenticated identity can
-still be set and cleared in memory. Disabling storage does not erase existing data, disable telemetry
-collection or stop network requests. Custom processors/exporters must enforce their own storage policy.
+Like Application Insights JavaScript, persistence is cookie-first and enabled by default. There
+are no legacy cookie configuration aliases (`cookieDomain`, `cookiePath`, `disableCookiesUsage`
+or `isCookieUseDisabled`) or global storage switch (`isStorageUseDisabled`); use the per-instance
+`cookieCfg` and `storage` options. Disabling either backend does not erase existing data, disable
+telemetry collection or stop network requests. Custom processors/exporters must enforce their own
+storage policy.
 
-Sessions and identities use localStorage; unsent Azure Monitor telemetry and opt-in page-visit state
-use sessionStorage. No cookies are created. Application Insights `cookieCfg` and cookie domain/path settings are separate
-cookie controls, not Web Storage settings. Its `enableSessionStorageBuffer` corresponds to the
-unsent telemetry buffer described under Azure Monitor, which is always on here unless
-`storage.enabled` is false.
+Anonymous identity and managed sessions use cookies by default; authenticated identity is
+memory-only unless explicitly stored in a separate session cookie. localStorage provides session
+backup/restoration and explicit cleanup of legacy identity records, not identity restoration.
+Unsent Azure Monitor telemetry and opt-in page-visit state use sessionStorage.
+`storage.enabled: false` blocks only Web Storage; `cookieCfg.enabled: false` independently disables
+cookies. Also set `cookieCfg.disableCookieDefer: true` to discard disabled cookie operations instead
+of queuing them. Unlike Web Storage, cookies are sent in HTTP headers to matching domains and
+paths, subject to browser rules. Application Insights' `enableSessionStorageBuffer` corresponds to
+the unsent telemetry buffer described under Azure Monitor, enabled here unless `storage.enabled`
+is false.
 
 Implementation references: Application Insights JavaScript's
 [cookie manager](https://github.com/microsoft/ApplicationInsights-JS/blob/main/shared/AppInsightsCore/src/core/CookieMgr.ts),
 [Web Storage helpers](https://github.com/microsoft/ApplicationInsights-JS/blob/main/shared/AppInsightsCore/src/utils/StorageHelperFuncs.ts)
 and [send buffer](https://github.com/microsoft/ApplicationInsights-JS/blob/main/channels/applicationinsights-channel-js/src/SendBuffer.ts).
 
+### Cookie configuration and controls
+
+| Option                         | Type                                    | Default          | Behavior                                                                                                               |
+| ------------------------------ | --------------------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `cookieCfg.enabled`            | `boolean`                               | `true`           | Allows cookie reads and writes independently of `storage.enabled`. When `false`, operations may be deferred in memory. |
+| `cookieCfg.domain`             | `string`                                | Unset            | Host-only cookies when omitted. Set a domain to share cookies with matching subdomains, subject to browser rules.      |
+| `cookieCfg.path`               | `string`                                | `"/"`            | Cookie scope path. Not a security boundary.                                                                            |
+| `cookieCfg.ignoreCookies`      | `readonly string[]`                     | `[]`             | Exact cookie names never read or written; explicit deletion and purge remain allowed. Include any configured prefix.   |
+| `cookieCfg.blockedCookies`     | `readonly string[]`                     | `[]`             | Exact cookie names never written; reads and explicit deletion remain allowed. Include any configured prefix.           |
+| `cookieCfg.disableCookieDefer` | `boolean`                               | `false`          | `true` discards ordinary writes/deletes while disabled instead of queuing them.                                        |
+| `cookieCfg.getCookie`          | `(name: string) => string`              | Browser read     | Override reads; return the already encoded value or `""` when absent. npm initialization only.                         |
+| `cookieCfg.setCookie`          | `(name: string, value: string) => void` | Browser write    | Override writes; `value` includes the formatted cookie attributes. npm initialization only.                            |
+| `cookieCfg.delCookie`          | `(name: string, value: string) => void` | Browser deletion | Override deletion; `value` includes expiry and scope attributes. npm initialization only.                              |
+
+Call `telemetry.getCookieMgr()` to obtain this handle's cookie manager:
+
+| Cookie manager method                          | Behavior                                                                                                                                                                                                                                                |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `isEnabled()`                                  | Returns whether this instance permits cookie access and cookies or hooks are available; not proof a write will persist.                                                                                                                                 |
+| `setEnabled(enabled)`                          | Enables or disables cookie access. Enabling flushes deferred operations; disabling does not delete existing cookies.                                                                                                                                    |
+| `get(name)`                                    | Returns the encoded value or `""`. While disabled, returns a pending value without reading browser cookies.                                                                                                                                             |
+| `set(name, value, maxAgeSec?, domain?, path?)` | Accepts an already encoded value and optional lifetime in seconds; omit the lifetime for a session cookie. Scope defaults to `cookieCfg.domain` and `cookieCfg.path`. Returns `true` if accepted, including deferral, not verified browser persistence. |
+| `del(name, path?)`                             | Deletes one named cookie using the configured domain and default or supplied path. Respects disablement and deferral.                                                                                                                                   |
+| `purge(name, path?)`                           | Deletes one named cookie even while disabled and cancels its pending operation. Bypasses ignored/blocked lists; not a delete-all operation.                                                                                                             |
+
+Deferral is enabled by default: while disabled, the manager retains only the latest operation per
+cookie name, including its formatted attributes. `expires` is calculated when queued, not when
+re-enabled; an already expired absolute deadline remains expired in the replayed operation. The
+formatted operation, including `max-age` when present, is replayed unchanged and interpreted by the
+browser. This queues cookie operations, not telemetry. Use `disableCookieDefer: true` when disabled
+operations must be discarded rather than replayed. Shutdown discards pending operations.
+
+Unlike Application Insights' raw-value attribute suffix convention, `set()` rejects semicolons and
+control characters in values. Encode values first and pass domain/path as arguments, not suffixes.
+On HTTPS, writes include `Secure` and `SameSite=None` for modern browsers; HTTP writes omit both.
+Browser privacy policies can still prevent persistence. Hook/browser failures are caught so they do
+not interrupt telemetry, and a successful return does not verify that the browser stored a cookie.
+
+Deletion must match the cookie's domain and path. `del()` and `purge()` use the configured domain;
+if `set()` overrides it, delete with a manager configured for that same domain and the matching path.
+Changing configuration does not remove cookies in previous scopes. Cookie paths and name prefixes
+are not security boundaries. Unlike localStorage, cookies are sent in HTTP headers to matching
+endpoints and may be visible to servers and intermediaries as well as page scripts. A shared domain
+broadens this exposure beyond a single origin. Do not store raw personal information, tokens or
+secrets in identity values.
+
 ### Session options
 
 | Option                      | Type              | Default | Behavior                                                                              |
 | --------------------------- | ----------------- | ------- | ------------------------------------------------------------------------------------- |
-| `session.enabled`           | `boolean`         | `true`  | `false` disables managed sessions without accessing session storage.                  |
-| `session.persist`           | `boolean`         | `true`  | `false` uses memory only, without reading or clearing stored sessions.                |
+| `session.enabled`           | `boolean`         | `true`  | `false` disables managed sessions without accessing session cookies or Web Storage.   |
+| `session.persist`           | `boolean`         | `true`  | `false` uses memory only, without reading or clearing either persistence backend.     |
 | `session.inactivityTimeout` | `number`, seconds | `1800`  | Time without managed-session telemetry before expiry. `0` disables inactivity expiry. |
 | `session.maxDuration`       | `number`, seconds | `86400` | Maximum lifetime, including reloads. `0` means unlimited.                             |
 
@@ -448,44 +502,96 @@ initialization or rejects the whole runtime update without partial changes. Sepa
 replace a lifetime through either spelling.
 
 Managed `session.id` fills only an absent value: a non-empty string supplied on the record or
-resource takes precedence. Azure Monitor prefers a
-valid record-level ID over the resource ID. Inaccessible session storage falls back to memory.
+resource takes precedence. Azure Monitor prefers a valid record-level ID over the resource ID.
+Sessions use the prefixed `ai_session` cookie as the primary store, with Application Insights' raw
+`id|startTimestampMs|lastActivityTimestampMs` format. Activity refreshes the cookie at most once
+every 60 seconds, except a positive inactivity window of 60 seconds or less persists each
+distinct activity timestamp. New sessions force a write, and rejected writes do not delay a later
+retry. Cookie lifetime is bounded by the remaining maximum duration and inactivity window;
+`maxDuration: 0` uses a browser-session cookie while managed inactivity expiry still applies.
+Runtime lifetime updates do not access persistence; the next activity refreshes the cookie using
+the new policy without waiting for the previous write throttle.
+
+When Web Storage is enabled, the latest session is backed up as JSON under the unchanged prefixed
+`opentelemetry-session` localStorage key on unload and
+shutdown, not on each activity update. A missing cookie can restore a valid, unexpired backup,
+including when cookies are disabled. A present malformed cookie does not fall back to the backup.
+If neither backend is available, session correlation stays in memory.
+During a transient cookie-read failure, a provisional in-memory session follows normal inactivity
+and maximum expiry without writing cookies or backups. Recovery restores the authoritative cookie,
+falls back to a valid backup when absent, or creates a fresh session when invalid.
+When user context and anonymous-cookie reads are enabled, a missing or invalid anonymous-user cookie
+invalidates the old session backup before restoration. Clearing user cookies therefore starts a
+new managed session instead of reconnecting it to the previous identity's backup.
 
 ### User identity options and controls
 
-`userContext.enabled` defaults to `true`. Managed `enduser.pseudo.id` persists across page loads;
-authenticated user and account IDs set through the returned handle also persist by default.
+`userContext.enabled` defaults to `true`. Managed `enduser.pseudo.id` persists across page loads in
+the prefixed `ai_user` cookie with a one-year lifetime (31,536,000 seconds), using Application
+Insights' raw `id|ISO-acquisition-timestamp` format. Authenticated
+user and account IDs set through the returned handle are memory-only by default. Pass `true` as the
+third setter argument to opt into the separate prefixed `ai_authUser` session cookie:
+`telemetry.userContext.setAuthenticatedUserContext(userId, accountId, true)`. When enabled, user
+context restores a valid authenticated cookie on initialization. User identity does not use Web Storage.
+
+Authenticated cookies use `encodeURI(userId + optional '|' + accountId)` and are read with
+`decodeURI()` before splitting. With `storage.namePrefix` omitted, valid default Application Insights
+cookies retain identity and session continuity when switching SDKs within the same domain/path.
+For customized names, match the complete cookie names: Application Insights appends
+`userCookiePostfix` to `ai_user` and `sessionCookiePostfix` (or `namePrefix`) to `ai_session`, and
+leaves `ai_authUser` unprefixed. This distribution instead prepends `storage.namePrefix` to all
+three names, so setting the same prefix in both SDKs does not produce matching names.
+Cookie values use the Application Insights formats, not URI-encoded JSON records.
+Legacy anonymous Web Storage cleanup keeps the unchanged
+prefixed `opentelemetry-user` key. Old `opentelemetry-*` cookie names are not restored. Auth cookies
+are interpreted only as canonical strings, so JSON-shaped IDs remain literal IDs, not legacy records.
+Concurrent SDKs sharing cookie names can update each other's persistence; use distinct
+prefixes when continuity is not intended.
+
+The public setter still accepts all non-empty user/account strings for memory identity. Cookie
+persistence cannot roundtrip IDs containing `|`, and URI encoding can fail for unpaired UTF-16
+surrogates. Semicolons left raw by `encodeURI()` are rejected by the cookie manager's header-safety
+policy. These failures keep the new identity in memory and attempt to delete any superseded auth
+cookie, just like a failed write. Use persistence-safe opaque IDs rather than personal information.
+Unsafe session IDs can be restored from a JSON Web Storage backup, but are not written as raw cookie values.
+
 Explicit record/resource identity takes precedence over managed defaults. Spans are enriched when
 they start and logs when emitted; later identity changes are not retroactive.
 
-| Handle method                                                 | Behavior                                                                                                                                                     |
-| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `userContext.setAuthenticatedUserContext(userId, accountId?)` | Sets `user.id` and optional `user.account.id`. Omitting the account clears the previous account. IDs must be non-empty strings.                              |
-| `userContext.clearAuthenticatedUserContext()`                 | Clears this handle's authenticated identity and stored authentication. Anonymous identity may remain.                                                        |
-| `userContext.setEnabled(enabled)`                             | Changes identity persistence and anonymous-ID enrichment, without clearing current in-memory authenticated identity. Disabling also removes stored identity. |
+| Handle method                                                                 | Behavior                                                                                                                                                                                                                                                                                                                                                    |
+| ----------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `userContext.setAuthenticatedUserContext(userId, accountId?, storeInCookie?)` | Sets `user.id` and optional `user.account.id`. Omitting the account clears the previous account. IDs must be non-empty strings or a `TypeError` is thrown. `storeInCookie` defaults to `false`, removing any previous auth cookie while user context is enabled; `true` opts into a session cookie and may defer the write while cookie access is disabled. |
+| `userContext.clearAuthenticatedUserContext()`                                 | Clears this handle's authenticated identity and deletes its auth cookie, honoring cookie disablement/deferral. Does not change anonymous identity.                                                                                                                                                                                                          |
+| `userContext.setEnabled(enabled)`                                             | Changes identity persistence and anonymous-ID enrichment independently of `storage.enabled`, retaining in-memory authenticated identity. Disabling purges both identity cookies and pending writes even while cookie access is disabled. Re-enabling does not implicitly opt memory-only authentication into persistence.                                   |
 
-Storage is shared within the origin and configured prefix, but each active handle keeps its own state. Update every
-active handle on sign-out. Scripts in the origin can read stored identity; do not use raw personal
-information, tokens or secrets as IDs. Persistence writes/removals can throw: handle failures when
-setting identity, changing persistence or signing out. These controls remain usable after shutdown.
+Cookies are shared within their configured prefix, domain and path, but each active handle keeps
+its own identity state. Update every active handle on sign-out. Starting with `userContext.enabled:
+false` avoids identity persistence access without erasing existing cookies; an explicit
+`userContext.setEnabled(false)` purges identity cookies. Identity controls remain callable after
+shutdown for cleanup. Reads and writes stop at shutdown; deletion remains available for managers
+that previously enabled cookie access, and explicit purge is always available.
 
-For no managed session or identity storage access at initialization:
+For no SDK-managed browser persistence, disable both backends and discard deferred cookie operations:
 
 ```typescript
 const telemetry = await useMicrosoftOpenTelemetry({
   azureMonitor: { connectionString },
   storage: { enabled: false },
+  cookieCfg: { enabled: false, disableCookieDefer: true },
 });
 ```
 
-This retains memory-only session correlation. To disable managed sessions too, add
-`session: { enabled: false }`. For only memory-only sessions while preserving user persistence,
-use `session: { persist: false }`. If consent must precede any
-collection or network activity, defer initialization itself until consent is granted. Disabling
-storage at startup does not erase previously stored values; identity removal is an explicit
-`userContext.setEnabled(false)` operation while browser storage is allowed. To grant persistence
-after starting with `storage.enabled: false`, shut down that handle and initialize a new one with
-storage enabled. The SDK does not replay storage operations from the disabled period.
+This retains memory-only session correlation and authenticated identity. For stronger feature-level
+opt-outs, also set `session: { persist: false }` and `userContext: { enabled: false }` to avoid managed
+session persistence and anonymous-ID enrichment even if cookie access is later enabled. To disable
+managed sessions entirely, use `session: { enabled: false }`. For only memory-only sessions while
+preserving user cookies, use `session: { persist: false }` alone.
+
+Neither switch deletes existing values or stops collection or network requests. If consent must
+precede any collection or network activity, defer initialization itself until consent is granted.
+Cookie access can later be enabled with `telemetry.getCookieMgr().setEnabled(true)`; when deferral is
+disabled, discarded operations are not replayed. Web Storage settings have no runtime toggle: shut
+down and initialize a new handle to change `storage.enabled`.
 
 ## Page-view options
 
@@ -779,6 +885,8 @@ It generates a script; it does not itself initialize telemetry in the current pa
 | `cdnFallback`                                                                | `false`. Retry backup Azure Monitor CDN hosts; requires a recognized CDN source URL.                                                                              |
 | `reportLoadFailure`                                                          | `false`. Report an `SDKLoadFailed` exception after bundle load attempts fail.                                                                                     |
 | `samplingPercentage`, `azureMonitor.disableBeacon`, `session`, `userContext` | Same meanings as initialization options above.                                                                                                                    |
+| `storage`                                                                    | Same `enabled` and `namePrefix` settings as initialization options above.                                                                                         |
+| `cookieCfg`                                                                  | Data-only settings: `enabled`, `domain`, `path`, `ignoreCookies`, `blockedCookies`, `disableCookieDefer`. Cookie hooks are not supported by the snippet.          |
 | `pageView`                                                                   | Data-only settings: `enabled`, `autoTrackPageVisitTime` (default `false`), `redactedQueryParams`, `softNavigationSettleTimeoutMs`, `useNavigationApiIfAvailable`. |
 | `instrumentationOptions`                                                     | JSON-only helper settings. Omitted: fetch/XHR defaults.                                                                                                           |
 | `resourceAttributes`                                                         | String, number or boolean attributes converted into a resource by the bundle.                                                                                     |

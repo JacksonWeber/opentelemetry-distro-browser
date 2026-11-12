@@ -66,6 +66,15 @@ export interface SdkLoaderConfig {
   readonly userContext?: { readonly enabled?: boolean };
   /** Same as `MicrosoftOpenTelemetryBrowserOptions.storage`. */
   readonly storage?: { readonly enabled?: boolean; readonly namePrefix?: string };
+  /** Data-only cookie settings. Hooks require direct SDK initialization. */
+  readonly cookieCfg?: {
+    readonly enabled?: boolean;
+    readonly domain?: string;
+    readonly path?: string;
+    readonly ignoreCookies?: readonly string[];
+    readonly blockedCookies?: readonly string[];
+    readonly disableCookieDefer?: boolean;
+  };
   /** The data-only settings of `MicrosoftOpenTelemetryBrowserOptions.pageView`. */
   readonly pageView?: {
     readonly enabled?: boolean;
@@ -211,6 +220,14 @@ const optionFields: Record<string, Record<string, FieldKind>> = {
   },
   userContext: { enabled: "boolean" },
   storage: { enabled: "boolean", namePrefix: "text" },
+  cookieCfg: {
+    enabled: "boolean",
+    domain: "text",
+    path: "text",
+    ignoreCookies: "strings",
+    blockedCookies: "strings",
+    disableCookieDefer: "boolean",
+  },
   pageView: {
     enabled: "boolean",
     autoTrackPageVisitTime: "boolean",
@@ -390,6 +407,17 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
       redactQueryParams: config.redactQueryParams,
       session: config.session,
       userContext: config.userContext,
+      cookieCfg:
+        config.cookieCfg === undefined
+          ? undefined
+          : {
+              enabled: config.cookieCfg.enabled,
+              domain: config.cookieCfg.domain,
+              path: config.cookieCfg.path,
+              ignoreCookies: config.cookieCfg.ignoreCookies,
+              blockedCookies: config.cookieCfg.blockedCookies,
+              disableCookieDefer: config.cookieCfg.disableCookieDefer,
+            },
       storage:
         config.storage === undefined
           ? undefined

@@ -68,11 +68,13 @@ All notable changes to this package are documented in this file.
   hour. Unavailable or full storage only logs a warning, and `storage.enabled: false` disables the
   buffer.
 - Support a deferred connection string
-- Add per-instance browser storage controls to initialization and the CDN loader: `storage.enabled:
-false` blocks SDK-managed storage access, including later identity-control calls, while keeping
-  sessions and authenticated identity in memory. Use `storage.namePrefix` to scope session and user
-  storage keys. Disabling storage
-  does not erase stored data or stop telemetry collection.
+- Add per-instance browser storage controls to initialization and the CDN loader:
+  `storage.enabled: false` blocks only SDK-managed Web Storage access, including later identity
+  cleanup calls; cookie access is controlled independently by `cookieCfg.enabled`. For no
+  SDK-managed browser persistence or queued cookie operations, also set `cookieCfg.enabled: false`
+  and `cookieCfg.disableCookieDefer: true`. Sessions and authenticated identity then remain in
+  memory. Use `storage.namePrefix` to scope cookie names and Web Storage keys. Disabling either
+  backend does not erase stored data or stop telemetry collection.
 - Measure actual CDN response-body sizes with `npm run perf -- --cdn` and in merged-PR performance
   runs. Preserve existing build and browser measurements, compare encoded responses with identity bytes, and report
   missing artifacts or unsupported encodings without fabricated sizes.
@@ -92,6 +94,14 @@ false` blocks SDK-managed storage access, including later identity-control calls
   the JavaScript distribution. Attributes that log record processors add in `onEmit` now reach Azure
   Monitor when `samplingPercentage` is set. Document processors as the replacement for Application
   Insights telemetry initializers and `getPlugin`.
+- Default to Application Insights-aligned cookie-first persistence: one-year anonymous identity
+  cookies, session cookies refreshed at most every 60 seconds on activity (each distinct activity
+  timestamp for inactivity windows of 60 seconds or less), and localStorage session backup on
+  unload/shutdown with restoration when the cookie is missing. Authenticated identity is memory-only
+  unless the third `setAuthenticatedUserContext` argument is `true`, opting into a separate
+  browser-session cookie.
+- Cookie operations defer by default while disabled; re-enabling
+  replays the latest formatted operation per name without recalculating its expiry.
 
 ## 0.1.0-beta.1 - 2026-10-15
 

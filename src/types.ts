@@ -133,8 +133,8 @@ export interface MicrosoftOpenTelemetryBrowserSessionOptions {
   /** Enables session tracking. Defaults to true. False disables it without accessing storage. */
   enabled?: boolean;
   /**
-   * Persist in localStorage (default true). False uses memory without accessing or clearing storage.
-   * `storage.enabled: false` overrides this setting.
+   * Persist the session (default true). Cookies are primary; Web Storage provides a backup.
+   * False uses memory without accessing or clearing either backend.
    */
   persist?: boolean;
   /**
@@ -183,6 +183,48 @@ export interface MicrosoftOpenTelemetryBrowserConfigurationSync {
   resume(): void;
   /** Permanently removes listeners and cancels polling/downloads. Telemetry shutdown also calls this. */
   shutdown(): void;
+}
+
+/** Instance-scoped cookie configuration, captured at initialization. @public */
+export interface MicrosoftOpenTelemetryBrowserCookieConfig {
+  /** Defaults to true. False blocks browser cookie reads and writes, but may defer operations. */
+  enabled?: boolean;
+  /** Cookie domain. Omit for host-only cookies. */
+  domain?: string;
+  /** Cookie path. Defaults to `/`. */
+  path?: string;
+  /** Cookie names never read or written. Explicit deletion and purge are still allowed. */
+  ignoreCookies?: readonly string[];
+  /** Cookie names never written; reads and explicit deletion are allowed. */
+  blockedCookies?: readonly string[];
+  /** Defaults to false. True discards operations while disabled instead of deferring them. */
+  disableCookieDefer?: boolean;
+  /** Overrides browser cookie reads. Return the already encoded value, or an empty string. */
+  getCookie?: (name: string) => string;
+  /** Overrides browser writes. The value includes formatted cookie attributes. */
+  setCookie?: (name: string, value: string) => void;
+  /** Overrides browser deletion. The value includes expiry and scope attributes. */
+  delCookie?: (name: string, value: string) => void;
+}
+
+/** Instance cookie manager, modeled after Application Insights. @public */
+export interface MicrosoftOpenTelemetryBrowserCookieManager {
+  /** Whether this instance currently permits browser cookie access. */
+  isEnabled(): boolean;
+  /** Toggles access. Enabling flushes deferred operations; disabling does not erase cookies. */
+  setEnabled(enabled: boolean): void;
+  /** Gets an encoded cookie value, a pending value while disabled, or an empty string. */
+  get(name: string): string;
+  /**
+   * Sets an already encoded value. Lifetime is in seconds; omit for a session cookie.
+   * True means the operation was accepted, including deferral, not verified browser persistence.
+   * Values must not contain semicolons or control characters; pass scope as arguments instead.
+   */
+  set(name: string, value: string, maxAgeSec?: number, domain?: string, path?: string): boolean;
+  /** Deletes a named cookie, respecting disablement and deferral. After shutdown, deletes immediately. */
+  del(name: string, path?: string): boolean;
+  /** Deletes a named cookie even while disabled, cancelling its deferred write. */
+  purge(name: string, path?: string): boolean;
 }
 
 /**
@@ -241,18 +283,19 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
   resource?: Resource;
   /** Session tracking, enabled by default. Disabled sessions do not access storage. */
   session?: MicrosoftOpenTelemetryBrowserSessionOptions;
-  /** Browser persistence controls, captured at initialization. Applies only to this handle. */
+  /** Instance cookie controls, independent of Web Storage. Defaults to enabled. */
+  cookieCfg?: MicrosoftOpenTelemetryBrowserCookieConfig;
+  /** Web Storage controls, captured at initialization. Applies only to this handle. */
   storage?: {
     /**
-     * Defaults to true. False blocks all SDK-managed browser storage access, including identity
-     * controls called later. Sessions remain in memory; managed anonymous identity is disabled.
+     * Defaults to true. False blocks SDK-managed Web Storage, not cookies. To prevent browser
+     * persistence, also set `cookieCfg: { enabled: false, disableCookieDefer: true }`.
      * Does not erase existing data or disable collection, network requests, or custom processors.
      */
     enabled?: boolean;
     /**
-     * Literal prefix for session, user and unsent telemetry buffer storage keys. Defaults to an
-     * empty string, preserving existing keys. Use a distinct prefix to isolate applications or
-     * handles on the same origin.
+     * Literal prefix for SDK cookie names and session storage keys. Defaults to an empty string.
+     * Use a distinct prefix to isolate applications or handles on the same origin.
      * Existing unprefixed data is not read, migrated, or removed when a prefix is configured.
      */
     namePrefix?: string;
@@ -262,17 +305,16 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
    *
    * @remarks
    * By default, spans and logs receive a stable managed `enduser.pseudo.id` unless the record or
-   * resource already has one. The anonymous ID is persisted in same-origin `localStorage` so user
+   * resource already has one. The anonymous ID is persisted in a one-year cookie so user
    * metrics remain stable across page loads and SDK instances. Authenticated user and account IDs
-   * set through the returned user context are also persisted by default. Set `enabled` to `false`
+   * are memory-only unless explicitly stored in a session cookie. Set `enabled` to `false`
    * to keep authenticated values in memory and disable all managed
    * identity persistence and anonymous-ID enrichment without accessing storage.
    *
-   * The storage record is shared by handles with the same storage prefix in the origin and remains across browser sessions
-   * until `userContext.setEnabled(false)` is called or the application clears it. Any script
-   * running in the origin can read persisted values, so do not use raw personally identifiable
-   * information, secrets, or tokens as identity values. Persistence can be changed later through
-   * the returned user context unless `storage.enabled` is false.
+   * Cookies are shared by handles with the same prefix, domain and path. Cookies are sent to
+   * matching HTTP endpoints and accessible to page scripts. Do not use raw personally identifiable
+   * information, secrets, or tokens as identity values. The returned user context controls
+   * identity persistence; the cookie manager controls cookie access independently of Web Storage.
    */
   userContext?: { enabled?: boolean };
   /** Advanced trace context and propagation configuration. */
@@ -351,32 +393,20 @@ export interface MicrosoftOpenTelemetryBrowserUserContext {
    * previously set account.
    *
    * @throws TypeError when an ID is not a non-empty string.
-   * @throws Error when persistence is enabled and the identity cannot be saved. The previously
-   * persisted identity is removed when possible; otherwise the error reports that clearing
-   * failed. The in-memory identity is still applied.
+   * `storeInCookie` defaults to false. True explicitly stores identity in a session cookie while
+   * user context is enabled. Cookie-manager disablement may defer the write until re-enabled.
    */
-  setAuthenticatedUserContext(userId: string, accountId?: string): void;
+  setAuthenticatedUserContext(userId: string, accountId?: string, storeInCookie?: boolean): void;
   /**
-   * Clears authenticated identity and any persisted authenticated context. If persistence is
-   * enabled but the anonymous identity cannot be saved again, managed anonymous enrichment is
-   * suppressed and a diagnostic warning is logged. Persistence remains enabled so a later
-   * identity update can retry the write; anonymous enrichment resumes after a successful write.
-   *
-   * @throws Error when persistence is enabled and stale authentication cannot be removed.
+   * Clears authenticated identity and deletes its cookie. Deletion is deferred while the cookie
+   * manager is disabled unless deferral is disabled. Does not change anonymous identity.
    */
   clearAuthenticatedUserContext(): void;
   /**
-   * Enables persistence for anonymous, authenticated and account identity, or disables all
-   * persistence without changing the current in-memory authenticated identity. Managed anonymous
-   * identity is applied to telemetry only while persistence is enabled. Disabling also removes
-   * identity persisted by earlier page loads. The stored record is shared by handles with the same
-   * storage prefix in the origin, so disabling or signing out changes that record for future page
-   * loads. Each active handle keeps its own state, so update every active handle to change the
-   * identity it applies to telemetry. When initialized with `storage.enabled: false`, this method
-   * has no effect and never accesses storage.
-   *
-   * @throws Error when enabling cannot save identity, or when disabling cannot remove identity
-   * this instance persisted.
+   * Enables anonymous identity persistence or disables it and purges both identity cookies,
+   * including pending writes. Retains in-memory authenticated identity. Re-enabling does not
+   * implicitly opt authenticated identity into persistence. Shared cookies affect future page
+   * loads; active handles retain their own identity state. Independent of `storage.enabled`.
    */
   setEnabled(enabled: boolean): void;
 }
@@ -457,6 +487,8 @@ export interface MicrosoftOpenTelemetryBrowser {
     patch: MicrosoftOpenTelemetryBrowserConfigurationUpdate,
     mergeExisting?: boolean,
   ): Promise<MicrosoftOpenTelemetryBrowserConfigurationUpdateResult>;
+  /** Returns this instance's cookie manager, independently of its Web Storage policy. */
+  getCookieMgr(): MicrosoftOpenTelemetryBrowserCookieManager;
   /** Mutable user identity and persistence controls. */
   readonly userContext: MicrosoftOpenTelemetryBrowserUserContext;
   /**

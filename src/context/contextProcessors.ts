@@ -32,13 +32,15 @@ function enrich(
   // Context configured on the record or its resource belongs to the application.
   const hasAttribute = (name: string): boolean =>
     isNonEmptyString(attributes[name]) || isNonEmptyString(resourceAttributes[name]);
+  // Resolving a newly missing anonymous cookie can invalidate a backup-derived session.
+  // Do it before selecting the session for this record, consistently for both signals.
+  const anonymousUserId = provider.getAnonymousUserId();
+  if (!hasAttribute(ATTR_ENDUSER_PSEUDO_ID) && anonymousUserId !== undefined) {
+    setAttribute(ATTR_ENDUSER_PSEUDO_ID, anonymousUserId);
+  }
   if (!hasAttribute("session.id")) {
     const sessionId = provider.getSessionId();
     if (sessionId !== null) setAttribute("session.id", sessionId);
-  }
-  if (!hasAttribute(ATTR_ENDUSER_PSEUDO_ID)) {
-    const anonymousUserId = provider.getAnonymousUserId();
-    if (anonymousUserId !== undefined) setAttribute(ATTR_ENDUSER_PSEUDO_ID, anonymousUserId);
   }
   // Managed user and account form one identity; never mix them with application identity.
   if (

@@ -1,6 +1,9 @@
 import { defineConfig } from "vitest/config";
 import config, { browserInstances } from "./vitest.config.js";
-import { loadSnippetPage } from "./test/integration/snippetPageCommand.js";
+import {
+  inspectCrossSiteCookieCleanup,
+  loadSnippetPage,
+} from "./test/integration/snippetPageCommand.js";
 import { inspectPageVisitNamespaces } from "./test/integration/pageVisitNamespaceCommand.js";
 import { verifyReloadDelivery, verifyUnloadDelivery } from "./test/integration/unloadCommand.js";
 
@@ -14,6 +17,7 @@ export default defineConfig({
     browser: {
       ...config.test?.browser,
       commands: {
+        inspectCrossSiteCookieCleanup,
         loadSnippetPage,
         inspectPageVisitNamespaces,
         verifyReloadDelivery,

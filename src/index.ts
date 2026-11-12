@@ -29,6 +29,8 @@ export type {
   MicrosoftOpenTelemetryBrowserConfigurationSyncOptions,
   MicrosoftOpenTelemetryBrowser,
   MicrosoftOpenTelemetryBrowserInstrumentations,
+  MicrosoftOpenTelemetryBrowserCookieConfig,
+  MicrosoftOpenTelemetryBrowserCookieManager,
   MicrosoftOpenTelemetryBrowserOptions,
   MicrosoftOpenTelemetryBrowserExceptionOptions,
   MicrosoftOpenTelemetryBrowserSessionOptions,

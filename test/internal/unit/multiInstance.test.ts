@@ -797,7 +797,7 @@ describe("page visit time through useMicrosoftOpenTelemetry", () => {
   ])(
     "reuses slot zero and restores the previous document after failed %s before enable",
     async (stage) => {
-      const namePrefix = `visit-failed-${stage}-`;
+      const namePrefix = `visit-failed-${stage.replaceAll(" ", "-")}-`;
       const key = visitKey(namePrefix, 0);
       const previous = seedVisit(key);
       const saved = storage.getItem(key);
@@ -1054,7 +1054,7 @@ describe("page visit time through useMicrosoftOpenTelemetry", () => {
   ] as const)(
     "leaves the seed untouched when caller enable navigates then fails with %s (later quota=%s)",
     async (destination, quotaFailure) => {
-      const namePrefix = `visit-enable-rollback-${destination}-${quotaFailure}-`;
+      const namePrefix = `visit-enable-rollback-${destination.replaceAll(" ", "-")}-${quotaFailure}-`;
       const key = visitKey(namePrefix, 0);
       const previous = seedVisit(key);
       const saved = storage.getItem(key);
@@ -1176,7 +1176,7 @@ describe("page visit time through useMicrosoftOpenTelemetry", () => {
   it.each(["custom processors", "pending connection string"])(
     "consumes the seed once when the initial commit write hits native quota with %s",
     async (destination) => {
-      const namePrefix = `visit-commit-quota-${destination}-`;
+      const namePrefix = `visit-commit-quota-${destination.replaceAll(" ", "-")}-`;
       const key = visitKey(namePrefix, 0);
       const previous = seedVisit(key);
       const saved = storage.getItem(key);

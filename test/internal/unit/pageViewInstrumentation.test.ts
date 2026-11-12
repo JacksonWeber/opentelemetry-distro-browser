@@ -595,20 +595,36 @@ describe("PageViewInstrumentation", () => {
       const { instrumentation, provider } = createInstrumentation();
 
       instrumentation.enable();
-      await settle();
+      await vi.waitFor(() => expect(provider.records).toHaveLength(1), {
+        timeout: BROWSER_ASYNC_TIMEOUT_MS,
+      });
+      const previousUrl = location.href;
       provider.records.length = 0;
 
       // Traversing fires popstate first and hashchange second; the first starts the page view and
       // the second is discarded as a duplicate, so the classification comes from popstate.
       history.pushState(null, "", "#hash-a");
-      await settle();
+      await vi.waitFor(() => expect(provider.records).toHaveLength(1), {
+        timeout: BROWSER_ASYNC_TIMEOUT_MS,
+      });
+      const hashUrl = location.href;
       provider.records.length = 0;
       const traversed = waitForPopState();
       history.back();
       await traversed;
-      await settle();
 
-      expect(attributesOf(provider.records[0] as LogRecord)[ATTR_PAGE_VIEW_TYPE]).toBe("traverse");
+      // The idle callback can run later than settle()'s fixed post-frame delay on busy runners.
+      await vi.waitFor(
+        () => {
+          expect(provider.records).toHaveLength(1);
+          expect(attributesOf(provider.records[0] as LogRecord)).toMatchObject({
+            [ATTR_PAGE_VIEW_TYPE]: "traverse",
+            [ATTR_URL_FULL]: previousUrl,
+            [ATTR_PAGE_VIEW_REFERRER]: hashUrl,
+          });
+        },
+        { timeout: BROWSER_ASYNC_TIMEOUT_MS },
+      );
     });
   });
 
@@ -879,13 +895,20 @@ describe("PageViewInstrumentation", () => {
       });
 
       instrumentation.enable();
-      await settle();
+      await vi.waitFor(() => expect(provider.records).toHaveLength(1), {
+        timeout: BROWSER_ASYNC_TIMEOUT_MS,
+      });
       provider.records.length = 0;
 
       history.pushState(null, "", "/secure?token=supersecret&visible=true");
-      await settle();
+      // Idle callbacks can run later than settle()'s fixed post-frame delay on busy runners.
+      await vi.waitFor(() => expect(provider.records).toHaveLength(1), {
+        timeout: BROWSER_ASYNC_TIMEOUT_MS,
+      });
       history.pushState(null, "", "/after");
-      await settle();
+      await vi.waitFor(() => expect(provider.records).toHaveLength(2), {
+        timeout: BROWSER_ASYNC_TIMEOUT_MS,
+      });
 
       const secureRecord = attributesOf(provider.records[0] as LogRecord);
       expect(secureRecord[ATTR_URL_FULL]).toBe("/secure");

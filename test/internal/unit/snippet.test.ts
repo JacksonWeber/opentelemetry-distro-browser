@@ -270,7 +270,13 @@ const snippetOptionsMatchTheDistribution = (
   config: Required<SdkLoaderConfig>,
 ): Pick<
   Options,
-  "samplingPercentage" | "session" | "userContext" | "storage" | "pageView" | "redactQueryParams"
+  | "samplingPercentage"
+  | "session"
+  | "userContext"
+  | "storage"
+  | "cookieCfg"
+  | "pageView"
+  | "redactQueryParams"
 > & {
   azureMonitor: Partial<AzureMonitorOptions>;
   instrumentationOptions: InstrumentationOptions;
@@ -296,6 +302,14 @@ const configuredOptions = {
   session: { enabled: true, persist: false, inactivityTimeout: 60, maxDuration: 600 },
   userContext: { enabled: false },
   storage: { enabled: false, namePrefix: "shop-" },
+  cookieCfg: {
+    enabled: false,
+    domain: "example.test",
+    path: "/shop",
+    ignoreCookies: ["ignored"],
+    blockedCookies: ["blocked"],
+    disableCookieDefer: true,
+  },
   pageView: {
     enabled: true,
     autoTrackPageVisitTime: true,
@@ -316,6 +330,35 @@ it("leaves optional settings out of the default loader", () => {
   expect(generated).toMatch(
     /\(window,document,\{"src":"https:\/\/example\.test\/sdk\.js","crossOrigin":"anonymous","cfg":\{"azureMonitor":\{"connectionString":"connection"\}\}\}\);$/,
   );
+});
+
+it("preserves non-enumerable cookie disablement and rejects cookie hooks", () => {
+  const cookieCfg = Object.defineProperty({}, "enabled", { value: false });
+  expect(getSdkLoaderScript({ connectionString: "connection", cookieCfg })).toContain(
+    '"cookieCfg":{"enabled":false}',
+  );
+  expect(() =>
+    getSdkLoaderScript({
+      connectionString: "connection",
+      cookieCfg: { getCookie: () => "" } as SdkLoaderConfig["cookieCfg"],
+    }),
+  ).toThrow("cookieCfg must be a JSON object");
+});
+
+it.each([
+  { enabled: "false" },
+  { disableCookieDefer: 1 },
+  { path: false },
+  { domain: 42 },
+  { ignoreCookies: [false] },
+  { blockedCookies: "blocked" },
+])("rejects malformed cookie loader settings %j", (cookieCfg) => {
+  expect(() =>
+    getSdkLoaderScript({
+      connectionString: "connection",
+      cookieCfg: cookieCfg as unknown as SdkLoaderConfig["cookieCfg"],
+    }),
+  ).toThrow(TypeError);
 });
 
 it.each([
@@ -379,6 +422,7 @@ it("passes configured options to the bundle", async () => {
       session: configuredOptions.session,
       userContext: configuredOptions.userContext,
       storage: configuredOptions.storage,
+      cookieCfg: configuredOptions.cookieCfg,
       pageView: configuredOptions.pageView,
       instrumentations: ["errors"],
       resource: { attributes: configuredOptions.resourceAttributes, built: true },

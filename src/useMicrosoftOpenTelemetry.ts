@@ -7,10 +7,12 @@ import {
   BrowserContextSpanProcessor,
 } from "./context/contextProcessors.js";
 import { createSession } from "./session/createSession.js";
-import { createUserContext } from "./user/createUserContext.js";
 import { snapshotSdkStatsOptions } from "./exporter/customerSdkStats.js";
 import { createKeyValueStorage } from "./storage/keyValueStorage.js";
 import { createSessionBufferStorage, sessionBufferStorage } from "./exporter/sessionBuffer.js";
+import { createCookieUserContext } from "./user/createCookieUserContext.js";
+import { createCookieManager } from "./storage/cookieManager.js";
+import { isNonEmptyString } from "./shared/isNonEmptyString.js";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import type { SpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { beginUnloading, endUnloading } from "./exporter/common.js";
@@ -232,33 +234,37 @@ export async function useMicrosoftOpenTelemetry(
   if (typeof storageEnabled !== "boolean" || typeof namePrefix !== "string") {
     throw new TypeError("storage.enabled must be a boolean and storage.namePrefix a string.");
   }
+  if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]*$/.test(namePrefix)) {
+    throw new TypeError("storage.namePrefix must contain only cookie-name token characters.");
+  }
+  const cookies = createCookieManager(options.cookieCfg);
+  cookies.setReplayFailureHandler((name, removeSuperseded) => {
+    if (name === `${namePrefix}ai_authUser`) removeSuperseded();
+  });
+  const sessionStorage = storageEnabled
+    ? createKeyValueStorage(
+        "localStorage",
+        "Session storage unavailable; using an in-memory session.",
+        namePrefix,
+      )
+    : null;
   const session =
     sessionOptions?.enabled !== false
       ? createSession(
           {
-            persist: storageEnabled ? sessionOptions?.persist : false,
+            persist: sessionOptions?.persist,
             ...configuration.snapshot().session,
           },
-          createKeyValueStorage(
-            "localStorage",
-            "Session storage unavailable; using an in-memory session.",
-            namePrefix,
-          ),
+          sessionStorage,
+          cookies,
+          `${namePrefix}ai_session`,
           () => configuration.snapshot().session,
         )
       : undefined;
   getSharedRegistry();
   const readSamplingPercentage = () => configuration.snapshot().samplingPercentage;
   const sampler = new RuntimeSampler(readSamplingPercentage);
-  const userContext = createUserContext(
-    options.userContext?.enabled,
-    createKeyValueStorage(
-      "localStorage",
-      "User storage unavailable; anonymous ID disabled.",
-      namePrefix,
-    ),
-    storageEnabled,
-  );
+  let userContext!: ReturnType<typeof createCookieUserContext>;
   if (azureMonitor) {
     sessionBufferStorage.set(
       azureMonitor,
@@ -297,7 +303,9 @@ export async function useMicrosoftOpenTelemetry(
     getSessionId: () => (stopping ? null : (session?.getSessionId() ?? null)),
   };
   const contextProvider = {
-    ...userContext.provider,
+    getAnonymousUserId: () => userContext.provider.getAnonymousUserId(),
+    getAuthenticatedUserId: () => userContext.provider.getAuthenticatedUserId(),
+    getAccountId: () => userContext.provider.getAccountId(),
     ...sessionProvider,
     getOperationName: (traceId: string | undefined) =>
       getPageOperation(correlationState.current)
@@ -315,6 +323,11 @@ export async function useMicrosoftOpenTelemetry(
     if (stopping || unloadFlushPromise) return;
     beginUnloading();
     pageViewInstrumentation?.settleForUnload();
+    try {
+      session?.backup();
+    } catch (error) {
+      reportError("Session backup failed", error);
+    }
     const operation = flushProcessors()
       .catch((error: unknown) => {
         reportError("Telemetry unload flush failed", error);
@@ -367,12 +380,15 @@ export async function useMicrosoftOpenTelemetry(
           if (!initialized) pageViewInstrumentation?.rollbackStartup();
         },
         () => stopAzureMonitorStartup?.(),
+        () => userContext?.shutdown(),
         () => instance?.detach(),
         () => {
           void correlation?.shutdown();
         },
         () => removeUnloadSubscription?.(),
+        () => session?.backup(),
         () => session?.shutdown(),
+        () => cookies.shutdown(),
       ]) {
         try {
           cleanup();
@@ -439,7 +455,10 @@ export async function useMicrosoftOpenTelemetry(
   const handle: MicrosoftOpenTelemetryBrowser = {
     forceFlush,
     shutdown,
-    userContext: userContext.context,
+    get userContext() {
+      return userContext.context;
+    },
+    getCookieMgr: () => cookies,
     updateCfg: (patch, mergeExisting) => configuration.updateCfg(patch, mergeExisting),
     instrumentations: {
       get: (id) => instrumentationRegistry?.get(id),
@@ -521,6 +540,43 @@ export async function useMicrosoftOpenTelemetry(
       }
     }
     const noDestination = !azureMonitor && !spanProcessors && !logRecordProcessors;
+    // Validate destinations before persisting identity. A new user invalidates the previous
+    // user's session backup so deleting cookies cannot silently restore their old session.
+    userContext = createCookieUserContext(
+      options.userContext?.enabled,
+      cookies,
+      namePrefix,
+      () => session?.discardBackup(),
+      cookies.canRead(`${namePrefix}ai_user`),
+      (action) => {
+        // Explicit privacy controls also clean records written by older versions. Never restore
+        // legacy authentication or access Web Storage when the caller has disabled it.
+        if (!sessionStorage) return;
+        const key = "opentelemetry-user";
+        if (action === "clear") {
+          const stored = sessionStorage.getItem(key);
+          if (stored.success && stored.value === null) return;
+          if (stored.success && stored.value !== null) {
+            try {
+              const value: unknown = JSON.parse(stored.value);
+              if (
+                typeof value === "object" &&
+                value !== null &&
+                !Array.isArray(value) &&
+                "anonymousId" in value &&
+                isNonEmptyString(value.anonymousId) &&
+                sessionStorage.setItem(key, JSON.stringify({ anonymousId: value.anonymousId }))
+              ) {
+                return;
+              }
+            } catch {
+              // Malformed records are removed rather than retained with stale authentication.
+            }
+          }
+        }
+        sessionStorage.removeItem(key);
+      },
+    );
     await session?.start();
     spanProcessors ??= [];
     logRecordProcessors ??= [];

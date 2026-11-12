@@ -67,11 +67,11 @@ in each Node job's check summary and uploads all three files as build artifacts.
 
 Every executable published entry point has absolute minified, gzip and Brotli budgets:
 
-| Entry point          | Minified |    Gzip |   Brotli |
-| -------------------- | -------: | ------: | -------: |
-| `.`                  |   164 kB | 51.5 kB | 45.25 kB |
-| `./instrumentations` |    64 kB |   24 kB |    22 kB |
-| `./snippet`          |  6.25 kB | 2.75 kB |   2.5 kB |
+| Entry point          | Minified |    Gzip |  Brotli |
+| -------------------- | -------: | ------: | ------: |
+| `.`                  |   170 kB | 53.5 kB |   47 kB |
+| `./instrumentations` |    64 kB |   24 kB |   22 kB |
+| `./snippet`          |  6.75 kB |    3 kB | 2.75 kB |
 
 The generated JSON and Markdown reports show the measured values, ceilings and result for each
 entry point. During alpha releases, violations are report-only so the baselines can stabilize.
@@ -83,10 +83,10 @@ comparison remains informational and does not replace the absolute gate.
 emits them, so it must run after a production build. Their budgets block in every release channel,
 including alpha:
 
-| Artifact                                                   |  Minified |     Gzip | Brotli |
-| ---------------------------------------------------------- | --------: | -------: | -----: |
-| `opentelemetry-browser.{iife,umd}.min.js`                  | 186.25 kB | 59.75 kB |  52 kB |
-| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |     63 kB |    19 kB |  17 kB |
+| Artifact                                                   | Minified |    Gzip | Brotli |
+| ---------------------------------------------------------- | -------: | ------: | -----: |
+| `opentelemetry-browser.{iife,umd}.min.js`                  |   192 kB | 61.5 kB |  54 kB |
+| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |    63 kB |   19 kB |  17 kB |
 
 SWC minifies the browser bundles and shortens `_`-prefixed properties, the TypeScript `private`
 convention used by OpenTelemetry, so source code keeps descriptive names. Members that

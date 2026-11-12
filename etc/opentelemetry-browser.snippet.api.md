@@ -14,6 +14,14 @@ export interface SdkLoaderConfig {
     };
     readonly cdnFallback?: boolean;
     readonly connectionString: string;
+    readonly cookieCfg?: {
+        readonly enabled?: boolean;
+        readonly domain?: string;
+        readonly path?: string;
+        readonly ignoreCookies?: readonly string[];
+        readonly blockedCookies?: readonly string[];
+        readonly disableCookieDefer?: boolean;
+    };
     readonly crossOrigin?: string;
     readonly instrumentationOptions?: {
         readonly [name in SdkLoaderInstrumentationName]?: SdkLoaderJsonObject & {

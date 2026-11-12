@@ -4,24 +4,103 @@
 import { ROOT_CONTEXT, context, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { afterEach, beforeEach, expect, inject, it, vi } from "vitest";
+import { commands, server } from "vitest/browser";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { version } from "../../package.json";
 import type { AzureMonitorEnvelope, PageViewData } from "../../src/exporter/telemetryModels.js";
 import { createInMemoryPipeline } from "../fixtures/telemetry.js";
 import { withoutSdkStats } from "../fixtures/sdkStats.js";
+import type {
+  MicrosoftOpenTelemetryBrowser,
+  MicrosoftOpenTelemetryBrowserOptions,
+} from "../../src/index.js";
+
+const cookieKeys = ["ai_user", "ai_authUser", "ai_session"];
+const storageKeys = ["opentelemetry-user", "opentelemetry-session"];
+const prefixes = ["", "browser-a-", "browser-b-"];
+const savedStorage = new Map<string, string | null>();
+const cookieHandles = new Set<MicrosoftOpenTelemetryBrowser>();
+
+// Chromium rejects SameSite-default deletion in a cross-site iframe. Firefox currently accepts
+// it, while WebKit's default third-party policy blocks the initial write in this fixture.
+it
+  .runIf(server.browser === "chromium")
+  .each(
+    [false, true].flatMap((minified) =>
+      (["del", "purge", "clear", "deferred-clear", "disable", "shutdown-del"] as const).map(
+        (cleanup) => ({ minified, cleanup }),
+      ),
+    ),
+  )(
+  "removes cross-site HTTPS identity cookies with $cleanup (minified=$minified)",
+  async ({ minified, cleanup }) => {
+    const { before, after, reloaded } = await commands.inspectCrossSiteCookieCleanup(
+      minified,
+      cleanup,
+    );
+    // Prove third-party writes succeeded before asserting deletion, rather than passing vacuously.
+    expect(before).toContain("ai_authUser=iframe-user%7Ciframe-account");
+    const anonymousCookie = before.split("; ").find((part) => part.startsWith("ai_user="));
+    expect(anonymousCookie).toMatch(/^ai_user=.+/);
+    expect(after).toBe(cleanup === "disable" ? "" : anonymousCookie);
+    expect(reloaded).toBe(after);
+  },
+);
+
+function clearCookies() {
+  for (const prefix of prefixes) {
+    for (const key of cookieKeys) document.cookie = `${prefix}${key}=; max-age=0; path=/`;
+  }
+}
+
+function readCookie(name: string) {
+  const value = document.cookie.split("; ").find((part) => part.startsWith(`${name}=`));
+  if (!value) return null;
+  const raw = value.slice(name.length + 1);
+  const parts = (name.endsWith("ai_authUser") ? decodeURI(raw) : raw).split("|");
+  if (name.endsWith("ai_user")) {
+    return { anonymousId: parts[0], acquisitionTimestamp: Date.parse(parts[1]!) };
+  }
+  if (name.endsWith("ai_session")) {
+    return {
+      id: parts[0],
+      startTimestamp: Number(parts[1]),
+      lastActivityTimestamp: Number(parts[2]),
+    };
+  }
+  return { authenticatedUserId: parts[0], ...(parts.length > 1 && { accountId: parts[1] }) };
+}
 
 beforeEach(() => {
+  clearCookies();
+  for (const prefix of prefixes) {
+    for (const key of storageKeys) {
+      savedStorage.set(prefix + key, localStorage.getItem(prefix + key));
+      localStorage.removeItem(prefix + key);
+    }
+  }
   const fetch = globalThis.fetch.bind(globalThis);
   vi.spyOn(globalThis, "fetch").mockImplementation(withoutSdkStats(fetch));
 });
 
-afterEach(() => {
+afterEach(async () => {
+  try {
+    await Promise.all([...cookieHandles].map((handle) => handle.shutdown()));
+  } finally {
+    cookieHandles.clear();
+  }
   trace.disable();
   logs.disable();
   propagation.disable();
   context.disable();
   diag.disable();
   vi.restoreAllMocks();
+  clearCookies();
+  for (const [key, value] of savedStorage) {
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  }
+  savedStorage.clear();
 });
 
 it.each(["index.js", "index.min.js"])(
@@ -76,6 +155,241 @@ it.each(["index.js", "index.min.js"])(
     } finally {
       await telemetry.shutdown();
     }
+  },
+);
+
+async function initializeCookieConsumer(
+  file: string,
+  options: MicrosoftOpenTelemetryBrowserOptions,
+) {
+  const path = `../../dist/esm/${file}`;
+  const url = new URL(path, import.meta.url);
+  const distro: typeof import("../../src/index.js") = await import(/* @vite-ignore */ url.href);
+  const pipeline = createInMemoryPipeline();
+  const handle = await distro.useMicrosoftOpenTelemetry({
+    ...pipeline.options,
+    ...options,
+    pageView: { enabled: false },
+  });
+  cookieHandles.add(handle);
+  return {
+    handle,
+    pipeline,
+    async emit() {
+      trace.getTracer("cookie-consumer").startSpan("cookie-operation").end();
+      logs.getLogger("cookie-consumer").emit({ eventName: "cookie-event" });
+      await handle.forceFlush();
+      const span = pipeline.spanExporter.getFinishedSpans().at(-1)!;
+      const log = pipeline.logExporter.getFinishedLogRecords().at(-1)!;
+      for (const key of ["session.id", "enduser.pseudo.id", "user.id", "user.account.id"]) {
+        expect(log.attributes[key]).toEqual(span.attributes[key]);
+      }
+      return span.attributes;
+    },
+  };
+}
+
+it.each(["index.js", "index.min.js"])(
+  "persists prefixed cookies independently of Web Storage and requires auth opt-in through %s",
+  async (file) => {
+    const local = vi.spyOn(window, "localStorage", "get");
+    const session = vi.spyOn(window, "sessionStorage", "get");
+    const options = { storage: { enabled: false, namePrefix: "browser-a-" } };
+    const first = await initializeCookieConsumer(file, options);
+    first.handle.userContext.setAuthenticatedUserContext("memory-user", "memory-account");
+    const attributes = await first.emit();
+    expect(attributes["session.id"]).toMatch(/^[0-9a-f]{32}$/);
+    expect(attributes["enduser.pseudo.id"]).toMatch(/^[0-9a-f]{32}$/);
+    expect(attributes["user.id"]).toBe("memory-user");
+    expect(readCookie("browser-a-ai_authUser")).toBeNull();
+    expect(readCookie("browser-a-ai_user")).toEqual({
+      anonymousId: attributes["enduser.pseudo.id"],
+      acquisitionTimestamp: expect.any(Number),
+    });
+    expect(readCookie("browser-a-ai_session")!.id).toBe(attributes["session.id"]);
+    await first.handle.shutdown();
+
+    const restored = await initializeCookieConsumer(file, options);
+    const restoredAttributes = await restored.emit();
+    expect(restoredAttributes["session.id"]).toBe(attributes["session.id"]);
+    expect(restoredAttributes["enduser.pseudo.id"]).toBe(attributes["enduser.pseudo.id"]);
+    expect(restoredAttributes["user.id"]).toBeUndefined();
+    expect(restoredAttributes["user.account.id"]).toBeUndefined();
+    restored.handle.userContext.setAuthenticatedUserContext("user 雪%2F", "account=42", true);
+    expect((await restored.emit())["user.id"]).toBe("user 雪%2F");
+    expect(readCookie("browser-a-ai_authUser")).toEqual({
+      authenticatedUserId: "user 雪%2F",
+      accountId: "account=42",
+    });
+    await restored.handle.shutdown();
+
+    const other = await initializeCookieConsumer(file, {
+      storage: { enabled: false, namePrefix: "browser-b-" },
+    });
+    const otherAttributes = await other.emit();
+    expect(otherAttributes["session.id"]).not.toBe(attributes["session.id"]);
+    expect(otherAttributes["enduser.pseudo.id"]).not.toBe(attributes["enduser.pseudo.id"]);
+    expect(otherAttributes["user.id"]).toBeUndefined();
+    await other.handle.shutdown();
+
+    const authenticated = await initializeCookieConsumer(file, options);
+    expect(await authenticated.emit()).toMatchObject({
+      "session.id": attributes["session.id"],
+      "enduser.pseudo.id": attributes["enduser.pseudo.id"],
+      "user.id": "user 雪%2F",
+      "user.account.id": "account=42",
+    });
+    authenticated.handle.userContext.setAuthenticatedUserContext(
+      "memory-replacement",
+      undefined,
+      false,
+    );
+    const memoryAttributes = await authenticated.emit();
+    expect(memoryAttributes["user.id"]).toBe("memory-replacement");
+    expect(memoryAttributes["user.account.id"]).toBeUndefined();
+    // Observe browser storage independently of SDK flush; retry reads, never the delete.
+    await vi.waitFor(() => expect(readCookie("browser-a-ai_authUser")).toBeNull(), {
+      timeout: 5000,
+    });
+    authenticated.handle.userContext.setEnabled(false);
+    expect(readCookie("browser-a-ai_user")).toBeNull();
+    expect(readCookie("browser-b-ai_user")!.anonymousId).toBe(otherAttributes["enduser.pseudo.id"]);
+    await authenticated.handle.shutdown();
+    expect(local).not.toHaveBeenCalled();
+    expect(session).not.toHaveBeenCalled();
+    expect(readCookie("ai_user")).toBeNull();
+    expect(readCookie("ai_session")).toBeNull();
+  },
+);
+
+it.each(
+  ["index.js", "index.min.js"].flatMap((file) =>
+    ["", "browser-a-"].map((namePrefix) => ({ file, namePrefix })),
+  ),
+)(
+  "continues Application Insights cookies and roundtrips canonical identities through $file (prefix=$namePrefix)",
+  async ({ file, namePrefix }) => {
+    const now = Date.now();
+    const anonymousId = "AI+anonymous/id";
+    const sessionId = "AI+session/id";
+    const acquired = new Date(now - 86_400_000).toISOString();
+    const start = now - 2000;
+    const userId = "用户 雪%2F%7C%";
+    const accountId = "tenant/雪%25#?";
+    const anonymousName = `${namePrefix}ai_user`;
+    const sessionName = `${namePrefix}ai_session`;
+    const authName = `${namePrefix}ai_authUser`;
+    document.cookie = `${anonymousName}=${anonymousId}|${acquired}; path=/`;
+    document.cookie = `${sessionName}=${sessionId}|${start}|${now - 1000}; path=/`;
+    document.cookie = `${authName}=${encodeURI(`${userId}|${accountId}`)}; path=/`;
+    const legacyUser = JSON.stringify({ anonymousId: "old-storage-user" });
+    localStorage.setItem(`${namePrefix}opentelemetry-user`, legacyUser);
+    localStorage.setItem(
+      `${namePrefix}opentelemetry-session`,
+      JSON.stringify({ id: "superseded-backup", startTimestamp: start }),
+    );
+    const options = { storage: { namePrefix } };
+    const first = await initializeCookieConsumer(file, options);
+    const expected = {
+      "enduser.pseudo.id": anonymousId,
+      "session.id": sessionId,
+      "user.id": userId,
+      "user.account.id": accountId,
+    };
+    expect(await first.emit()).toMatchObject(expected);
+    const manager = first.handle.getCookieMgr();
+    expect(manager.get(anonymousName)).toBe(`${anonymousId}|${acquired}`);
+    expect(manager.get(sessionName)).toMatch(new RegExp(`^AI\\+session/id\\|${start}\\|\\d+$`));
+    expect(manager.get(authName)).toBe(encodeURI(`${userId}|${accountId}`));
+    expect(localStorage.getItem(`${namePrefix}opentelemetry-user`)).toBe(legacyUser);
+
+    const replacement = "replacement 雪%2F%7C%";
+    first.handle.userContext.setAuthenticatedUserContext(replacement, accountId, true);
+    expect(manager.get(authName)).toBe(encodeURI(`${replacement}|${accountId}`));
+    await first.handle.shutdown();
+    expect(JSON.parse(localStorage.getItem(`${namePrefix}opentelemetry-session`)!)).toMatchObject({
+      id: sessionId,
+      startTimestamp: start,
+      lastActivityTimestamp: expect.any(Number),
+    });
+    const restored = await initializeCookieConsumer(file, options);
+    expect(await restored.emit()).toMatchObject({ ...expected, "user.id": replacement });
+    restored.handle.userContext.setAuthenticatedUserContext("memory|identity", "account|id", true);
+    expect(await restored.emit()).toMatchObject({
+      "user.id": "memory|identity",
+      "user.account.id": "account|id",
+    });
+    expect(restored.handle.getCookieMgr().get(authName)).toBe("");
+    await restored.handle.shutdown();
+    const afterFailedPersistence = await initializeCookieConsumer(file, options);
+    const attributes = await afterFailedPersistence.emit();
+    expect(attributes["user.id"]).toBeUndefined();
+    expect(attributes["session.id"]).toBe(sessionId);
+    expect(attributes["enduser.pseudo.id"]).toBe(anonymousId);
+  },
+);
+
+it.each(["index.js", "index.min.js"])(
+  "honors disabled cookies, deferred enable and shutdown cancellation through %s",
+  async (file) => {
+    const local = vi.spyOn(window, "localStorage", "get");
+    const session = vi.spyOn(window, "sessionStorage", "get");
+    const read = vi.spyOn(document, "cookie", "get");
+    const write = vi.spyOn(document, "cookie", "set");
+    const disabled = await initializeCookieConsumer(file, {
+      storage: { enabled: false },
+      cookieCfg: { enabled: false, disableCookieDefer: true },
+    });
+    disabled.handle.userContext.setAuthenticatedUserContext("memory-user", undefined, true);
+    const memory = await disabled.emit();
+    expect(memory["session.id"]).toMatch(/^[0-9a-f]{32}$/);
+    expect(memory["enduser.pseudo.id"]).toBeUndefined();
+    expect(memory["user.id"]).toBe("memory-user");
+    disabled.handle.userContext.clearAuthenticatedUserContext();
+    expect((await disabled.emit())["user.id"]).toBeUndefined();
+    await disabled.handle.shutdown();
+    expect(read).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+
+    const deferred = await initializeCookieConsumer(file, {
+      storage: { enabled: false },
+      cookieCfg: { enabled: false },
+    });
+    deferred.handle.userContext.setAuthenticatedUserContext("deferred-user", undefined, true);
+    const before = await deferred.emit();
+    expect(before["enduser.pseudo.id"]).toMatch(/^[0-9a-f]{32}$/);
+    expect(before["user.id"]).toBe("deferred-user");
+    expect(deferred.pipeline.spanExporter.getFinishedSpans()).toHaveLength(1);
+    expect(deferred.pipeline.logExporter.getFinishedLogRecords()).toHaveLength(1);
+    expect(write).not.toHaveBeenCalled();
+    deferred.handle.getCookieMgr().setEnabled(true);
+    expect(readCookie("ai_session")!.id).toBe(before["session.id"]);
+    expect(readCookie("ai_user")!.anonymousId).toBe(before["enduser.pseudo.id"]);
+    expect(readCookie("ai_authUser")).toEqual({ authenticatedUserId: "deferred-user" });
+    expect(await deferred.emit()).toMatchObject(before);
+    expect(deferred.pipeline.spanExporter.getFinishedSpans()).toHaveLength(2);
+    expect(deferred.pipeline.logExporter.getFinishedLogRecords()).toHaveLength(2);
+    await deferred.handle.shutdown();
+
+    const cancelled = await initializeCookieConsumer(file, {
+      storage: { enabled: false, namePrefix: "browser-b-" },
+      cookieCfg: { enabled: false },
+    });
+    cancelled.handle.userContext.setAuthenticatedUserContext("cancelled-user", undefined, true);
+    await cancelled.emit();
+    const manager = cancelled.handle.getCookieMgr();
+    expect(manager.get("browser-b-ai_authUser")).not.toBe("");
+    await cancelled.handle.shutdown();
+    write.mockClear();
+    manager.setEnabled(true);
+    cancelled.handle.userContext.setEnabled(true);
+    cancelled.handle.userContext.setAuthenticatedUserContext("stale-user", undefined, true);
+    expect(manager.isEnabled()).toBe(false);
+    expect(manager.get("browser-b-ai_authUser")).toBe("");
+    expect(write).not.toHaveBeenCalled();
+    for (const key of cookieKeys) expect(readCookie(`browser-b-${key}`)).toBeNull();
+    expect(local).not.toHaveBeenCalled();
+    expect(session).not.toHaveBeenCalled();
   },
 );
 
@@ -554,7 +868,10 @@ it.each(["index.js", "index.min.js"])(
       expect(sessionId).toMatch(/^[0-9a-f]{32}$/);
       for (const record of [...spans, ...records]) {
         expect(record.attributes["session.id"]).toBe(sessionId);
+        expect(record.attributes["enduser.pseudo.id"]).toBe(readCookie("ai_user")!.anonymousId);
       }
+      expect(readCookie("ai_session")!.id).toBe(sessionId);
+      expect(localStorage.getItem("opentelemetry-session")).toBeNull();
       tracer
         .startSpan("application-session", {
           attributes: { "session.id": "application-span" },

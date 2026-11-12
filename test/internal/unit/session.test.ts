@@ -20,8 +20,41 @@ import { WRITE_BACKOFF_MS } from "../../../src/storage/keyValueStorage.js";
 vi.mock("../../../src/routing/telemetryInstance.js", { spy: true });
 
 const storageKey = "opentelemetry-session";
+const sessionCookie = "ai_session";
 const handles = new Set<MicrosoftOpenTelemetryBrowser>();
+// Keep persisted records synchronous and independent of the native cookie jar. Fake timers
+// do not control native cookie expiry or WebKit's asynchronous cookie-cache updates. Cookie
+// retention and browser persistence are covered by the cookie and integration suites.
+const cookieValues = new Map<string, string>();
+const cookieCfg = {
+  getCookie: vi.fn((name: string) => cookieValues.get(name) ?? ""),
+  setCookie: vi.fn((name: string, formatted: string) => {
+    cookieValues.set(name, formatted.split(";")[0]!);
+  }),
+  delCookie: vi.fn((name: string, _formatted: string) => {
+    cookieValues.delete(name);
+  }),
+};
 let previousSession: string | null;
+
+function clearCookies() {
+  cookieValues.clear();
+}
+
+function readSessionCookie(name: string = sessionCookie) {
+  const value = cookieValues.get(name);
+  if (!value) return null;
+  const [id, start, activity] = value.split("|");
+  return { id, startTimestamp: Number(start), lastActivityTimestamp: Number(activity) };
+}
+
+const fallbackOnly = { cookieCfg: { enabled: false, disableCookieDefer: true } } as const;
+
+async function unload() {
+  window.dispatchEvent(new Event("pagehide"));
+  // Let the coalesced unload flush settle before another unload event.
+  await vi.advanceTimersByTimeAsync(0);
+}
 
 function resetApis() {
   trace.disable();
@@ -32,10 +65,13 @@ function resetApis() {
 }
 
 beforeEach(() => {
+  clearCookies();
+  cookieCfg.getCookie.mockClear();
+  cookieCfg.setCookie.mockClear();
+  cookieCfg.delCookie.mockClear();
   previousSession = localStorage.getItem(storageKey);
   localStorage.removeItem(storageKey);
-  vi.useFakeTimers();
-  vi.setSystemTime(1_000_000);
+  vi.useFakeTimers({ now: Date.now() });
   vi.mocked(startTelemetryInstance).mockClear();
 });
 
@@ -47,6 +83,7 @@ afterEach(async () => {
   resetApis();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  clearCookies();
   if (previousSession === null) localStorage.removeItem(storageKey);
   else localStorage.setItem(storageKey, previousSession);
   expect(timerCount).toBe(0);
@@ -66,12 +103,14 @@ async function initialize(
     | "sessionExpirationMs"
     | "storage"
     | "userContext"
+    | "cookieCfg"
   > = {},
 ) {
   const spans: Span[] = [];
   const records: ReadWriteLogRecord[] = [];
   const handle = await useMicrosoftOpenTelemetry({
     ...options,
+    cookieCfg: { ...cookieCfg, ...options.cookieCfg },
     userContext: options.userContext ?? { enabled: false },
     pageView: { enabled: false },
     spanProcessors: [
@@ -178,11 +217,12 @@ it("generates and persists the same session ID by default", async () => {
   const { emit } = await initialize();
   const id = emit();
   expect(id).toMatch(/^[0-9a-f]{32}$/);
-  expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual({
+  expect(readSessionCookie()).toEqual({
     id,
     startTimestamp: Date.now(),
     lastActivityTimestamp: Date.now(),
   });
+  expect(localStorage.getItem(storageKey)).toBeNull();
   expect(emit()).toBe(id);
 });
 
@@ -216,6 +256,7 @@ it.each(["inactivityTimeout", "maxDuration"] as const)(
     for (const value of [-1, NaN, Infinity, -Infinity, null, "10"]) {
       await expect(
         useMicrosoftOpenTelemetry({
+          cookieCfg,
           session: { enabled: true, [option]: value },
           azureMonitor: { connectionString: "invalid" },
         }),
@@ -231,6 +272,7 @@ it("rejects invalid persistence configuration rather than enabling storage", asy
   const access = vi.spyOn(window, "localStorage", "get");
   await expect(
     useMicrosoftOpenTelemetry({
+      cookieCfg,
       // @ts-expect-error Exercise untyped JavaScript input.
       session: { enabled: true, persist: "false" },
     }),
@@ -320,7 +362,7 @@ it.each([false, true])(
     const renewed = current.emit();
     expect(renewed).not.toBe(id);
     expect(renewed).toMatch(/^[0-9a-f]{32}$/);
-    expect(JSON.parse(localStorage.getItem(storageKey)!)).toMatchObject({ id: renewed });
+    expect(readSessionCookie()).toMatchObject({ id: renewed });
   },
 );
 
@@ -342,7 +384,6 @@ it.each([30 * 60_000 - 1, 30 * 60_000, 30 * 60_000 + 1])(
 it.each([24 * 60 * 60_000 - 1, 24 * 60 * 60_000, 24 * 60 * 60_000 + 1])(
   "enforces the default maximum lifetime when restoring recent activity (%i ms)",
   async (age) => {
-    vi.setSystemTime(age + 1_000_000);
     localStorage.setItem(
       storageKey,
       JSON.stringify({
@@ -360,7 +401,10 @@ it.each([24 * 60 * 60_000 - 1, 24 * 60 * 60_000, 24 * 60 * 60_000 + 1])(
 it.each([1999, 2000, 2001])(
   "enforces configured maximum lifetime across reloads (%i ms)",
   async (age) => {
-    const options = { session: { enabled: true, inactivityTimeout: 1, maxDuration: 2 } };
+    const options = {
+      ...fallbackOnly,
+      session: { enabled: true, inactivityTimeout: 1, maxDuration: 2 },
+    };
     const first = await initialize(undefined, options);
     const id = first.emit();
     await vi.advanceTimersByTimeAsync(750);
@@ -368,6 +412,11 @@ it.each([1999, 2000, 2001])(
     await vi.advanceTimersByTimeAsync(750);
     expect(first.emit()).toBe(id);
     await first.handle.shutdown();
+    expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual({
+      id,
+      startTimestamp: Date.now() - 1500,
+      lastActivityTimestamp: Date.now(),
+    });
     resetApis();
     vi.setSystemTime(Date.now() + age - 1500);
     const second = await initialize(undefined, options);
@@ -451,7 +500,12 @@ it.each([2999, 3000])(
     const id = emit();
     vi.setSystemTime(started + 1000);
     expect(emit()).toBe(id);
-    const stored = localStorage.getItem(storageKey);
+    const persisted = readSessionCookie();
+    expect(persisted).toEqual({
+      id,
+      startTimestamp: started,
+      lastActivityTimestamp: started + 1000,
+    });
     vi.setSystemTime(started + 1000 + idleMs);
     const access = vi.spyOn(window, "localStorage", "get");
     const read = vi.spyOn(Storage.prototype, "getItem");
@@ -461,16 +515,11 @@ it.each([2999, 3000])(
     expect(read).not.toHaveBeenCalled();
     expect(write).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
-    expect(localStorage.getItem(storageKey)).toBe(stored);
-    expect(JSON.parse(stored!)).toEqual({
-      id,
-      startTimestamp: started,
-      lastActivityTimestamp: started + 1000,
-    });
+    expect(readSessionCookie()).toEqual(persisted);
     const next = emit();
     if (idleMs < 3000) expect(next).toBe(id);
     else expect(next).not.toBe(id);
-    expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual({
+    expect(readSessionCookie()).toEqual({
       id: next,
       startTimestamp: idleMs < 3000 ? started : Date.now(),
       lastActivityTimestamp: Date.now(),
@@ -494,15 +543,26 @@ it("extends inactivity even after the old limit elapsed without restarting the a
   expect(access).not.toHaveBeenCalled();
   expect(read).not.toHaveBeenCalled();
   expect(write).not.toHaveBeenCalled();
-  expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual({
+  expect(readSessionCookie()).toEqual({
     id,
     startTimestamp: started,
     lastActivityTimestamp: started + 500,
   });
   vi.setSystemTime(started + 3499);
   expect(emit()).toBe(id);
+  expect(readSessionCookie()).toEqual({
+    id,
+    startTimestamp: started,
+    lastActivityTimestamp: started + 3499,
+  });
   vi.setSystemTime(started + 6499);
-  expect(emit()).not.toBe(id);
+  const renewed = emit();
+  expect(renewed).not.toBe(id);
+  expect(readSessionCookie()).toEqual({
+    id: renewed,
+    startTimestamp: started + 6499,
+    lastActivityTimestamp: started + 6499,
+  });
 });
 
 it.each(["shorten", "extend"] as const)(
@@ -523,14 +583,20 @@ it.each(["shorten", "extend"] as const)(
     expect(access).not.toHaveBeenCalled();
     expect(read).not.toHaveBeenCalled();
     expect(write).not.toHaveBeenCalled();
-    expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual({
+    expect(readSessionCookie()).toEqual({
       id,
       startTimestamp: started,
       lastActivityTimestamp: started + 750,
     });
     vi.setSystemTime(started + 1600);
     if (change === "shorten") {
-      expect(emit()).not.toBe(id);
+      const renewed = emit();
+      expect(renewed).not.toBe(id);
+      expect(readSessionCookie()).toEqual({
+        id: renewed,
+        startTimestamp: started + 1600,
+        lastActivityTimestamp: started + 1600,
+      });
     } else {
       expect(emit()).toBe(id);
       vi.setSystemTime(started + 2400);
@@ -538,7 +604,13 @@ it.each(["shorten", "extend"] as const)(
       vi.setSystemTime(started + 2999);
       expect(emit()).toBe(id);
       vi.setSystemTime(started + 3000);
-      expect(emit()).not.toBe(id);
+      const renewed = emit();
+      expect(renewed).not.toBe(id);
+      expect(readSessionCookie()).toEqual({
+        id: renewed,
+        startTimestamp: started + 3000,
+        lastActivityTimestamp: started + 3000,
+      });
     }
   },
 );
@@ -583,12 +655,9 @@ it.each(lifetimes)(
       const id = emit();
       vi.setSystemTime(started + defaultSeconds * 1000 - 1);
       if (field === "maxDuration") expect(emit()).toBe(id);
+      const persisted = readSessionCookie();
       await handle.updateCfg(patch);
-      expect(JSON.parse(localStorage.getItem(storageKey)!)).toMatchObject({
-        id,
-        startTimestamp: started,
-        lastActivityTimestamp: field === "maxDuration" ? Date.now() : started,
-      });
+      expect(readSessionCookie()).toEqual(persisted);
       vi.setSystemTime(started + defaultSeconds * 1000);
       expect(emit()).not.toBe(id);
     }
@@ -636,9 +705,9 @@ it.each(lifetimes)(
       const id = emit();
       vi.setSystemTime(started + defaultSeconds * 1000 - 1);
       if (field === "maxDuration") expect(emit()).toBe(id);
-      const stored = localStorage.getItem(storageKey);
+      const stored = readSessionCookie();
       await handle.updateCfg(patch, false);
-      expect(localStorage.getItem(storageKey)).toBe(stored);
+      expect(readSessionCookie()).toEqual(stored);
       const count = spans.length;
       trace
         .getTracer("session-replacement")
@@ -692,6 +761,7 @@ it.each(lifetimes)(
   "startup $alias zero and undefined restore defaults rather than disabling expiration",
   async ({ field, alias, defaultSeconds }) => {
     for (const value of [0, undefined]) {
+      clearCookies();
       const started = Date.now();
       localStorage.setItem(
         storageKey,
@@ -811,6 +881,8 @@ it.each(["session-disabled", "memory-only", "storage-disabled"] as const)(
         inactivityTimeout: 10,
       },
       storage: { enabled: mode !== "storage-disabled" },
+      cookieCfg:
+        mode === "storage-disabled" ? { enabled: false, disableCookieDefer: true } : undefined,
       userContext: { enabled: mode === "storage-disabled" },
     });
     const id = emit();
@@ -908,6 +980,8 @@ it("isolates persisted sessions and runtime lifetimes under independent storage 
   const prefix = `runtime-session-${crypto.randomUUID()}-`;
   const firstPrefix = `${prefix}first-`;
   const secondPrefix = `${prefix}second-`;
+  const firstCookie = `${firstPrefix}${sessionCookie}`;
+  const secondCookie = `${secondPrefix}${sessionCookie}`;
   const keys = [firstPrefix + storageKey, secondPrefix + storageKey];
   const started = Date.now();
   for (const [index, key] of keys.entries()) {
@@ -941,6 +1015,7 @@ it("isolates persisted sessions and runtime lifetimes under independent storage 
     }
     const read = vi.spyOn(Storage.prototype, "getItem");
     const write = vi.spyOn(Storage.prototype, "setItem");
+    const cookieWrite = cookieCfg.setCookie.mockClear();
     await first.handle.updateCfg({ session: { maxDuration: 1 } });
     expect(read).not.toHaveBeenCalled();
     expect(write).not.toHaveBeenCalled();
@@ -957,16 +1032,28 @@ it("isolates persisted sessions and runtime lifetimes under independent storage 
     const secondId = emitSecond();
     expect(secondId).not.toBe("restored-1");
     expect(secondId).not.toBe(firstId);
-    expect(write.mock.calls.map(([key]) => key)).toEqual(keys);
-    expect(JSON.parse(localStorage.getItem(keys[0])!)).toEqual({
+    expect(cookieWrite.mock.calls.map(([name]) => name)).toEqual(
+      expect.arrayContaining([firstCookie, secondCookie]),
+    );
+    expect(readSessionCookie(firstCookie)).toEqual({
       id: firstId,
       startTimestamp: started,
       lastActivityTimestamp: started + 500,
     });
-    expect(JSON.parse(localStorage.getItem(keys[1])!)).toEqual({
+    expect(readSessionCookie(secondCookie)).toEqual({
       id: secondId,
       startTimestamp: started + 500,
       lastActivityTimestamp: started + 500,
+    });
+    expect(JSON.parse(localStorage.getItem(keys[0])!)).toEqual({
+      id: "restored-0",
+      startTimestamp: started - 1500,
+      lastActivityTimestamp: started - 500,
+    });
+    expect(JSON.parse(localStorage.getItem(keys[1])!)).toEqual({
+      id: "restored-1",
+      startTimestamp: started - 1500,
+      lastActivityTimestamp: started - 500,
     });
   } finally {
     await Promise.all([...handles].map((handle) => handle.shutdown()));
@@ -977,10 +1064,10 @@ it("isolates persisted sessions and runtime lifetimes under independent storage 
 it("rejects queued and future lifetime updates after shutdown without restarting session storage", async () => {
   const { handle, emit, spans, records } = await initialize();
   emit();
+  const persisted = readSessionCookie();
   await handle.updateCfg({ session: { inactivityTimeout: 0.5, maxDuration: 1 } });
   const tracer = trace.getTracer("stopped-session");
   const logger = logs.getLogger("stopped-session");
-  const stored = localStorage.getItem(storageKey);
   const access = vi.spyOn(window, "localStorage", "get");
   const write = vi.spyOn(Storage.prototype, "setItem");
   const read = vi.spyOn(Storage.prototype, "getItem");
@@ -995,6 +1082,12 @@ it("rejects queued and future lifetime updates after shutdown without restarting
     if (result.status === "rejected") expect(result.reason).toMatchObject({ message: /stopped/ });
   }
   await shutdown;
+  expect(access).toHaveBeenCalledOnce();
+  expect(write).toHaveBeenCalledExactlyOnceWith(storageKey, JSON.stringify(persisted));
+  expect(read).not.toHaveBeenCalled();
+  expect(remove).not.toHaveBeenCalled();
+  access.mockClear();
+  write.mockClear();
   await expect(handle.updateCfg({ session: { inactivityTimeout: 0 } })).rejects.toThrow("stopped");
   vi.setSystemTime(Date.now() + 2 * 86400_000);
   tracer.startSpan("after-shutdown").end();
@@ -1006,7 +1099,7 @@ it("rejects queued and future lifetime updates after shutdown without restarting
   expect(read).not.toHaveBeenCalled();
   expect(remove).not.toHaveBeenCalled();
   expect(vi.getTimerCount()).toBe(0);
-  expect(localStorage.getItem(storageKey)).toBe(stored);
+  expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual(persisted);
 });
 
 it("renews the session when the clock moves backwards", async () => {
@@ -1022,7 +1115,7 @@ it.each([undefined, {}, { enabled: true }])(
     const first = await initialize(undefined, { session });
     const id = first.emit();
     expect(id).toMatch(/^[0-9a-f]{32}$/);
-    expect(JSON.parse(localStorage.getItem(storageKey)!)).toMatchObject({ id });
+    expect(readSessionCookie()).toMatchObject({ id });
     await first.handle.shutdown();
     handles.delete(first.handle);
     resetApis();
@@ -1152,6 +1245,7 @@ it("awaits persisted restoration before starting providers or enabling instrumen
   const spanIds: unknown[] = [];
   const logIds: unknown[] = [];
   const pending = useMicrosoftOpenTelemetry({
+    cookieCfg,
     session: { enabled: true },
     userContext: { enabled: false },
     pageView: { enabled: false },
@@ -1206,7 +1300,7 @@ it.each(["", "{malformed-private-payload", "null"])(
     const { emit } = await initialize();
     const id = emit();
     expect(id).toMatch(/^[0-9a-f]{32}$/);
-    expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual({
+    expect(readSessionCookie()).toEqual({
       id,
       startTimestamp: Date.now(),
       lastActivityTimestamp: Date.now(),
@@ -1220,14 +1314,80 @@ it.each([1799_999, 1800_000, 1800_001])(
   async (idleMs) => {
     const first = await initialize();
     const id = first.emit();
+    const persisted = readSessionCookie();
     await first.handle.shutdown();
+    expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual(persisted);
     resetApis();
     await vi.advanceTimersByTimeAsync(idleMs);
+    expect(Date.now() - persisted!.lastActivityTimestamp).toBe(idleMs);
+    expect(readSessionCookie()).toEqual(persisted);
     const second = await initialize();
     if (idleMs < 1800_000) expect(second.emit()).toBe(id);
     else expect(second.emit()).not.toBe(id);
   },
 );
+
+it.each([0, 7])(
+  "uses the authoritative cookie's age rather than a newer shutdown backup (%i ms older)",
+  async (olderMs) => {
+    const first = await initialize();
+    const id = first.emit();
+    const persisted = readSessionCookie();
+    await first.handle.shutdown();
+    handles.delete(first.handle);
+    expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual(persisted);
+    resetApis();
+
+    // Reproduce the Linux WebKit snapshot: after an async tick the native jar returned
+    // a different record, seven milliseconds older, instead of the last write.
+    const authoritative = {
+      id: olderMs === 0 ? id : "older-session",
+      startTimestamp: persisted!.startTimestamp - olderMs,
+      lastActivityTimestamp: persisted!.lastActivityTimestamp - olderMs,
+    };
+    cookieValues.set(
+      sessionCookie,
+      `${authoritative.id}|${authoritative.startTimestamp}|${authoritative.lastActivityTimestamp}`,
+    );
+    await vi.advanceTimersByTimeAsync(1799_999);
+    expect(Date.now() - persisted!.lastActivityTimestamp).toBe(1799_999);
+    expect(Date.now() - authoritative.lastActivityTimestamp).toBe(1799_999 + olderMs);
+    const readBackup = vi.spyOn(Storage.prototype, "getItem");
+    const second = await initialize();
+    const restored = second.emit();
+    expect(readBackup).not.toHaveBeenCalled();
+    if (olderMs === 0) expect(restored).toBe(id);
+    else {
+      expect(restored).not.toBe(id);
+      expect(restored).not.toBe(authoritative.id);
+    }
+    expect(readSessionCookie()!.id).toBe(restored);
+  },
+);
+
+it("keeps fake-time reloads independent of delayed native cookie-cache updates", async () => {
+  let nativeCookie = "";
+  const readNative = vi.spyOn(document, "cookie", "get").mockImplementation(() => nativeCookie);
+  const writeNative = vi.spyOn(document, "cookie", "set").mockImplementation((value) => {
+    nativeCookie = value.split(";")[0]!;
+  });
+  const first = await initialize();
+  const id = first.emit();
+  const persisted = readSessionCookie();
+  await first.handle.shutdown();
+  handles.delete(first.handle);
+  resetApis();
+  await vi.advanceTimersByTimeAsync(1799_999);
+  // Deterministically inject the observed native-cache rollback after the async tick.
+  // With the former document.cookie fixture, this expired record replaced the live one.
+  nativeCookie = `${sessionCookie}=stale-native-session|${persisted!.startTimestamp - 7}|${persisted!.lastActivityTimestamp - 7}`;
+  expect(Date.now() - persisted!.lastActivityTimestamp).toBe(1799_999);
+  expect(readSessionCookie()).toEqual(persisted);
+  const restored = await initialize();
+  expect(restored.emit()).toBe(id);
+  expect(readNative).not.toHaveBeenCalled();
+  expect(writeNative).not.toHaveBeenCalled();
+});
 
 it.each(["span", "log"])(
   "persists recent %s activity so an old but active session survives reload",
@@ -1240,7 +1400,7 @@ it.each(["span", "log"])(
       if (signal === "span") trace.getTracer("activity").startSpan("activity").end();
       else logs.getLogger("activity").emit({ eventName: "activity" });
     }
-    expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual({
+    expect(readSessionCookie()).toEqual({
       id,
       startTimestamp: started,
       lastActivityTimestamp: Date.now(),
@@ -1256,7 +1416,6 @@ it.each(["span", "log"])(
 it.each([1799_999, 1800_000])(
   "uses creation time to conservatively expire legacy sessions without activity timestamps (%i ms)",
   async (age) => {
-    vi.setSystemTime(10_000_000);
     localStorage.setItem(
       storageKey,
       JSON.stringify({
@@ -1295,28 +1454,82 @@ it("does not renew or persist idle sessions until telemetry arrives", async () =
   const write = vi.spyOn(Storage.prototype, "setItem");
   expect(vi.getTimerCount()).toBe(0);
   await vi.advanceTimersByTimeAsync(2 * 1800_000);
-  const idleSession = JSON.parse(localStorage.getItem(storageKey)!);
-  expect(idleSession.id).toBe(id);
-  expect(idleSession.lastActivityTimestamp).toBe(activity);
+  const idleSession = readSessionCookie();
+  expect(idleSession!.id).toBe(id);
+  expect(idleSession!.lastActivityTimestamp).toBe(activity);
   await first.handle.shutdown();
-  expect(write).not.toHaveBeenCalled();
+  expect(write).toHaveBeenCalledExactlyOnceWith(storageKey, JSON.stringify(idleSession));
   expect(JSON.parse(localStorage.getItem(storageKey)!).lastActivityTimestamp).toBe(activity);
   resetApis();
   const second = await initialize();
-  expect(second.emit()).not.toBe(idleSession.id);
+  expect(second.emit()).not.toBe(idleSession!.id);
 });
 
-it("coalesces activity writes within the same millisecond", async () => {
+it("coalesces cookie activity writes within 60 seconds without writing Web Storage", async () => {
   const { emit } = await initialize();
-  const write = vi.spyOn(Storage.prototype, "setItem");
+  const backup = vi.spyOn(Storage.prototype, "setItem");
+  const write = cookieCfg.setCookie.mockClear();
   await vi.advanceTimersByTimeAsync(1);
+  emit();
+  emit();
+  expect(write).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(59_999);
   emit();
   emit();
   expect(write).toHaveBeenCalledOnce();
-  await vi.advanceTimersByTimeAsync(1);
+  await vi.advanceTimersByTimeAsync(60_000);
   emit();
   expect(write).toHaveBeenCalledTimes(2);
+  expect(backup).not.toHaveBeenCalled();
 });
+
+it.each(["span", "log"])(
+  "backs up latest %s activity only on unload/shutdown and restores it when the cookie is absent",
+  async (signal) => {
+    const first = await initialize();
+    const id = first.emit();
+    const started = Date.now();
+    const write = vi.spyOn(Storage.prototype, "setItem");
+    const cookieWrite = cookieCfg.setCookie.mockClear();
+    const activity = () => {
+      if (signal === "span") trace.getTracer("backup-activity").startSpan("activity").end();
+      else logs.getLogger("backup-activity").emit({ eventName: "activity" });
+    };
+    await vi.advanceTimersByTimeAsync(1234);
+    activity();
+    await first.handle.forceFlush();
+    expect(write).not.toHaveBeenCalled();
+    expect(cookieWrite).not.toHaveBeenCalled();
+    expect(readSessionCookie()).toEqual({
+      id,
+      startTimestamp: started,
+      lastActivityTimestamp: started,
+    });
+    await unload();
+    expect(write).toHaveBeenCalledExactlyOnceWith(
+      storageKey,
+      JSON.stringify({ id, startTimestamp: started, lastActivityTimestamp: started + 1234 }),
+    );
+    await vi.advanceTimersByTimeAsync(1000);
+    activity();
+    expect(write).toHaveBeenCalledOnce();
+    await first.handle.shutdown();
+    expect(write).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual({
+      id,
+      startTimestamp: started,
+      lastActivityTimestamp: started + 2234,
+    });
+    expect(cookieWrite).not.toHaveBeenCalled();
+    handles.delete(first.handle);
+    resetApis();
+    // A missing cookie permits restoring the newer Web Storage backup.
+    cookieValues.delete(sessionCookie);
+    const restored = await initialize();
+    expect(restored.emit()).toBe(id);
+    expect(readSessionCookie()!.id).toBe(id);
+  },
+);
 
 it("does not extend persisted activity merely by restoring a session", async () => {
   const first = await initialize();
@@ -1334,7 +1547,7 @@ it("does not extend persisted activity merely by restoring a session", async () 
 });
 
 it("keeps the in-memory session if persisting later activity becomes unavailable", async () => {
-  const { emit } = await initialize();
+  const { emit } = await initialize(undefined, fallbackOnly);
   const id = emit();
   const warn = vi.spyOn(diag, "warn").mockImplementation(() => {});
   const write = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
@@ -1342,8 +1555,11 @@ it("keeps the in-memory session if persisting later activity becomes unavailable
   });
   await vi.advanceTimersByTimeAsync(1000);
   expect(emit()).toBe(id);
+  expect(write).not.toHaveBeenCalled();
+  await unload();
   await vi.advanceTimersByTimeAsync(1000);
   expect(emit()).toBe(id);
+  await unload();
   expect(write).toHaveBeenCalledOnce();
   expect(warn).toHaveBeenCalledExactlyOnceWith(
     "Session storage unavailable; using an in-memory session.",
@@ -1353,7 +1569,7 @@ it("keeps the in-memory session if persisting later activity becomes unavailable
 it.each(["QuotaExceededError", "SecurityError"])(
   "resumes session persistence after the %s backoff window",
   async (errorName) => {
-    const { emit } = await initialize();
+    const { emit } = await initialize(undefined, fallbackOnly);
     const id = emit();
     vi.spyOn(diag, "warn").mockImplementation(() => {});
     const write = vi.spyOn(Storage.prototype, "setItem").mockImplementationOnce(() => {
@@ -1361,30 +1577,35 @@ it.each(["QuotaExceededError", "SecurityError"])(
     });
     await vi.advanceTimersByTimeAsync(1000);
     emit();
+    await unload();
     await vi.advanceTimersByTimeAsync(1000);
     emit();
+    await unload();
     expect(write).toHaveBeenCalledOnce();
 
     await vi.advanceTimersByTimeAsync(WRITE_BACKOFF_MS);
     expect(emit()).toBe(id);
+    await unload();
     expect(write).toHaveBeenCalledTimes(2);
     expect(JSON.parse(localStorage.getItem("opentelemetry-session")!)).toMatchObject({ id });
   },
 );
 
 it("does not extend the quota backoff when the clock moves backwards", async () => {
-  const { emit } = await initialize();
+  const { emit } = await initialize(undefined, fallbackOnly);
   vi.spyOn(diag, "warn").mockImplementation(() => {});
   const write = vi.spyOn(Storage.prototype, "setItem").mockImplementationOnce(() => {
     throw new DOMException("full", "QuotaExceededError");
   });
   await vi.advanceTimersByTimeAsync(1000);
   emit();
+  await unload();
   expect(write).toHaveBeenCalledOnce();
 
   vi.setSystemTime(Date.now() - 60 * 60_000);
   await vi.advanceTimersByTimeAsync(1000);
   emit();
+  await unload();
   expect(write).toHaveBeenCalledTimes(2);
 });
 
@@ -1398,7 +1619,6 @@ it.each([
   { id: "", startTimestamp: 1000 },
   { id: "invalid", startTimestamp: -1 },
   { id: "invalid", startTimestamp: null },
-  { id: "invalid", startTimestamp: 1_000_001 },
   { id: "invalid", startTimestamp: 1_000_000, lastActivityTimestamp: 999_999 },
 ])("replaces an invalid persisted session (%j) before emitting telemetry", async (stored) => {
   localStorage.setItem(storageKey, JSON.stringify(stored));
@@ -1406,7 +1626,24 @@ it.each([
   const { emit } = await initialize();
   const id = emit();
   expect(id).toMatch(/^[0-9a-f]{32}$/);
-  expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual({
+  expect(readSessionCookie()).toEqual({
+    id,
+    startTimestamp: Date.now(),
+    lastActivityTimestamp: Date.now(),
+  });
+  expect(warn).toHaveBeenCalledExactlyOnceWith("Invalid stored session; creating a new session.");
+});
+
+it("rejects a persisted session whose creation timestamp is in the future", async () => {
+  localStorage.setItem(
+    storageKey,
+    JSON.stringify({ id: "future-session", startTimestamp: Date.now() + 1 }),
+  );
+  const warn = vi.spyOn(diag, "warn").mockImplementation(() => {});
+  const { emit } = await initialize();
+  const id = emit();
+  expect(id).toMatch(/^[0-9a-f]{32}$/);
+  expect(readSessionCookie()).toEqual({
     id,
     startTimestamp: Date.now(),
     lastActivityTimestamp: Date.now(),
@@ -1418,11 +1655,11 @@ it("renews on telemetry after the default 1800 seconds of inactivity", async () 
   const { emit } = await initialize();
   const first = emit();
   await vi.advanceTimersByTimeAsync(1799_999);
-  expect(JSON.parse(localStorage.getItem(storageKey)!).id).toBe(first);
+  expect(readSessionCookie()!.id).toBe(first);
   await vi.advanceTimersByTimeAsync(1);
   const renewed = emit();
   expect(renewed).not.toBe(first);
-  expect(JSON.parse(localStorage.getItem(storageKey)!).id).toBe(renewed);
+  expect(readSessionCookie()!.id).toBe(renewed);
   expect(emit()).toBe(renewed);
 });
 
@@ -1433,7 +1670,7 @@ it.each(["span", "log"])("a %s refreshes the default inactivity window", async (
   if (signal === "span") trace.getTracer("session-test").startSpan("activity").end();
   else logs.getLogger("session-test").emit({ eventName: "activity" });
   await vi.advanceTimersByTimeAsync(1799_999);
-  expect(JSON.parse(localStorage.getItem(storageKey)!).id).toBe(first);
+  expect(readSessionCookie()!.id).toBe(first);
   await vi.advanceTimersByTimeAsync(1);
   expect(emit()).not.toBe(first);
 });
@@ -1480,12 +1717,13 @@ it.each(["getter", "read", "write", "missing", "unexpected"])(
         },
       );
     }
-    const { emit } = await initialize();
+    const { emit, handle } = await initialize(undefined, fallbackOnly);
     const id = emit();
     expect(id).toMatch(/^[0-9a-f]{32}$/);
     expect(emit()).toBe(id);
     await vi.advanceTimersByTimeAsync(1800_000);
     expect(emit()).not.toBe(id);
+    await handle.shutdown();
     expect(warn).toHaveBeenCalledExactlyOnceWith(
       "Session storage unavailable; using an in-memory session.",
     );
@@ -1497,7 +1735,9 @@ it("stops session timers on SDK startup failure", async () => {
   vi.mocked(startTelemetryInstance).mockImplementationOnce(() => {
     throw failure;
   });
-  await expect(useMicrosoftOpenTelemetry({ session: { enabled: true } })).rejects.toBe(failure);
+  await expect(useMicrosoftOpenTelemetry({ cookieCfg, session: { enabled: true } })).rejects.toBe(
+    failure,
+  );
   expect(vi.getTimerCount()).toBe(0);
 });
 
@@ -1513,6 +1753,7 @@ it("stops session timers even when instrumentation and SDK shutdown fail", async
     shutdown: vi.fn().mockRejectedValue(sdkFailure),
   });
   const handle = await useMicrosoftOpenTelemetry({
+    cookieCfg,
     session: { enabled: true },
     pageView: { enabled: false },
     instrumentations: [
@@ -1538,6 +1779,7 @@ it("cleans up session timers when instrumentation initialization rolls back", as
   const failure = new Error("enable failed");
   await expect(
     useMicrosoftOpenTelemetry({
+      cookieCfg,
       session: { enabled: true },
       spanProcessors: [],
       logRecordProcessors: [],
@@ -1579,6 +1821,8 @@ it("stops session timers and persistence before pending provider shutdown comple
   const logger = logs.getLogger("stale");
   const write = vi.spyOn(Storage.prototype, "setItem");
   const shutdown = handle.shutdown();
+  expect(write).toHaveBeenCalledOnce();
+  write.mockClear();
   let completed = false;
   void shutdown.then(() => {
     completed = true;
@@ -1615,6 +1859,7 @@ it("stops session timers while failed initialization waits for provider shutdown
   const disableFailure = new Error("disable failed");
   const report = vi.spyOn(diag, "error").mockImplementation(() => {});
   const initialization = useMicrosoftOpenTelemetry({
+    cookieCfg,
     session: { enabled: true },
     pageView: { enabled: false },
     spanProcessors: [

@@ -4,7 +4,7 @@
 import { context, diag, propagation, trace, type TracerProvider } from "@opentelemetry/api";
 import { logs, type LoggerProvider as ApiLoggerProvider } from "@opentelemetry/api-logs";
 import { W3CTraceContextPropagator } from "@opentelemetry/core";
-import type { Resource } from "@opentelemetry/resources";
+import { resourceFromAttributes } from "@opentelemetry/resources";
 import { LoggerProvider } from "@opentelemetry/sdk-logs";
 import { BrowserBatchLogRecordProcessor } from "../../../src/browserBatchLogRecordProcessor.js";
 import { BatchSpanProcessor } from "@opentelemetry/sdk-trace";
@@ -537,14 +537,13 @@ it("removes only new page registrations when propagation registration fails", as
 it("cleans up partially created owned processors before handing them to a pipeline", async () => {
   const spanShutdown = vi.spyOn(BatchSpanProcessor.prototype, "shutdown");
   const logShutdown = vi.spyOn(BrowserBatchLogRecordProcessor.prototype, "shutdown");
-  const failure = new Error("resource detection failed");
+  const failure = new Error("resource resolution failed");
+  const resource = resourceFromAttributes({});
+  vi.spyOn(resource, "waitForAsyncAttributes").mockRejectedValueOnce(failure);
   await expect(
     useMicrosoftOpenTelemetry({
       azureMonitor: { connectionString: "InstrumentationKey=00000000-0000-0000-0000-000000000000" },
-      resource: {
-        attributes: {},
-        waitForAsyncAttributes: () => Promise.reject(failure),
-      } as unknown as Resource,
+      resource,
       session: { enabled: true },
       userContext: { enabled: false },
       pageView: { enabled: false },
@@ -552,6 +551,9 @@ it("cleans up partially created owned processors before handing them to a pipeli
   ).rejects.toBe(failure);
   expect(spanShutdown).toHaveBeenCalledOnce();
   expect(logShutdown).toHaveBeenCalledOnce();
+  for (const signal of ["trace", "logs", "context", "propagation"] as const) {
+    expect(getRegisteredGlobal(signal)).toBeUndefined();
+  }
 });
 
 it("cleans up owned Azure Monitor processors when the application's diagnostic logger throws during startup", async () => {
