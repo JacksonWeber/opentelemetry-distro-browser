@@ -58,7 +58,7 @@ Every executable published entry point has absolute minified, gzip and Brotli bu
 | Entry point          | Minified |  Gzip | Brotli |
 | -------------------- | -------: | ----: | -----: |
 | `.`                  |   115 kB | 34 kB |  30 kB |
-| `./instrumentations` |    64 kB | 24 kB |  22 kB |
+| `./instrumentations` |    68 kB | 26 kB |  23 kB |
 | `./snippet`          |     2 kB |  1 kB |   1 kB |
 
 The generated JSON and Markdown reports show the measured values, ceilings and result for each
@@ -74,7 +74,10 @@ including alpha:
 | Artifact                                                   | Minified |  Gzip | Brotli |
 | ---------------------------------------------------------- | -------: | ----: | -----: |
 | `opentelemetry-browser.{iife,umd}.min.js`                  |   135 kB | 41 kB |  36 kB |
-| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |    63 kB | 19 kB |  17 kB |
+| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |    67 kB | 20 kB |  18 kB |
+
+Instrumentation budgets include the opt-in dependency enrichment adapter. The SDK root bundle
+and its budgets are unchanged by this feature.
 
 The browser bundles contain only ES2022 syntax. `npm run test:build` parses every emitted UMD and
 IIFE file as an ES2022 script and requires a budget for every minified browser bundle. The package

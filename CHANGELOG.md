@@ -6,6 +6,9 @@ All notable changes to this package are documented in this file.
 
 ### Added
 
+- Add opt-in fetch and XHR header capture with sensitive-header exclusions, failed HTTP status
+  text, a shared per-page-view dependency limit, and resource-timing phase durations through
+  `getInstrumentations({ dependencies })`. Dependency collection remains unlimited by default.
 - Classify named browser log events as Azure Monitor custom events regardless of severity, while
   preserving browser console records as trace messages with their severity.
 

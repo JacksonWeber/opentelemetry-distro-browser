@@ -645,10 +645,13 @@ test("the instrumentations subpath imports each instrumentation on demand", asyn
     new URL(pkg.exports["./instrumentations"].import.default, root),
     "utf8",
   );
-  // Static imports would make every instrumentation part of a consumer's bundle even when their
-  // configuration leaves it off, and would evaluate resource-timing's top-level `window` access
-  // outside a browser.
-  assert.equal(/^import\s/m.test(bundle), false);
+  // Enrichment uses the browser-safe API and suppression contract. Instrumentations load on demand, avoiding
+  // resource-timing's top-level window access outside a browser.
+  const staticImports = [...bundle.matchAll(/^import .+ from ['"]([^'"]+)['"]/gm)];
+  assert.deepEqual(staticImports.map((match) => match[1]).sort(), [
+    "@opentelemetry/api",
+    "@opentelemetry/core",
+  ]);
   for (const name of [
     "fetch",
     "xhr",

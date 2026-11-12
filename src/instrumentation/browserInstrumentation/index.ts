@@ -2,4 +2,8 @@
 // Licensed under the MIT License.
 
 export { getInstrumentations } from "./getInstrumentations.js";
-export type { BrowserInstrumentation, InstrumentationOptions } from "../../types.js";
+export type {
+  BrowserInstrumentation,
+  DependencyInstrumentationOptions,
+  InstrumentationOptions,
+} from "../../types.js";

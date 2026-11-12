@@ -97,6 +97,33 @@ export default async function setup(project: TestProject): Promise<() => Promise
       );
       return;
     }
+    if (request.method === "GET" && request.url?.startsWith("/dependency")) {
+      const params = new URL(request.url, "http://localhost").searchParams;
+      if (params.has("blocked")) response.removeHeader("access-control-allow-origin");
+      const status = Number(params.get("status") ?? 200);
+      if (!params.has("restricted")) response.setHeader("timing-allow-origin", "*");
+      response.setHeader(
+        "access-control-expose-headers",
+        "x-public, x-ignore, x-api-key, www-authenticate",
+      );
+      response.setHeader("x-public", "response");
+      response.setHeader("x-private", "not-exposed");
+      response.setHeader("x-ignore", "test-secret");
+      response.setHeader("x-api-key", "test-key");
+      response.setHeader("www-authenticate", "test-credential");
+      const send = () => {
+        response.writeHead(status, status >= 400 ? "Dependency failed" : "OK", {
+          "content-type": "application/json",
+        });
+        response.end(
+          JSON.stringify({ traceparent: request.headers.traceparent, body: "response-body" }),
+        );
+      };
+      const delay = Number(params.get("delay") ?? 0);
+      if (delay > 0) setTimeout(send, Math.min(delay, 100));
+      else send();
+      return;
+    }
     response.writeHead(404).end();
   });
   const redirectOrigin = await listen(redirectServer);
@@ -120,7 +147,7 @@ function setCorsHeaders(response: ServerResponse): void {
   response.setHeader("access-control-allow-methods", "GET, POST, OPTIONS");
   response.setHeader(
     "access-control-allow-headers",
-    "baggage, content-type, content-encoding, traceparent, tracestate, x-test-context",
+    "baggage, content-type, content-encoding, traceparent, tracestate, x-test-context, x-public, x-ignore, authorization, x-api-key",
   );
 }
 

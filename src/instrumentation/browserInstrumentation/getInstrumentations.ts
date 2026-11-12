@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 import type { BrowserInstrumentation, InstrumentationOptions } from "../../types.js";
+import { createDependencyEnrichment } from "./dependencyEnrichment.js";
 
 const DEFAULT_INITIATOR_TYPES: readonly string[] = ["script", "link", "css"];
 const DEFAULT_MAX_QUEUE_SIZE = 256;
@@ -48,7 +49,8 @@ function isEnabled(options: { enabled?: boolean } | undefined, defaultEnabled: b
  * The only settings applied beyond what a caller passes are bounds on subresource timing volume,
  * which are defaults a caller can override. Every instrumentation here comes from
  * `@opentelemetry/browser-instrumentation`; this distribution selects and configures them rather
- * than implementing or wrapping them.
+ * than replacing them. Opt-in `dependencies` adds header, error and timing enrichment and a
+ * shared per-provider request budget through narrow adapters.
  *
  * @param options - Selects which instrumentations to construct and configures each one.
  * @returns The constructed instrumentations, in the order they were selected.
@@ -59,11 +61,17 @@ export async function getInstrumentations(
   options: InstrumentationOptions = {},
 ): Promise<BrowserInstrumentation[]> {
   const pending: Promise<BrowserInstrumentation>[] = [];
+  const enrichment = options.dependencies
+    ? createDependencyEnrichment(options.dependencies)
+    : undefined;
 
   if (isEnabled(options.fetch, ON_BY_DEFAULT)) {
     pending.push(
       import("@opentelemetry/browser-instrumentation/experimental/fetch").then(
-        ({ FetchInstrumentation }) => new FetchInstrumentation({ ...options.fetch, ...DEFERRED }),
+        ({ FetchInstrumentation }) => {
+          const instrumentation = new FetchInstrumentation({ ...options.fetch, ...DEFERRED });
+          return enrichment ? enrichment.fetch(instrumentation) : instrumentation;
+        },
       ),
     );
   }
@@ -71,7 +79,10 @@ export async function getInstrumentations(
   if (isEnabled(options.xhr, ON_BY_DEFAULT)) {
     pending.push(
       import("@opentelemetry/browser-instrumentation/experimental/xhr").then(
-        ({ XhrInstrumentation }) => new XhrInstrumentation({ ...options.xhr, ...DEFERRED }),
+        ({ XhrInstrumentation }) => {
+          const instrumentation = new XhrInstrumentation({ ...options.xhr, ...DEFERRED });
+          return enrichment ? enrichment.xhr(instrumentation) : instrumentation;
+        },
       ),
     );
   }

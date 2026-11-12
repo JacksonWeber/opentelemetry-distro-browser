@@ -23,9 +23,9 @@ export const entryPointBudgets = {
     brotliBytes: 30 * 1024,
   },
   "./instrumentations": {
-    rawBytes: 64 * 1024,
-    gzipBytes: 24 * 1024,
-    brotliBytes: 22 * 1024,
+    rawBytes: 68 * 1024,
+    gzipBytes: 26 * 1024,
+    brotliBytes: 23 * 1024,
   },
   "./snippet": {
     rawBytes: 2 * 1024,
@@ -40,9 +40,9 @@ const sdkBrowserBundleBudget = {
   brotliBytes: 36 * 1024,
 };
 const instrumentationsBrowserBundleBudget = {
-  rawBytes: 63 * 1024,
-  gzipBytes: 19 * 1024,
-  brotliBytes: 17 * 1024,
+  rawBytes: 67 * 1024,
+  gzipBytes: 20 * 1024,
+  brotliBytes: 18 * 1024,
 };
 
 /**

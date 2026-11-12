@@ -28,11 +28,22 @@ export interface BrowserInstrumentation {
 }
 
 // @public
+export interface DependencyInstrumentationOptions {
+    captureRequestHeaders?: boolean;
+    captureResponseHeaders?: boolean;
+    enableResourceTiming?: boolean;
+    ignoreHeaders?: readonly string[];
+    includeErrorStatusText?: boolean;
+    maxDependenciesPerView?: number;
+}
+
+// @public
 export function getInstrumentations(options?: InstrumentationOptions): Promise<BrowserInstrumentation[]>;
 
 // @public
 export interface InstrumentationOptions {
     console?: ConsoleInstrumentationConfig;
+    dependencies?: DependencyInstrumentationOptions;
     errors?: ErrorsInstrumentationConfig;
     fetch?: FetchInstrumentationConfig;
     navigation?: NavigationInstrumentationConfig;

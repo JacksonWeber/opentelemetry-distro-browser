@@ -1,9 +1,19 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import type { ContextAPI, DiagAPI, PropagationAPI, TraceAPI } from "@opentelemetry/api";
-import type { LoggerProvider } from "@opentelemetry/api-logs";
-import { expect, it } from "vitest";
+import {
+  context,
+  diag,
+  propagation,
+  trace,
+  type ContextAPI,
+  type DiagAPI,
+  type PropagationAPI,
+  type TraceAPI,
+} from "@opentelemetry/api";
+import { logs, type LoggerProvider } from "@opentelemetry/api-logs";
+import { expect, it, vi } from "vitest";
+import { useMicrosoftOpenTelemetry } from "../../src/index.js";
 import type {
   MicrosoftOpenTelemetryBrowser,
   MicrosoftOpenTelemetryBrowserOptions,
@@ -114,6 +124,48 @@ async function exercise(bundle: BrowserBundle): Promise<void> {
   }
 }
 
+async function exerciseDependencies(bundle: InstrumentationBundle): Promise<void> {
+  const pipeline = createInMemoryPipeline();
+  const originalFetch = globalThis.fetch;
+  const recording: boolean[] = [];
+  const handle = await useMicrosoftOpenTelemetry({
+    ...pipeline.options,
+    instrumentations: await bundle.getInstrumentations({
+      xhr: { enabled: false },
+      dependencies: { captureRequestHeaders: true, maxDependenciesPerView: 1 },
+      fetch: {
+        requestHook: (span) => {
+          recording.push(span.isRecording());
+        },
+      },
+    }),
+  });
+  try {
+    for (let i = 0; i < 2; i++) {
+      await (await fetch("/__dependency_format__", { headers: { "x-public": "format" } })).text();
+    }
+    expect(recording).toEqual([true, false]);
+    await vi.waitFor(async () => {
+      await handle.forceFlush();
+      expect(pipeline.spanExporter.getFinishedSpans()).toHaveLength(1);
+    });
+    expect(
+      pipeline.spanExporter.getFinishedSpans()[0].attributes["http.request.header.x-public"],
+    ).toEqual(["format"]);
+  } finally {
+    try {
+      await handle.shutdown();
+    } finally {
+      globalThis.fetch = originalFetch;
+      trace.disable();
+      logs.disable();
+      propagation.disable();
+      context.disable();
+      diag.disable();
+    }
+  }
+}
+
 it.each([
   "opentelemetry-browser.umd.js",
   "opentelemetry-browser.umd.min.js",
@@ -175,6 +227,8 @@ it.each([
         xhr: { enabled: false },
       }),
     ).toEqual([]);
+    if (!bundle) throw new Error(`${file} did not define the instrumentation bundle`);
+    await exerciseDependencies(bundle);
   } finally {
     script?.remove();
     delete window.Microsoft;
@@ -199,6 +253,7 @@ it.each([
         xhr: { enabled: false },
       }),
     ).toEqual([]);
+    await exerciseDependencies(getRegistration(file));
   } finally {
     script?.remove();
     restoreDefine();

@@ -19,10 +19,69 @@ import type { AzureMonitorOptions } from "./exporter/base.js";
 import type { PageViewInstrumentationConfig } from "./instrumentation/pageView/types.js";
 
 /**
+ * Opt-in enrichment for the fetch and XHR instances returned by one `getInstrumentations` call.
+ *
+ * @remarks
+ * Options are captured when the preset is constructed. They do not affect manually constructed
+ * instrumentations or manual spans. Headers and status text can contain sensitive data. Enable
+ * capture only with consent and extend `ignoreHeaders` for application-specific secrets.
+ * No request or response bodies are added to telemetry.
+ *
+ * @public
+ */
+export interface DependencyInstrumentationOptions {
+  /**
+   * Capture application-supplied request headers at request start. Defaults to false.
+   * Browser-added headers are unavailable. Values use `http.request.header.<lowercase-name>`
+   * string-array attributes, with combined header values kept intact.
+   */
+  captureRequestHeaders?: boolean;
+  /**
+   * Capture browser-readable response headers as `http.response.header.<lowercase-name>`
+   * string-array attributes. Defaults to false. Cross-origin capture requires the server to
+   * expose headers through CORS. This option does not change CORS or propagation policy.
+   */
+  captureResponseHeaders?: boolean;
+  /**
+   * Additional case-insensitive header names excluded from both directions.
+   * Authorization, Proxy-Authorization, Cookie, Set-Cookie, WWW-Authenticate,
+   * Proxy-Authenticate, and X-Api-Key are always excluded from automatic capture.
+   * Application hooks remain responsible for attributes they add themselves.
+   */
+  ignoreHeaders?: readonly string[];
+  /**
+   * Add nonempty HTTP status text to `http.response.status_text` for responses with status
+   * codes of 400 or higher. Defaults to false. Network errors and HTTP/2 can lack status text.
+   */
+  includeErrorStatusText?: boolean;
+  /**
+   * Maximum instrumented requests started per page view, shared by fetch and XHR bound to the
+   * same provider. Omitted means unlimited, zero disables dependency recording. Must be a
+   * nonnegative safe integer. Ignored URLs and suppressed tracing do not count. Sampling does
+   * not refund the budget.
+   *
+   * Requests above the limit still run and propagate the existing parent context, without
+   * creating a dependency span. The budget resets when the shared page operation changes.
+   * Without page-view correlation, the budget lasts for the provider's lifetime.
+   */
+  maxDependenciesPerView?: number;
+  /**
+   * Add resource-timing durations in milliseconds. Defaults to false.
+   *
+   * @remarks
+   * Attributes are `browser.dependency.duration` and `browser.dependency.<phase>.duration`
+   * for dns, connect, tls, request, response, and redirect. Missing or ambiguous entries are
+   * omitted. Phase timings hidden by Timing-Allow-Origin are omitted rather than inferred.
+   * No observer, retry timer, or resource-buffer mutation is introduced.
+   */
+  enableResourceTiming?: boolean;
+}
+
+/**
  * Selects and configures the instrumentations that `getInstrumentations` constructs.
  *
  * @remarks
- * Each key configures one instrumentation, and its value is that instrumentation's own
+ * Except for `dependencies`, each key configures one instrumentation using its own
  * configuration type, so every setting it supports is available and stays in step with its source
  * without being restated here.
  *
@@ -31,12 +90,16 @@ import type { PageViewInstrumentationConfig } from "./instrumentation/pageView/t
  * is called, so a caller that never calls it registers no instrumentations at all.
  *
  * The instrumentations below come from `@opentelemetry/browser-instrumentation`. This distribution
- * selects which of them are constructed and supplies defaults; it does not implement or wrap them.
+ * selects them and supplies defaults. Opt-in dependency enrichment uses narrow adapters around
+ * their public hooks and provider binding, with request metadata captured at the browser boundary.
  * Their source module defaults `enabled` to `true` for all of them.
  *
  * @public
  */
 export interface InstrumentationOptions {
+  /** Optional policy shared by the selected fetch and XHR instrumentations. */
+  dependencies?: DependencyInstrumentationOptions;
+
   /** Configuration for `@opentelemetry/browser-instrumentation/experimental/errors`. */
   errors?: ErrorsInstrumentationConfig;
 
