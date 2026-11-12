@@ -80,7 +80,7 @@ afterEach(async () => {
   XMLHttpRequest.prototype.open = originalOpen;
   XMLHttpRequest.prototype.send = originalSend;
   XMLHttpRequest.prototype.setRequestHeader = originalSetHeader;
-  history.replaceState(null, "", originalUrl);
+  if (location.href !== originalUrl) history.replaceState(null, "", originalUrl);
   trace.disable();
   logs.disable();
   propagation.disable();

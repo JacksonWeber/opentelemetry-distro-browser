@@ -33,7 +33,7 @@ afterEach(async () => {
   try {
     await Promise.all(handles.splice(0).map((handle) => handle.shutdown()));
   } finally {
-    history.replaceState(null, "", originalUrl);
+    if (location.href !== originalUrl) history.replaceState(null, "", originalUrl);
     trace.disable();
     logs.disable();
     propagation.disable();

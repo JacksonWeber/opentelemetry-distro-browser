@@ -22,7 +22,7 @@ afterEach(async () => {
   vi.unstubAllGlobals();
   history.pushState = originalPushState;
   history.replaceState = originalReplaceState;
-  history.replaceState(null, "", originalUrl);
+  if (location.href !== originalUrl) history.replaceState(null, "", originalUrl);
   trace.disable();
   logs.disable();
   propagation.disable();
