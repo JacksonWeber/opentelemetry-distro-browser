@@ -4,6 +4,10 @@ All notable changes to this package are documented in this file.
 
 ## Unreleased
 
+### Fixed
+
+- Preserve attributes added by later log processors when Azure Monitor sampling adds metadata.
+
 ### Added
 
 - Continue server-provided W3C trace context from HTML meta tags or navigation `Server-Timing`
