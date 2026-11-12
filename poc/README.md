@@ -4,6 +4,10 @@
 
 This PoC explores **multi-instance support for an OpenTelemetry browser distribution**.
 
+It is a historical prototype, not the published distribution. Its single-owner patch constraints
+and size measurements do not describe the production SDK, which coordinates shared patches.
+Use the [package README](../README.md) for application setup.
+
 A single browser page can contain multiple applications, libraries, or independently configured
 SDK consumers. Each consumer may need its own telemetry configuration and export pipeline. However,
 all consumers in the page call the same global `@opentelemetry/api` and `@opentelemetry/api-logs`,
@@ -152,7 +156,7 @@ Some upstream instrumentations cache a provider during initialization.
 
 ```ts
 bridge.initializeInstrumentation(alpha, () =>
-    new DocumentLoadInstrumentation({ enabled: false })
+    new NavigationTimingInstrumentation({ enabled: false })
 );
 ```
 

@@ -2,6 +2,11 @@
 
 **Status:** Proposed. Part of the [implementation plan](IMPLEMENTATION_PLAN.md).
 
+This is the original design proposal, not the current package or public API reference.
+The provisional packages and interfaces below are not published APIs. See the
+[configuration reference](../docs/configuration-reference.md) and
+[public declarations](../src/types.ts) for the implemented contract.
+
 How the distribution is put together: the global bridge, the instance model, the
 routing provider, the instrumentation bridge, context, export, the package
 layout, and the public API direction.
@@ -109,7 +114,7 @@ patch realm-wide browser APIs. The bridge must distinguish two concerns:
    `fetch`, XHR, History, and event listeners.
 
 Event-based instrumentations that observe rather than patch - navigation timing,
-resource timing, web vitals, console, global error handlers - use
+resource timing, web vitals, user actions, global error handlers - use
 `PerformanceObserver` and global listeners instead of monkey patching. They
 still need explicit ownership and cleanup, and multiple instances observing the
 same browser-global source must not duplicate or cross-route emitted records.
@@ -288,4 +293,3 @@ export interface TelemetryTransformRegistration {
 The transform/filter contract must define signal type, synchronous execution,
 ordering, rejection, mutation versus replacement, exception behavior, and cost
 budget before it becomes public.
-

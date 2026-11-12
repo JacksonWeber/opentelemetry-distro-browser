@@ -31,33 +31,27 @@ See the [configuration reference](docs/configuration-reference.md),
 ### Install the package
 
 ```bash
-npm install @microsoft/opentelemetry-browser@beta @opentelemetry/api@1.9.1 @opentelemetry/api-logs@0.222.0 @opentelemetry/resources@2.11.0
+npm install @microsoft/opentelemetry-browser@beta
 ```
 
-The OpenTelemetry versions above match `0.1.0-beta.2` and the imports in this guide. Keep them
-aligned with the distribution when upgrading. Use a browser bundler for the npm package, or follow
+The distribution installs its OpenTelemetry dependencies automatically; npm also resolves its
+`@opentelemetry/api` peer dependency. Use a browser bundler for the npm package, or follow
 [Snippet setup](#snippet-setup) for classic script loading.
 
 ### Quick start
 
 Initialize and await telemetry before loading the application code that should be instrumented.
-This example exports to Azure Monitor, enables session correlation, collects page views, and turns
+This example exports to Azure Monitor, uses default session correlation and page views, and turns
 on fetch, XHR, unhandled-error, user-action, and web-vitals instrumentation.
 
 ```typescript
 import { useMicrosoftOpenTelemetry } from "@microsoft/opentelemetry-browser";
 import { getInstrumentations } from "@microsoft/opentelemetry-browser/instrumentations";
-import { resourceFromAttributes } from "@opentelemetry/resources";
 
 const telemetry = await useMicrosoftOpenTelemetry({
   azureMonitor: {
     connectionString: "InstrumentationKey=...;IngestionEndpoint=...",
   },
-  resource: resourceFromAttributes({
-    "service.name": "shop-web",
-    "service.version": "1.0.0",
-  }),
-  session: { enabled: true },
   instrumentations: await getInstrumentations({
     errors: { enabled: true },
     userAction: { enabled: true },
@@ -81,6 +75,16 @@ complete applications.
 
 After initialization, use the standard OpenTelemetry APIs. Instrumented application code stays
 portable and does not depend on a proprietary telemetry API.
+
+For this optional example, declare the API packages your application imports as direct dependencies:
+
+```bash
+npm install @opentelemetry/api@1.9.1 @opentelemetry/api-logs@0.222.0
+```
+
+These versions match `0.1.0-beta.2`; see the [dependency policy](docs/dependency-policy.md) when
+upgrading. Packages imported directly should be declared even when the distribution already
+installs them transitively, so the application also works with strict dependency resolution.
 
 ```typescript
 import { trace } from "@opentelemetry/api";
@@ -224,8 +228,9 @@ for nested settings, defaults, sampling, identity and context behavior.
 | `traces`              | `MicrosoftOpenTelemetryBrowserTraceOptions` | Browser SDK defaults          | Replaces the browser context manager or trace propagators                    |
 | `spanProcessors`      | `SpanProcessor[]`                      | Azure Monitor only, if configured  | Registers custom trace processors; `[]` skips trace initialization          |
 | `logRecordProcessors` | `LogRecordProcessor[]`                 | Azure Monitor only, if configured  | Registers custom log processors; `[]` skips log initialization              |
-| `instrumentations`    | `BrowserInstrumentation[]`             | `[]`                               | Instrumentation instances owned and registered by this SDK                  |
+| `instrumentations`    | `readonly BrowserInstrumentation[]`    | `[]`                               | Instrumentation instances owned and registered by this SDK                  |
 | `pageView`            | `PageViewInstrumentationConfig`        | Enabled                            | Configures built-in `browser.page_view` log collection                      |
+| `redactQueryParams`   | `readonly string[]`                    | `[]`                               | Additional sensitive parameter names for fetch/XHR and page-view URLs       |
 
 Session and user identity use same-origin `localStorage` by default. Set `session.enabled: false`
 to disable managed sessions without accessing session storage, or `session.persist: false` to keep
@@ -237,7 +242,7 @@ remains available in memory.
 
 | Option            | Type      | Default | Description                                                                   |
 | ----------------- | --------- | ------- | ----------------------------------------------------------------------------- |
-| `connectionString` | `string` | —       | Application Insights connection string, including sovereign-cloud endpoints  |
+| `connectionString` | `string \| Promise<string>` | — | Application Insights connection string, including sovereign-cloud endpoints |
 | `disableBeacon`   | `boolean` | `false` | Disables the `sendBeacon` fallback used when a page unloads                    |
 
 ### Page visit time
@@ -290,7 +295,14 @@ The distribution exports to Azure Monitor when `azureMonitor` is set. It does no
 exporter: without `azureMonitor`, `spanProcessors` or `logRecordProcessors`, no telemetry is
 exported. Use standard OpenTelemetry processors to export to OTLP or another backend. For OTLP/HTTP:
 
+Declare the packages imported by this optional example:
+
+```bash
+npm install @opentelemetry/exporter-logs-otlp-http@0.222.0 @opentelemetry/exporter-trace-otlp-http@0.222.0 @opentelemetry/sdk-logs@0.222.0 @opentelemetry/sdk-trace-base@2.11.0
+```
+
 ```typescript
+import { useMicrosoftOpenTelemetry } from "@microsoft/opentelemetry-browser";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { BatchLogRecordProcessor } from "@opentelemetry/sdk-logs";
@@ -317,6 +329,22 @@ or other secrets in browser configuration; authenticate browser traffic at a col
 
 ### Browser resource attributes
 
+To identify your application, declare `@opentelemetry/resources@2.11.0` as a direct dependency
+and supply resource attributes:
+
+```typescript
+import { useMicrosoftOpenTelemetry } from "@microsoft/opentelemetry-browser";
+import { resourceFromAttributes } from "@opentelemetry/resources";
+
+await useMicrosoftOpenTelemetry({
+  azureMonitor: { connectionString },
+  resource: resourceFromAttributes({
+    "service.name": "shop-web",
+    "service.version": "1.0.0",
+  }),
+});
+```
+
 Browser and user-agent resource detectors are opt-in to avoid repeating information that many
 backends derive from request headers:
 
@@ -340,12 +368,13 @@ not include them, so pages that load the SDK from the CDN do not download code t
 
 ## Bundle size
 
-The size depends on how the package is loaded. Sizes in KiB, measured from the current source:
+The size depends on the package version and how it is loaded. These are reference sizes in KiB;
+run the measurement command below for the current revision:
 
 | Loaded from | Includes                                          | Minified |  gzip | Brotli |
 | ----------- | ------------------------------------------------- | -------: | ----: | -----: |
 | npm         | Distribution, page views and Azure Monitor export |    115.2 |  36.0 |   31.8 |
-| CDN         | Everything except the npm-only resource detectors |    156.4 |  47.6 |   41.6 |
+| CDN         | SDK and all browser instrumentations              |    156.4 |  47.6 |   41.6 |
 
 **npm.** The application's bundler removes code the application does not use. Instrumentations are
 loaded through dynamic imports only when enabled, so each one adds only its own code. Gzip added
@@ -363,9 +392,11 @@ by each instrumentation, measured on its own:
 features the page will enable, so `opentelemetry-browser.<version>.min.js` includes every
 instrumentation. The loader snippet enables `fetch` and `xhr`; the others are included but stay off
 unless enabled through the snippet's `instrumentationOptions`. The browser and user-agent resource
-detectors are npm-only; see [Browser resource attributes](#browser-resource-attributes).
+detectors and opt-in customer SDK Stats are npm-only; see
+[Browser resource attributes](#browser-resource-attributes) and the
+[configuration reference](docs/configuration-reference.md#customer-sdk-stats-npm-only).
 
-Run `npm run build && npm run size` to reproduce these measurements.
+Run `npm run build && npm run size` to measure the current revision.
 
 ## Package formats
 
@@ -428,9 +459,11 @@ import the package, but browser telemetry should be initialized in client-side c
   Event names and attributes can change during beta; pin versions and review the
   [event catalogue](docs/event-catalogue.md) when upgrading. This does not make all OpenTelemetry
   semantic conventions experimental.
-- **No offline telemetry persistence.** Batching and bounded retries are in memory; unsent telemetry
-  is not durably queued for replay after reload. Session and identity persistence are separate.
-  Page-hide delivery uses browser-limited keepalive/Beacon transport and is not guaranteed.
+- **No durable offline queue.** Azure Monitor exporters buffer unsent telemetry in `sessionStorage`
+  for retry on the next page load in the same tab, subject to storage controls, size limits and
+  expiry. This does not survive closing the tab and does not cover custom exporters. Page-hide
+  delivery uses browser-limited keepalive/Beacon transport and is not guaranteed. See the
+  [buffer behavior](docs/configuration-reference.md#azure-monitor-destination).
 - **No built-in Microsoft Entra ID (AAD) authentication for Azure Monitor ingestion.** Export uses
   a connection string with an instrumentation key, not a token credential. Parsing an audience
   field does not enable authentication. Do not embed credentials or bearer tokens in browser code;

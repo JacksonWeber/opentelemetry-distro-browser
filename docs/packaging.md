@@ -240,8 +240,9 @@ Content Security Policy, allow the snippet's hash or nonce and the CDN origin in
 the Azure Monitor ingestion origin in `connect-src`.
 
 `getSdkLoaderScript()` also accepts the JSON-serializable distribution options: `samplingPercentage`,
-`azureMonitor.disableBeacon`, `session`, `userContext`, and the data-only `pageView` settings
-(`enabled`, `redactedQueryParams`, `softNavigationSettleTimeoutMs`, `useNavigationApiIfAvailable`).
+`azureMonitor.disableBeacon`, `session`, `userContext`, `storage`, `redactQueryParams`, and the
+data-only `pageView` settings (`enabled`, `autoTrackPageVisitTime`, `redactedQueryParams`,
+`softNavigationSettleTimeoutMs`, `useNavigationApiIfAvailable`).
 They are inlined into the configuration object's `cfg`, which the loader passes to
 `useMicrosoftOpenTelemetry` unchanged with the connection string in `cfg.azureMonitor`. Two settings
 are applied by the bundle instead: `instrumentationOptions`, the `getInstrumentations()` options,

@@ -1,7 +1,7 @@
 # Beta configuration reference
 
-This reference describes `@microsoft/opentelemetry-browser` **0.1.0-beta.2**. Start with the
-[getting-started guide](../README.md#getting-started), and consult the
+This reference describes `@microsoft/opentelemetry-browser` **0.1.0-beta.2**, plus explicitly marked
+unreleased additions. Start with the [getting-started guide](../README.md#getting-started), and consult the
 [event catalogue](event-catalogue.md) for emitted data. The public TypeScript contracts are in
 [distribution types](../src/types.ts), [page-view options](../src/instrumentation/pageView/types.ts)
 and [loader options](../src/snippet.ts).
@@ -35,6 +35,7 @@ only in client-side code, before importing application code to instrument.
 | `instrumentations`    | `readonly BrowserInstrumentation[]`             | Empty. Pass instances returned by `getInstrumentations()` or compatible upstream instances. Built-in page views are configured separately.                                                                                |
 | `pageView`            | `PageViewInstrumentationConfig`                 | Collection and page-operation correlation enabled. Requires a log pipeline to export page-view records.                                                                                                                   |
 | `expCfg`              | `MicrosoftOpenTelemetryBrowserExceptionOptions` | Omitted: no exception attachments. Opt in to script URLs and application-supplied recent logs. See [exception attachments](#exception-attachments).                                                                       |
+| `redactQueryParams`   | `readonly string[]`                             | Additional sensitive parameter names for fetch/XHR and page-view URLs/referrers. Extends built-in protection. See [URL redaction](#url-redaction).                                                                        |
 
 ### Exception attachments
 
@@ -149,7 +150,7 @@ discards buffered items; it does not wait for the connection-string promise.
 Standalone `AzureMonitorSpanExporter` and `AzureMonitorLogRecordExporter` still require an
 already-resolved string. Startup buffering is owned by the distribution, not the exporters.
 
-When Azure Monitor is configured, its processor is added before non-empty custom processor lists
+When Azure Monitor is configured, its processor is added after non-empty custom processor lists
 for each signal. They are independent processor branches, not a chain: filtering within the Azure
 Monitor processor does not filter records received by custom processors. An explicit empty array
 disables the entire signal, including Azure Monitor. Without Azure Monitor or custom processors,
@@ -161,6 +162,18 @@ Each handle owns its processors and instrumentations. Do not reuse those objects
 Processor ownership transfers when provider startup begins, including failed startup. Construct
 upstream fetch, XHR, console and navigation instances with `enabled: false`; the distribution binds
 providers before enabling them. The helper already does this.
+
+### Customer SDK Stats (npm only)
+
+Set `azureMonitor.sdkStats: { enabled: true }` to opt into customer item delivery counters.
+`collectionIntervalMillis` defaults to `900000` (15 minutes) and must be an integer from `1` through
+`2147483647`. These startup-only settings also work on standalone Azure Monitor exporters.
+Reports bypass application pipelines and are best effort; they are not a durable delivery ledger.
+Client-side sampling and queue overflow are not counted. Retryable report counts remain in memory
+for the next attempt, not across page loads.
+
+Customer reporting is disabled by default and excluded from CDN bundles, which reject the option.
+It is separate from internal exporter network health statistics.
 
 ### Sampling
 
@@ -287,6 +300,10 @@ subset from one explicitly configured trusted HTTP(S) endpoint. It is not accept
 loader. Event synchronization uses `CustomEvent` on `globalThis`, not storage, tabs, iframes or
 workers; those contexts have independent realm state.
 
+The HTTP-specific options below (`cfgUrl`, `blkCdnCfg`, `scheduleFetchTimeout`, `requestTimeoutMs`)
+are **unreleased**. They are not available in `0.1.0-beta.2`; see
+[HTTP synchronization](#http-synchronization-unreleased).
+
 | Option                 | Default and behavior                                                                                                                                                                                                                              |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Plugin options object  | Omitted: synchronization is not configured. When configured, the handle exposes `configSync` with `sync(): Promise<void>`, `pause()`, `resume()`, and `shutdown()`.                                                                               |
@@ -342,7 +359,11 @@ but each handle has an independent revision; there is no atomic cross-handle com
 resolves when dispatch is complete, not when recipients acknowledge or apply it. Receiver failures
 call `onError`, do not roll back the publisher, and do not log payload contents.
 
-For HTTP synchronization, provide one explicit endpoint:
+### HTTP synchronization (unreleased)
+
+HTTP synchronization is available in the repository source, but not in the published
+`0.1.0-beta.2` package. That release supports same-realm event synchronization only.
+For HTTP synchronization in a build containing this addition, provide one explicit endpoint:
 
 ```typescript
 const telemetry = await useMicrosoftOpenTelemetry({
@@ -611,15 +632,29 @@ Default sensitive parameter names are `sig`, `Signature`, `AWSAccessKeyId`, `X-G
 `id_token`, `refresh_token`, `client_secret` and `password`. Matching query and fragment parameter
 values become `REDACTED`. URL username/password credentials are always redacted.
 
-To extend protection without replacing the defaults, leave `redactedQueryParams` unset and add
-application-specific redaction in `sanitizeUrl`. Page-view redaction does not automatically sanitize
-fetch/XHR, navigation, timing or exception URLs. Configure each instrumentation appropriately and
-review the payload before enabling it.
-
 The default name falls back from the route resolver to `document.title`, then `location.pathname`.
 Use route patterns for aggregation. Soft-navigation duration is a heuristic, not a document-load
 measurement. Pending page views are finalized when hidden, including tab switches; returning to a
 visible tab does not itself start another page view. See [duration sources](event-catalogue.md#page-view-duration-sources).
+
+### URL redaction
+
+Use the root `redactQueryParams` option to extend the built-in parameter list for both fetch/XHR
+dependency URLs and page-view URLs/referrers:
+
+```typescript
+await useMicrosoftOpenTelemetry({
+  azureMonitor: { connectionString },
+  redactQueryParams: ["customer_token"],
+});
+```
+
+Fetch/XHR URLs have built-in redaction even when this option is omitted; it does not change the
+outgoing request. `pageView.redactedQueryParams` affects only page views and replaces their defaults
+when the root option is omitted. When the root option is supplied, the built-in, root and page-view
+lists are combined for page views. `pageView.sanitizeUrl` can apply further page-specific redaction.
+Navigation, timing and exception URLs, log bodies and arbitrary attributes are not covered by this
+protection. Configure hooks or processors for those fields and review payloads before enabling them.
 
 ### Page visit time
 
@@ -886,6 +921,7 @@ It generates a script; it does not itself initialize telemetry in the current pa
 | `reportLoadFailure`                                                          | `false`. Report an `SDKLoadFailed` exception after bundle load attempts fail.                                                                                     |
 | `samplingPercentage`, `azureMonitor.disableBeacon`, `session`, `userContext` | Same meanings as initialization options above.                                                                                                                    |
 | `storage`                                                                    | Same `enabled` and `namePrefix` settings as initialization options above.                                                                                         |
+| `redactQueryParams`                                                          | Same additional sensitive parameter names as initialization options above.                                                                                        |
 | `cookieCfg`                                                                  | Data-only settings: `enabled`, `domain`, `path`, `ignoreCookies`, `blockedCookies`, `disableCookieDefer`. Cookie hooks are not supported by the snippet.          |
 | `pageView`                                                                   | Data-only settings: `enabled`, `autoTrackPageVisitTime` (default `false`), `redactedQueryParams`, `softNavigationSettleTimeoutMs`, `useNavigationApiIfAvailable`. |
 | `instrumentationOptions`                                                     | JSON-only helper settings. Omitted: fetch/XHR defaults.                                                                                                           |
@@ -896,7 +932,8 @@ exporters, context managers, propagators and resource detectors require npm-base
 Loader options are unchanged: use `azureMonitor.disableBeacon`, not the root `onunloadDisableBeacon`
 alias supported only by runtime updates. `disableFetchTracking` and `disableAjaxTracking` are also
 runtime-only and are not accepted by the loader or its generated initialization `cfg`.
-`configSync` is also npm startup-only and is not accepted by the loader or generated configuration.
+`extensionConfig.AppInsightsCfgSyncPlugin` is also npm startup-only and is not accepted by the
+loader or generated configuration.
 The generated configuration's `cfg` holds initialization options; `instrumentationOptions` and
 `resourceAttributes` are siblings of `cfg`. See [Packaging](packaging.md#cdn-and-loader-snippet) for
 the snippet, CSP, fallback hosts, integrity manifests and failure handling.
