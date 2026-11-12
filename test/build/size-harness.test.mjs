@@ -59,6 +59,25 @@ test("covers every published JavaScript entry point and browser instrumentation"
   );
 });
 
+test("keeps documented entry-point and browser-bundle budgets in sync with enforced limits", async () => {
+  const packaging = await readFile(new URL("../../docs/packaging.md", import.meta.url), "utf8");
+  const rows = packaging.split("\n").map((line) => line.split("|").map((cell) => cell.trim()));
+  for (const [entryPoint, budget] of Object.entries({
+    ...entryPointBudgets,
+    ...browserBundleBudgets,
+  })) {
+    const label = entryPoint
+      .replace("dist/browser/", "")
+      .replace(/\.(?:iife|umd)\./, ".{iife,umd}.");
+    const row = rows.find((cells) => cells[1] === `\`${label}\``);
+    assert.deepEqual(
+      row?.slice(2, 5),
+      [budget.rawBytes, budget.gzipBytes, budget.brotliBytes].map((bytes) => `${bytes / 1024} kB`),
+      `Documented limits for ${entryPoint}`,
+    );
+  }
+});
+
 test("evaluates absolute minified, gzip, and Brotli budgets per published entry point", () => {
   const measurements = [
     {

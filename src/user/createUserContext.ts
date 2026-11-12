@@ -3,10 +3,7 @@
 
 import { diag } from "@opentelemetry/api";
 import { createDefaultSessionIdGenerator } from "@opentelemetry/browser-sdk/session";
-import {
-  createLocalStorageKeyValueStorage,
-  type KeyValueStorage,
-} from "../storage/keyValueStorage.js";
+import { createKeyValueStorage, type KeyValueStorage } from "../storage/keyValueStorage.js";
 import { isNonEmptyString } from "../shared/isNonEmptyString.js";
 import type { MicrosoftOpenTelemetryBrowserUserContext } from "../types.js";
 import { USER_STORAGE_KEY } from "./constants.js";
@@ -74,21 +71,26 @@ function toStoredUser(value: unknown): StoredUserFields | undefined {
 }
 
 export interface UserContextProvider {
-  getAnonymousUserId(): string;
+  getAnonymousUserId(): string | undefined;
   getAuthenticatedUserId(): string | undefined;
   getAccountId(): string | undefined;
 }
 
 export function createUserContext(
-  initialEnabled: boolean,
-  storage: KeyValueStorage = createLocalStorageKeyValueStorage(
-    "User storage unavailable; using in-memory identity.",
+  initialEnabled: boolean | undefined,
+  storage: KeyValueStorage = createKeyValueStorage(
+    "localStorage",
+    "User storage unavailable; anonymous ID disabled.",
   ),
+  storageEnabled = true,
 ): {
   context: MicrosoftOpenTelemetryBrowserUserContext;
   provider: UserContextProvider;
 } {
-  let enabled = initialEnabled;
+  let persistenceEnabled = storageEnabled && initialEnabled !== false;
+  let anonymousIdentityEnabled = persistenceEnabled;
+  let authenticatedPersistenceEnabled = persistenceEnabled;
+  let persistedIdentityMayExist = false;
   let anonymousId = generateAnonymousId();
   let authenticatedUserId: string | undefined;
   let accountId: string | undefined;
@@ -96,14 +98,24 @@ export function createUserContext(
   function currentUser(): StoredUser {
     return {
       anonymousId,
-      ...(authenticatedUserId === undefined ? {} : { authenticatedUserId }),
-      ...(accountId === undefined ? {} : { accountId }),
+      ...(authenticatedPersistenceEnabled && authenticatedUserId !== undefined
+        ? { authenticatedUserId }
+        : {}),
+      ...(authenticatedPersistenceEnabled && accountId !== undefined ? { accountId } : {}),
     };
   }
 
   function save(): boolean {
-    if (!enabled) return true;
-    return storage.setItem(USER_STORAGE_KEY, JSON.stringify(currentUser()));
+    if (!persistenceEnabled) return true;
+    const saved = storage.setItem(USER_STORAGE_KEY, JSON.stringify(currentUser()));
+    if (saved) persistedIdentityMayExist = true;
+    return saved;
+  }
+
+  function removePersistedIdentity(): boolean {
+    const removed = storage.removeItem(USER_STORAGE_KEY);
+    if (removed) persistedIdentityMayExist = false;
+    return removed;
   }
 
   /**
@@ -113,7 +125,7 @@ export function createUserContext(
    */
   function persist(): boolean {
     if (save()) return true;
-    requireIdentityCleared(storage.removeItem(USER_STORAGE_KEY));
+    requireIdentityCleared(removePersistedIdentity());
     return save();
   }
 
@@ -123,7 +135,14 @@ export function createUserContext(
     }
   }
 
-  function requireIdentityPersisted(persisted: boolean): void {
+  // Anonymous identity stays enabled only while it is persisted.
+  function persistIdentity(): void {
+    let persisted = false;
+    try {
+      persisted = persist();
+    } finally {
+      anonymousIdentityEnabled = persisted;
+    }
     if (!persisted) {
       throw new Error("Unable to persist user identity.");
     }
@@ -134,40 +153,54 @@ export function createUserContext(
   function clearPersistedAuthenticatedContext(): void {
     const result = storage.getItem(USER_STORAGE_KEY);
     if (!result.success) {
-      storage.removeItem(USER_STORAGE_KEY);
+      removePersistedIdentity();
       return;
     }
     if (result.value === null) return;
+    persistedIdentityMayExist = true;
     const stored = toStoredUser(tryParseJson(result.value));
     if (!stored) {
-      storage.removeItem(USER_STORAGE_KEY);
+      removePersistedIdentity();
       return;
     }
     const anonymousOnly = JSON.stringify({ anonymousId: stored.anonymousId });
-    if (!storage.setItem(USER_STORAGE_KEY, anonymousOnly)) {
-      storage.removeItem(USER_STORAGE_KEY);
+    if (storage.setItem(USER_STORAGE_KEY, anonymousOnly)) {
+      persistedIdentityMayExist = true;
+    } else {
+      removePersistedIdentity();
     }
   }
 
-  if (enabled) {
+  if (persistenceEnabled) {
     const result = storage.getItem(USER_STORAGE_KEY);
     if (!result.success) {
-      enabled = false;
+      persistenceEnabled = false;
+      anonymousIdentityEnabled = false;
+      authenticatedPersistenceEnabled = false;
     } else {
       if (result.value === null) {
-        if (!save()) enabled = false;
+        if (!save()) {
+          persistenceEnabled = false;
+          anonymousIdentityEnabled = false;
+          authenticatedPersistenceEnabled = false;
+        }
       } else {
+        persistedIdentityMayExist = true;
         const stored = toStoredUser(tryParseJson(result.value));
         if (stored) {
           anonymousId = stored.anonymousId;
-          authenticatedUserId = stored.authenticatedUserId;
-          accountId = stored.accountId;
+          if (authenticatedPersistenceEnabled) {
+            authenticatedUserId = stored.authenticatedUserId;
+            accountId = stored.accountId;
+          }
         } else {
           diag.warn("Invalid stored user identity; creating a new identity.");
           if (!save()) {
             // The storage adapter already reports failures; initialization continues in memory.
-            storage.removeItem(USER_STORAGE_KEY);
-            enabled = false;
+            removePersistedIdentity();
+            persistenceEnabled = false;
+            anonymousIdentityEnabled = false;
+            authenticatedPersistenceEnabled = false;
           }
         }
       }
@@ -184,34 +217,40 @@ export function createUserContext(
       }
       authenticatedUserId = userId;
       accountId = newAccountId;
-      requireIdentityPersisted(persist());
+      if (!authenticatedPersistenceEnabled && (!persistenceEnabled || anonymousIdentityEnabled)) {
+        return;
+      }
+      persistIdentity();
     },
     clearAuthenticatedUserContext() {
       authenticatedUserId = undefined;
       accountId = undefined;
-      if (!enabled) {
+      if (!storageEnabled) return;
+      if (!persistenceEnabled) {
         clearPersistedAuthenticatedContext();
       } else if (!persist()) {
         // Stale authentication is already removed; keep the anonymous identity in memory.
-        enabled = false;
-        diag.warn("User identity persistence disabled; storage writes failed.");
+        anonymousIdentityEnabled = false;
+        diag.warn("User identity not saved; will retry.");
+      } else {
+        anonymousIdentityEnabled = true;
       }
     },
     setEnabled(newEnabled) {
+      if (!storageEnabled) return;
       if (newEnabled) {
-        enabled = true;
-        try {
-          requireIdentityPersisted(persist());
-        } catch (error) {
-          enabled = false;
-          throw error;
-        }
+        persistenceEnabled = true;
+        authenticatedPersistenceEnabled = true;
+        persistIdentity();
       } else {
-        const removed = storage.removeItem(USER_STORAGE_KEY);
+        const mustClearPersistedIdentity = persistedIdentityMayExist;
+        const removed = removePersistedIdentity();
         // Only an instance that persisted identity must guarantee removal; otherwise clear any
         // identity left by an earlier page load on a best-effort basis.
-        if (enabled) requireIdentityCleared(removed);
-        enabled = false;
+        if (mustClearPersistedIdentity) requireIdentityCleared(removed);
+        persistenceEnabled = false;
+        anonymousIdentityEnabled = false;
+        authenticatedPersistenceEnabled = false;
       }
     },
   };
@@ -219,7 +258,7 @@ export function createUserContext(
   return {
     context,
     provider: {
-      getAnonymousUserId: () => anonymousId,
+      getAnonymousUserId: () => (anonymousIdentityEnabled ? anonymousId : undefined),
       getAuthenticatedUserId: () => authenticatedUserId,
       getAccountId: () => accountId,
     },

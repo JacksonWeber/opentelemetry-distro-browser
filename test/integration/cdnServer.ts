@@ -7,6 +7,7 @@ import { createServer, type Server, type ServerResponse } from "node:http";
 import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { TestProject } from "vitest/node";
+import { SDK_STATS_ENDPOINT } from "../fixtures/sdkStats.js";
 
 declare module "vitest" {
   export interface ProvidedContext {
@@ -47,6 +48,15 @@ export default async function setup(project: TestProject): Promise<() => Promise
   const pageServer = createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? "/", "http://localhost");
+      if (request.method === "GET" && url.pathname === "/server-trace.html") {
+        await writeServerTracePage(response, cdnOrigin, url.searchParams);
+        return;
+      }
+      const pageVisit = /^\/page-visit\/(first|second|spa)\.html$/.test(url.pathname);
+      if (request.method === "GET" && pageVisit) {
+        await writePageVisitPage(response, cdnOrigin, url);
+        return;
+      }
       if (request.method !== "GET" || url.pathname !== "/snippet.html") {
         response.writeHead(404).end();
         return;
@@ -61,6 +71,200 @@ export default async function setup(project: TestProject): Promise<() => Promise
   return async () => {
     await Promise.all([close(cdnServer), close(pageServer)]);
   };
+}
+
+async function writeServerTracePage(
+  response: ServerResponse,
+  cdnOrigin: string,
+  parameters: URLSearchParams,
+): Promise<void> {
+  const { version } = JSON.parse(await readFile(resolve(root, "package.json"), "utf8")) as {
+    version: string;
+  };
+  const scenario = required(parameters, "scenario");
+  const connectionString =
+    "InstrumentationKey=00000000-0000-0000-0000-000000000000;" +
+    `IngestionEndpoint=${required(parameters, "ingestionEndpoint")}`;
+  const endpoint = required(parameters, "requestEndpoint");
+  const metaParent = "00-11111111111111111111111111111111-2222222222222222-01";
+  const headerParent = "00-33333333333333333333333333333333-4444444444444444-01";
+  const hasMeta = ["meta", "both", "opt-out", "invalid"].includes(scenario);
+  const hasHeader = ["header", "both", "invalid"].includes(scenario);
+  response.writeHead(200, {
+    "content-type": "text/html; charset=utf-8",
+    ...(hasHeader
+      ? {
+          "server-timing":
+            `traceparent;desc="${scenario === "invalid" ? "invalid" : headerParent}", ` +
+            'tracestate;desc="header=state"',
+        }
+      : {}),
+  });
+  response.end(`<!doctype html>
+<html lang="en">
+<head>
+  <title>Server trace context</title>
+  ${
+    hasMeta
+      ? `<meta name="traceparent" content="${scenario === "invalid" ? "invalid" : metaParent}">
+  <meta name="tracestate" content="meta=state">`
+      : ""
+  }
+  <script src="${cdnOrigin}/opentelemetry-browser.${version}.min.js"></script>
+  <script src="${cdnOrigin}/opentelemetry-browser-instrumentations.${version}.min.js"></script>
+</head>
+<body>
+<script>
+(async function () {
+  const sdk = Microsoft.OpenTelemetry;
+  const lateHash = new URL(location.href).searchParams.get("lateHash");
+  if (lateHash && lateHash !== location.hash) {
+    await new Promise(resolve => {
+      window.addEventListener("hashchange", resolve, { once: true });
+      location.hash = lateHash;
+    });
+  }
+  const endpoint = ${JSON.stringify(endpoint)};
+  const instrumentations = await Microsoft.OpenTelemetryInstrumentations.getInstrumentations({
+    fetch: { propagateTraceHeaderCorsUrls: [endpoint] },
+    xhr: { propagateTraceHeaderCorsUrls: [endpoint] }
+  });
+  const options = { azureMonitor: { connectionString: ${JSON.stringify(connectionString)} } };
+  const first = await sdk.useMicrosoftOpenTelemetry({
+    ...options, instrumentations, pageView: { useServerTraceContext: ${scenario !== "opt-out"} }
+  });
+  const second = await sdk.useMicrosoftOpenTelemetry(options);
+  try {
+    const operation = sdk.trace.getSpanContext(sdk.context.active());
+    sdk.logs.getLogger("server-trace-test").emit({ body: "during load" });
+    const fetchHeaders = await fetch(endpoint).then(response => response.json());
+    const xhrHeaders = await new Promise((resolve, reject) => {
+      const request = new XMLHttpRequest();
+      request.open("GET", endpoint);
+      request.onload = () => resolve(JSON.parse(request.responseText));
+      request.onerror = () => reject(new Error("XHR failed"));
+      request.send();
+    });
+    await new Promise(resolve => {
+      const settle = () => setTimeout(resolve, 0);
+      if (document.readyState === "complete") settle();
+      else window.addEventListener("load", settle, { once: true });
+    });
+    await Promise.all([first.forceFlush(), second.forceFlush()]);
+    history.pushState(null, "", "/spa");
+    const route = sdk.trace.getSpanContext(sdk.context.active());
+    sdk.trace.getTracer("server-trace-test").startSpan("route dependency").end();
+    window.dispatchEvent(new Event("pagehide"));
+    await Promise.all([first.forceFlush(), second.forceFlush()]);
+    document.body.dataset.state = JSON.stringify({
+      traceId: operation.traceId, parentId: operation.spanId, routeId: route.traceId,
+      fetchHeaders, xhrHeaders,
+      serverTiming: performance.getEntriesByType("navigation")[0].serverTiming.map(entry => entry.name)
+    });
+  } finally {
+    await second.shutdown();
+    await first.shutdown();
+  }
+})().catch(error => { document.body.dataset.state = "failed: " + error.stack; });
+</script>
+</body>
+</html>`);
+}
+
+/** Plain documents load the emitted IIFE directly, without Vite or source imports. */
+async function writePageVisitPage(
+  response: ServerResponse,
+  cdnOrigin: string,
+  url: URL,
+): Promise<void> {
+  const parameters = url.searchParams;
+  const ingestionEndpoint = required(parameters, "ingestionEndpoint");
+  const namePrefix = required(parameters, "namePrefix");
+  const artifact = parameters.get("artifact") === "@js" ? "@js" : "@min.js";
+  const spa = url.pathname.endsWith("/spa.html");
+  const pageName = spa
+    ? "SPA start"
+    : url.pathname.endsWith("/first.html")
+      ? "First document"
+      : "Second document";
+  const { version } = JSON.parse(await readFile(resolve(root, "package.json"), "utf8")) as {
+    version: string;
+  };
+  const manifest = JSON.parse(
+    await readFile(
+      resolve(cdnDirectory, `opentelemetry-browser.${version}.integrity.json`),
+      "utf8",
+    ),
+  ) as { ext: Record<string, { file: string }> };
+  const options = {
+    azureMonitor: {
+      connectionString:
+        "InstrumentationKey=00000000-0000-0000-0000-000000000000;" +
+        `IngestionEndpoint=${ingestionEndpoint}`,
+    },
+    instrumentations: [],
+    session: { enabled: false },
+    userContext: { enabled: false },
+    storage: { namePrefix },
+    pageView: {
+      ...(parameters.get("autoTrackPageVisitTime") === "true" && {
+        autoTrackPageVisitTime: true,
+      }),
+      softNavigationSettleTimeoutMs: 250,
+    },
+  };
+  const application = `(async function () {
+  const originalFetch = globalThis.fetch.bind(globalThis);
+  globalThis.fetch = (url, init) => url === ${JSON.stringify(SDK_STATS_ENDPOINT)}
+    ? Promise.resolve(new Response(null)) : originalFetch(url, init);
+  const observedPages = new Set();
+  const options = ${JSON.stringify(options).replaceAll("<", "\\u003c")};
+  options.pageView.applyCustomLogRecordData = (record) => {
+    observedPages.add(record.attributes["browser.page_view.name"]);
+  };
+  async function waitForPage(name) {
+    const deadline = Date.now() + 10000;
+    while (!observedPages.has(name)) {
+      if (Date.now() >= deadline) throw new Error("Page view did not settle: " + name);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+  const telemetry = await window.Microsoft.OpenTelemetry.useMicrosoftOpenTelemetry(options);
+  await waitForPage(${JSON.stringify(pageName)});
+  await telemetry.forceFlush();
+  if (${spa}) {
+    for (const [hash, name] of [["products", "SPA products"], ["checkout", "SPA checkout"]]) {
+      const route = new URL(location.href);
+      route.hash = hash;
+      history.pushState(null, "", route.href);
+      // Routers update titles after changing the URL, before the page view settles.
+      document.title = name;
+      await waitForPage(name);
+      await telemetry.forceFlush();
+    }
+  }
+  document.body.dataset.ready = "true";
+  document.body.dataset.state = "ready";
+})().catch((error) => {
+  document.body.dataset.state = "failed: " + error.message;
+});`;
+
+  response.writeHead(200, {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": "no-store",
+  });
+  response.end(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>${pageName}</title>
+    <script src="${cdnOrigin}/${manifest.ext[artifact].file}" crossorigin="anonymous"></script>
+  </head>
+  <body>
+    <script>${application}</script>
+  </body>
+</html>
+`);
 }
 
 async function writeSnippetPage(
@@ -88,18 +292,40 @@ async function writeSnippetPage(
   )) as typeof import("../../src/snippet.js");
 
   const snippet = getSdkLoaderScript({
-    src: `${cdnOrigin}/${scenario === "missing" ? `missing-${bundle.file}` : bundle.file}`,
+    src: `${cdnOrigin}/${scenario === "missing" || scenario === "reported" ? `missing-${bundle.file}` : bundle.file}`,
     connectionString:
       "InstrumentationKey=00000000-0000-0000-0000-000000000000;" +
       `IngestionEndpoint=${ingestionEndpoint}`,
     integrity:
       scenario === "tampered" ? `sha384-${"A".repeat(64)}` : `sha384-${bundle.hashes.sha384}`,
+    ...(scenario === "reported" && { loadDelay: 10, reportLoadFailure: true }),
+    ...(scenario === "configured" && {
+      instrumentationOptions: { errors: { enabled: true } },
+      resourceAttributes: { "service.name": "cdn-snippet-service", "service.version": "1.2.3" },
+    }),
   });
+  // Reported only when the snippet enabled the opt-in errors instrumentation.
+  const reportError =
+    scenario === "configured"
+      ? `window.dispatchEvent(new ErrorEvent("error", { error: new Error("cdn snippet failure"), message: "cdn snippet failure" }));\n  `
+      : "";
+  // Application requests the snippet's default fetch and XHR instrumentations must report.
+  const dependencyUrl = (runId: string) =>
+    `${new URL(ingestionEndpoint).origin}/captured?runId=${runId}`;
   const application = `window.microsoftOpenTelemetry.then(function (handle) {
   window.Microsoft.OpenTelemetry.trace
     .getTracer("cdn-snippet-test")
     .startSpan("cdn-snippet-span", { attributes: { "test.run_id": ${JSON.stringify(runId)} } })
     .end();
+  ${reportError}return fetch(${JSON.stringify(dependencyUrl("snippet-fetch"))}).then(function () {
+    return new Promise(function (resolve) {
+      var xhr = new XMLHttpRequest();
+      xhr.addEventListener("loadend", function () { resolve(handle); });
+      xhr.open("GET", ${JSON.stringify(dependencyUrl("snippet-xhr"))});
+      xhr.send();
+    });
+  });
+}).then(function (handle) {
   // The page view ends in a macrotask after load, so flush only after that task has run.
   return new Promise(function (resolve) {
     function settle() { setTimeout(resolve, 0); }
@@ -121,7 +347,7 @@ async function writeSnippetPage(
     "content-security-policy": [
       "default-src 'none'",
       `script-src ${hash(snippet)} ${hash(application)} ${cdnOrigin}`,
-      `connect-src ${new URL(ingestionEndpoint).origin}`,
+      `connect-src ${new URL(ingestionEndpoint).origin} ${new URL(SDK_STATS_ENDPOINT).origin}`,
     ].join("; "),
   });
   response.end(`<!doctype html>

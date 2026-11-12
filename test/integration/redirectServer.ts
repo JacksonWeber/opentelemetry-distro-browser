@@ -14,17 +14,29 @@ declare module "vitest" {
 
 export default async function setup(project: TestProject): Promise<() => Promise<void>> {
   const ingestedEnvelopes = new Map<string, unknown[]>();
-  let redirectRequests = 0;
-  let finalRequests = 0;
+  const ingestedReferrers = new Map<string, string[]>();
+  const throttledRuns = new Set<string>();
+  // Browser projects share this server; keep each test run's request counts independent.
+  const requestCounts = new Map<string, { redirectRequests: number; finalRequests: number }>();
+  const getCounts = (url: URL) => {
+    const runId = url.searchParams.get("runId") ?? "";
+    let counts = requestCounts.get(runId);
+    if (!counts) {
+      counts = { redirectRequests: 0, finalRequests: 0 };
+      requestCounts.set(runId, counts);
+    }
+    return counts;
+  };
 
   const finalServer = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://localhost");
     setCorsHeaders(response);
     if (request.method === "OPTIONS") {
       response.writeHead(204).end();
       return;
     }
-    if (request.method === "POST" && request.url === "/v2.1/track") {
-      finalRequests++;
+    if (request.method === "POST" && url.pathname === "/v2.1/track") {
+      getCounts(url).finalRequests++;
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({ itemsAccepted: 1, itemsReceived: 1, errors: [] }));
       return;
@@ -39,12 +51,50 @@ export default async function setup(project: TestProject): Promise<() => Promise
       response.writeHead(204).end();
       return;
     }
+    if (request.method === "GET" && request.url?.startsWith("/configuration?")) {
+      const url = new URL(request.url, "http://localhost");
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          enabled: true,
+          config: { samplingPercentage: Number(url.searchParams.get("sampling")) },
+        }),
+      );
+      return;
+    }
     const ingestionMatch = request.url?.match(/^\/ingest\/([^/]+)\/v2\/track$/);
     if (request.method === "POST" && ingestionMatch) {
       try {
         const runId = decodeURIComponent(ingestionMatch[1]);
         const envelopes = JSON.parse(await readRequestBody(request)) as unknown[];
+        // Throttle the first request carrying the marker so it is left for the next page load.
+        if (
+          !throttledRuns.has(runId) &&
+          envelopes.some(
+            (envelope) =>
+              (envelope as { data?: { baseData?: { name?: string } } }).data?.baseData?.name ===
+              "throttled-before-reload",
+          )
+        ) {
+          throttledRuns.add(runId);
+          response.setHeader("access-control-expose-headers", "retry-after");
+          response.writeHead(503, { "retry-after": "86400" }).end();
+          return;
+        }
         ingestedEnvelopes.set(runId, [...(ingestedEnvelopes.get(runId) ?? []), ...envelopes]);
+        ingestedReferrers.set(runId, [
+          ...(ingestedReferrers.get(runId) ?? []),
+          request.headers.referer ?? "",
+        ]);
+        if (
+          envelopes.some(
+            (envelope) =>
+              (envelope as { data?: { baseData?: { message?: string } } }).data?.baseData
+                ?.message === "pending-before-navigation",
+          )
+        ) {
+          await new Promise((resolve) => setTimeout(resolve, 2_000));
+        }
         response.writeHead(200, { "content-type": "application/json" });
         response.end(
           JSON.stringify({
@@ -61,7 +111,13 @@ export default async function setup(project: TestProject): Promise<() => Promise
     if (request.method === "GET" && request.url?.startsWith("/captured")) {
       const runId = new URL(request.url, "http://localhost").searchParams.get("runId") ?? "";
       response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify(ingestedEnvelopes.get(runId) ?? []));
+      response.end(
+        JSON.stringify(
+          request.url.startsWith("/captured-referrers")
+            ? (ingestedReferrers.get(runId) ?? [])
+            : (ingestedEnvelopes.get(runId) ?? []),
+        ),
+      );
       return;
     }
     response.writeHead(404).end();
@@ -70,19 +126,20 @@ export default async function setup(project: TestProject): Promise<() => Promise
   project.provide("ingestionEndpoint", `${ingestionOrigin}/ingest/`);
 
   const redirectServer = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://localhost");
     setCorsHeaders(response);
     if (request.method === "OPTIONS") {
       response.writeHead(204).end();
       return;
     }
-    if (request.method === "POST" && request.url === "/v2.1/track") {
-      redirectRequests++;
-      response.writeHead(307, { location: `${finalOrigin}/v2.1/track` }).end();
+    if (request.method === "POST" && url.pathname === "/v2.1/track") {
+      getCounts(url).redirectRequests++;
+      response.writeHead(307, { location: `${finalOrigin}/v2.1/track${url.search}` }).end();
       return;
     }
-    if (request.method === "GET" && request.url === "/counts") {
+    if (request.method === "GET" && url.pathname === "/counts") {
       response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ redirectRequests, finalRequests }));
+      response.end(JSON.stringify(getCounts(url)));
       return;
     }
     if (request.method === "GET" && request.url === "/headers") {

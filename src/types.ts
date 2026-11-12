@@ -17,6 +17,10 @@ import type { WebVitalsInstrumentationConfig } from "@opentelemetry/browser-inst
 import type { XhrInstrumentationConfig } from "@opentelemetry/browser-instrumentation/experimental/xhr";
 import type { AzureMonitorOptions } from "./exporter/base.js";
 import type { PageViewInstrumentationConfig } from "./instrumentation/pageView/types.js";
+import type {
+  MicrosoftOpenTelemetryBrowserConfigurationUpdate,
+  MicrosoftOpenTelemetryBrowserConfigurationUpdateResult,
+} from "./configuration/runtimeConfiguration.js";
 
 /**
  * Selects and configures the instrumentations that `getInstrumentations` constructs.
@@ -30,9 +34,7 @@ import type { PageViewInstrumentationConfig } from "./instrumentation/pageView/t
  * constructed only when `enabled` is `true`. Nothing is constructed until `getInstrumentations`
  * is called, so a caller that never calls it registers no instrumentations at all.
  *
- * The instrumentations below come from `@opentelemetry/browser-instrumentation`. This distribution
- * selects which of them are constructed and supplies defaults; it does not implement or wrap them.
- * Their source module defaults `enabled` to `true` for all of them.
+ * Uses `@opentelemetry/browser-instrumentation` with distro defaults and shared-patch registration.
  *
  * @public
  */
@@ -121,22 +123,125 @@ export interface MicrosoftOpenTelemetryBrowserTraceOptions {
 }
 
 /**
- * Session options, captured at initialization. Lifetimes must be finite and nonnegative.
+ * Session options. Lifetimes can be updated through updateCfg; enabled/persist are startup-only.
+ * Lifetimes must be finite and nonnegative.
+ * Managed session IDs are added only when neither the record nor its resource has a non-empty
+ * string `session.id`. Azure Monitor export prefers a valid record value over the resource.
  * @public
  */
 export interface MicrosoftOpenTelemetryBrowserSessionOptions {
-  /** Enables session tracking. Defaults to false. */
+  /** Enables session tracking. Defaults to true. False disables it without accessing storage. */
   enabled?: boolean;
   /**
-   * Persist in localStorage (default true). False uses memory without accessing or clearing storage.
+   * Persist the session (default true). Cookies are primary; Web Storage provides a backup.
+   * False uses memory without accessing or clearing either backend.
    */
   persist?: boolean;
   /**
    * Seconds without managed-session telemetry. Defaults to 1800. Zero disables inactivity expiry.
    */
   inactivityTimeout?: number;
-  /** Maximum lifetime in seconds, including across reloads. Defaults to 0 (unlimited). */
+  /**
+   * Maximum lifetime in seconds, including across reloads. Defaults to 86400 (24 hours). Zero means unlimited.
+   */
   maxDuration?: number;
+}
+
+/** Startup-only event synchronization and optional trusted HTTP configuration downloads.
+ * @public
+ */
+export interface MicrosoftOpenTelemetryBrowserConfigurationSyncOptions {
+  /** 0: off, 1: broadcast only, 2: receive only (default after explicit opt-in). */
+  readonly syncMode?: 0 | 1 | 2;
+  /** Same-realm CustomEvent channel. Defaults to ai_cfgsync; not an authentication boundary. */
+  readonly customEvtName?: string;
+  /** Explicit trusted HTTP(S) URL. Empty/omitted means no HTTP requests; no default feed is used. */
+  readonly cfgUrl?: string;
+  /** Blocks HTTP downloads without disabling event reception. Defaults to false. */
+  readonly blkCdnCfg?: boolean;
+  /** Poll interval after completion, in milliseconds. Defaults to 1800000; zero means initial/manual only. */
+  readonly scheduleFetchTimeout?: number;
+  /** Request and body deadline, in milliseconds. Defaults to 10000; must be positive. */
+  readonly requestTimeoutMs?: number;
+  /** Prevent synchronization of selected allowlisted root fields. False cannot widen the allowlist. */
+  readonly nonOverrideConfigs?: Readonly<
+    Partial<Record<"samplingPercentage" | "disableFetchTracking" | "disableAjaxTracking", boolean>>
+  >;
+  /** Receives validation or asynchronous receive failures. Thrown/rejected callbacks are isolated. */
+  readonly onError?: (error: unknown) => void;
+}
+
+/** Lifecycle controls for an explicitly configured synchronization adapter.
+ * @public
+ */
+export interface MicrosoftOpenTelemetryBrowserConfigurationSync {
+  /** Downloads when HTTP is configured; otherwise broadcasts the snapshot in mode 1. Coalesces concurrent downloads. */
+  sync(): Promise<void>;
+  /** Aborts downloads, clears polling and invalidates queued delivery without reverting committed values. */
+  pause(): void;
+  /** Resumes observation and HTTP downloads, including polling stopped after three failures. No effect after shutdown. */
+  resume(): void;
+  /** Permanently removes listeners and cancels polling/downloads. Telemetry shutdown also calls this. */
+  shutdown(): void;
+}
+
+/** Instance-scoped cookie configuration, captured at initialization. @public */
+export interface MicrosoftOpenTelemetryBrowserCookieConfig {
+  /** Defaults to true. False blocks browser cookie reads and writes, but may defer operations. */
+  enabled?: boolean;
+  /** Cookie domain. Omit for host-only cookies. */
+  domain?: string;
+  /** Cookie path. Defaults to `/`. */
+  path?: string;
+  /** Cookie names never read or written. Explicit deletion and purge are still allowed. */
+  ignoreCookies?: readonly string[];
+  /** Cookie names never written; reads and explicit deletion are allowed. */
+  blockedCookies?: readonly string[];
+  /** Defaults to false. True discards operations while disabled instead of deferring them. */
+  disableCookieDefer?: boolean;
+  /** Overrides browser cookie reads. Return the already encoded value, or an empty string. */
+  getCookie?: (name: string) => string;
+  /** Overrides browser writes. The value includes formatted cookie attributes. */
+  setCookie?: (name: string, value: string) => void;
+  /** Overrides browser deletion. The value includes expiry and scope attributes. */
+  delCookie?: (name: string, value: string) => void;
+}
+
+/** Instance cookie manager, modeled after Application Insights. @public */
+export interface MicrosoftOpenTelemetryBrowserCookieManager {
+  /** Whether this instance currently permits browser cookie access. */
+  isEnabled(): boolean;
+  /** Toggles access. Enabling flushes deferred operations; disabling does not erase cookies. */
+  setEnabled(enabled: boolean): void;
+  /** Gets an encoded cookie value, a pending value while disabled, or an empty string. */
+  get(name: string): string;
+  /**
+   * Sets an already encoded value. Lifetime is in seconds; omit for a session cookie.
+   * True means the operation was accepted, including deferral, not verified browser persistence.
+   * Values must not contain semicolons or control characters; pass scope as arguments instead.
+   */
+  set(name: string, value: string, maxAgeSec?: number, domain?: string, path?: string): boolean;
+  /** Deletes a named cookie, respecting disablement and deferral. After shutdown, deletes immediately. */
+  del(name: string, path?: string): boolean;
+  /** Deletes a named cookie even while disabled, cancelling its deferred write. */
+  purge(name: string, path?: string): boolean;
+}
+
+/**
+ * Optional, startup-only exception attachments. No console interception or log storage is installed.
+ * @public
+ */
+export interface MicrosoftOpenTelemetryBrowserExceptionOptions {
+  /** Include metadata for up to 100 external HTTP(S) scripts currently in the document. Defaults to false. */
+  inclScripts?: boolean;
+  /**
+   * Synchronous application log snapshot, most recent first. Called for each exception log or
+   * when a span containing exception events ends. Failures do not suppress the exception.
+   * Logs are not redacted: return only entries safe to export, without secrets or personal data.
+   */
+  expLog?: () => { logs: readonly string[] };
+  /** Maximum entries from the start of expLog().logs. Defaults to 50; zero disables log attachment. */
+  maxLogs?: number;
 }
 
 /**
@@ -145,13 +250,27 @@ export interface MicrosoftOpenTelemetryBrowserSessionOptions {
  */
 export interface MicrosoftOpenTelemetryBrowserOptions {
   /**
+   * Opt-in exceptionScripts (JSON script metadata) and exceptionLog (newline-separated text).
+   * Each attachment is limited to 8 KiB UTF-8. Script URLs use built-in and redactQueryParams
+   * redaction; inline code and non-HTTP(S) URLs are excluded. Existing attributes take precedence.
+   */
+  expCfg?: MicrosoftOpenTelemetryBrowserExceptionOptions;
+  /** Explicit opt-in; absent configuration installs no synchronization adapter or listener. */
+  extensionConfig?: {
+    AppInsightsCfgSyncPlugin?: MicrosoftOpenTelemetryBrowserConfigurationSyncOptions;
+  };
+  /** Application Insights inactivity lifetime in milliseconds. Zero restores 30 minutes. */
+  sessionRenewalMs?: number | undefined;
+  /** Application Insights maximum session lifetime in milliseconds. Zero restores 24 hours. */
+  sessionExpirationMs?: number | undefined;
+  /**
    * Fixed percentage of traces and Azure Monitor log records retained, from 0 through 100.
    * Omit this option to use the OpenTelemetry SDK's parent-based always-on trace sampler and to
    * disable percentage sampling for Azure Monitor logs.
    */
   samplingPercentage?: number;
   /** Azure Monitor destination. When provided, Azure Monitor export is enabled. */
-  azureMonitor?: AzureMonitorOptions;
+  azureMonitor?: AzureMonitorOptions<string | Promise<string>>;
   /**
    * Resource describing the entity producing telemetry.
    *
@@ -162,52 +281,73 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
    * page belong here. Only its attributes are used; the schema URL is not carried through.
    */
   resource?: Resource;
-  /** Opt-in session tracking. Disabled sessions do not access storage. */
+  /** Session tracking, enabled by default. Disabled sessions do not access storage. */
   session?: MicrosoftOpenTelemetryBrowserSessionOptions;
+  /** Instance cookie controls, independent of Web Storage. Defaults to enabled. */
+  cookieCfg?: MicrosoftOpenTelemetryBrowserCookieConfig;
+  /** Web Storage controls, captured at initialization. Applies only to this handle. */
+  storage?: {
+    /**
+     * Defaults to true. False blocks SDK-managed Web Storage, not cookies. To prevent browser
+     * persistence, also set `cookieCfg: { enabled: false, disableCookieDefer: true }`.
+     * Does not erase existing data or disable collection, network requests, or custom processors.
+     */
+    enabled?: boolean;
+    /**
+     * Literal prefix for SDK cookie names and session storage keys. Defaults to an empty string.
+     * Use a distinct prefix to isolate applications or handles on the same origin.
+     * Existing unprefixed data is not read, migrated, or removed when a prefix is configured.
+     */
+    namePrefix?: string;
+  };
   /**
-   * Opt-in user identity persistence.
+   * User identity persistence configuration. `enabled` defaults to true.
    *
    * @remarks
-   * Spans and logs receive an anonymous `enduser.pseudo.id` unless the record or resource already
-   * has one. It is generated in memory, or
-   * restored from storage when `enabled` is `true`. Set `enabled` to `true` only when anonymous and
-   * authenticated identity may be persisted. The default implementation stores identity in
-   * same-origin `localStorage` under one key shared by every handle in the origin, where it remains
-   * across browser sessions until `userContext.setEnabled(false)` is called or the application
-   * clears it. Initializing with `enabled: false` does not access storage. Any script running in
-   * the origin can read this storage, so do not use raw personally identifiable information,
-   * secrets, or tokens as identity values. Persistence can be changed later through the returned
-   * user context.
+   * By default, spans and logs receive a stable managed `enduser.pseudo.id` unless the record or
+   * resource already has one. The anonymous ID is persisted in a one-year cookie so user
+   * metrics remain stable across page loads and SDK instances. Authenticated user and account IDs
+   * are memory-only unless explicitly stored in a session cookie. Set `enabled` to `false`
+   * to keep authenticated values in memory and disable all managed
+   * identity persistence and anonymous-ID enrichment without accessing storage.
+   *
+   * Cookies are shared by handles with the same prefix, domain and path. Cookies are sent to
+   * matching HTTP endpoints and accessible to page scripts. Do not use raw personally identifiable
+   * information, secrets, or tokens as identity values. The returned user context controls
+   * identity persistence; the cookie manager controls cookie access independently of Web Storage.
    */
   userContext?: { enabled?: boolean };
   /** Advanced trace context and propagation configuration. */
   traces?: MicrosoftOpenTelemetryBrowserTraceOptions;
   /**
-   * Span processors to register with the tracer provider. When omitted, spans export through
-   * default OTLP, or only to Azure Monitor when `azureMonitor` is set. An empty array skips trace
-   * initialization. Ownership transfers when provider startup begins, including failed startup.
+   * Span processors to register with the tracer provider. When omitted, spans export to Azure
+   * Monitor when `azureMonitor` is set; otherwise trace initialization is skipped. An empty array
+   * always skips trace initialization. Ownership transfers when provider startup begins, including failed startup.
    * Do not share processor instances between handles.
+   *
+   * @remarks
+   * Use these in place of Application Insights telemetry initializers. They run before the Azure
+   * Monitor exporter, so attributes set in `onStart` or `onEnding` are exported. Processors are
+   * fixed at startup; to change enrichment later, read application state from the processor.
    */
   spanProcessors?: SpanProcessor[];
   /**
-   * Log record processors to register with the logger provider. When omitted, logs export through
-   * default OTLP, or only to Azure Monitor when `azureMonitor` is set. An empty array skips log
-   * initialization. Ownership transfers when provider startup begins, including failed startup.
+   * Log record processors to register with the logger provider. When omitted, logs export to Azure
+   * Monitor when `azureMonitor` is set; otherwise log initialization is skipped. An empty array
+   * always skips log initialization. Ownership transfers when provider startup begins, including failed startup.
    * Do not share processor instances between handles.
+   *
+   * @remarks
+   * Use these in place of Application Insights telemetry initializers. They run before the Azure
+   * Monitor exporter, so attributes set in `onEmit` are exported. Processors are fixed at startup;
+   * to change enrichment later, read application state from the processor.
    */
   logRecordProcessors?: LogRecordProcessor[];
   /**
-   * Individually imported OpenTelemetry instrumentation instances to register.
-   *
-   * @remarks
-   * No instrumentations are included by default. Construct selected instances with
-   * `enabled: false` to defer collection until their trace and log providers are bound.
-   * Like OpenTelemetry's registration API, registration enables those instances; omit an
-   * instance from this array to opt out. Already-enabled instances are rebound without
-   * calling `enable()` again, but telemetry emitted before initialization cannot be recovered.
-   *
-   * The returned handle owns disabling these instances. Do not share them between SDKs.
-   * Configure collection filters and sanitization on each instance before registration.
+   * Instrumentations owned and disabled by this handle. Do not share instances.
+   * Construct upstream fetch, XHR, console and navigation with `enabled: false` before registration.
+   * Shared patches keep settings isolated. Fetch/XHR require an enabled trace pipeline.
+   * Fetch uses the last writer's trace headers. XHR preserves existing headers.
    */
   instrumentations?: readonly BrowserInstrumentation[];
   /**
@@ -218,6 +358,8 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
    * and subsequent route changes. The page-view ID is its operation trace ID. Otherwise
    * unparented spans and logs share that operation; explicit span contexts are preserved.
    * Page URL and descriptive attributes stay on the page-view record, not on other telemetry.
+   * The initial page continues a valid server trace by default. Set `useServerTraceContext` to
+   * false to opt out. SPA routes start new traces.
    *
    * Collection and operation correlation are on by default; set `enabled: false` to turn both off.
    * Doing so stops collection
@@ -225,6 +367,12 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
    * long before this object exists.
    */
   pageView?: PageViewInstrumentationConfig;
+  /**
+   * Additional case-sensitive query-string and fragment parameter names to redact on captured
+   * fetch/XHR HTTP client URLs and page-view URLs/referrers. Built-in signing and OAuth parameters
+   * and URL credentials remain protected. Captured at initialization.
+   */
+  redactQueryParams?: readonly string[];
 }
 
 /**
@@ -245,30 +393,62 @@ export interface MicrosoftOpenTelemetryBrowserUserContext {
    * previously set account.
    *
    * @throws TypeError when an ID is not a non-empty string.
-   * @throws Error when persistence is enabled and the identity cannot be saved. The previously
-   * persisted identity is removed when possible; otherwise the error reports that clearing
-   * failed. The in-memory identity is still applied.
+   * `storeInCookie` defaults to false. True explicitly stores identity in a session cookie while
+   * user context is enabled. Cookie-manager disablement may defer the write until re-enabled.
    */
-  setAuthenticatedUserContext(userId: string, accountId?: string): void;
+  setAuthenticatedUserContext(userId: string, accountId?: string, storeInCookie?: boolean): void;
   /**
-   * Clears authenticated identity and any persisted authenticated context. If persistence is
-   * enabled but the anonymous identity cannot be saved again, persistence is disabled and a
-   * diagnostic warning is logged.
-   *
-   * @throws Error when persistence is enabled and stale authentication cannot be removed.
+   * Clears authenticated identity and deletes its cookie. Deletion is deferred while the cookie
+   * manager is disabled unless deferral is disabled. Does not change anonymous identity.
    */
   clearAuthenticatedUserContext(): void;
   /**
-   * Enables or disables persistence without changing the current in-memory identity. Disabling
-   * also removes identity persisted by earlier page loads. The stored record is shared by every
-   * handle in the origin, so disabling or signing out through any handle changes that record for
-   * future page loads. Each active handle keeps its own in-memory identity, so update every active
-   * handle to change the identity it applies to telemetry.
-   *
-   * @throws Error when enabling cannot save identity, or when disabling cannot remove identity
-   * this instance persisted.
+   * Enables anonymous identity persistence or disables it and purges both identity cookies,
+   * including pending writes. Retains in-memory authenticated identity. Re-enabling does not
+   * implicitly opt authenticated identity into persistence. Shared cookies affect future page
+   * loads; active handles retain their own identity state. Independent of `storage.enabled`.
    */
   setEnabled(enabled: boolean): void;
+}
+
+/**
+ * Controls registered instrumentations without replacing providers or constructing new modules.
+ * @remarks
+ * IDs use upstream module suffixes (fetch, xhr, console, errors, user-action, web-vitals),
+ * full custom names or "instrumentation". Repeated IDs receive #2, #3, and so on.
+ * Runtime pause/resume supports upstream 0.8.1 fetch, XHR, console, errors, user-action and
+ * the same Web Vitals object only. Page views, navigation, timing and custom modules are
+ * startup/shutdown-only. Web Vitals callbacks remain registered while emission is paused.
+ * Runtime add/remove/replace supports only fetch, XHR, console, errors and user-action.
+ * @public
+ */
+export interface MicrosoftOpenTelemetryBrowserInstrumentations {
+  /** Returns an owned object, or undefined. Do not call its lifecycle or setConfig directly. */
+  get(id: string): BrowserInstrumentation | undefined;
+  /**
+   * Registers a disabled, unowned supported object under an explicit non-empty, unused ID.
+   * Binds this instance's providers, then enables collection subject to its network gate.
+   * Fetch/XHR require an enabled trace pipeline. No modules are imported or constructed.
+   */
+  add(id: string, instrumentation: BrowserInstrumentation): Promise<void>;
+  /**
+   * Disables and removes a supported entry, releasing ownership only after successful cleanup.
+   * In-flight requests can still complete; removing Web Vitals or startup-only modules rejects.
+   */
+  remove(id: string): Promise<void>;
+  /**
+   * Replaces a supported entry with a disabled, unowned supported object, keeping its ID and
+   * requested enablement. The candidate's kind determines its gate. Lifecycle failures attempt
+   * rollback; uncertain objects remain owned for shutdown. Web Vitals replacement rejects.
+   */
+  replace(id: string, instrumentation: BrowserInstrumentation): Promise<void>;
+  /**
+   * Pauses/resumes collection for this instance. Serialized with updateCfg. Rejects unknown IDs,
+   * unsupported modules and operations after shutdown. Resuming never opens a closed network
+   * gate or enables a disabled trace pipeline. In-flight requests can still finish.
+   * Lifecycle failures attempt rollback; failed rollback requires shutdown before further changes.
+   */
+  setEnabled(id: string, enabled: boolean): Promise<void>;
 }
 
 /**
@@ -276,6 +456,39 @@ export interface MicrosoftOpenTelemetryBrowserUserContext {
  * @public
  */
 export interface MicrosoftOpenTelemetryBrowser {
+  /** Present only after explicit configuration of AppInsightsCfgSyncPlugin. */
+  readonly configSync?: MicrosoftOpenTelemetryBrowserConfigurationSync;
+  /** Instance-local controls for already registered instrumentations. Startup remains automatic. */
+  readonly instrumentations: MicrosoftOpenTelemetryBrowserInstrumentations;
+  /**
+   * Updates sampling, session lifetimes and unload-beacon policy without replacing providers.
+   * The percentage must be finite and between 0 and 100. Explicit undefined restores the
+   * parent-based trace sampler and disables percentage sampling for Azure Monitor logs.
+   * Updates affect subsequent sampling decisions, not telemetry already sampled or queued.
+   * Session durations use seconds, with zero disabling expiration. The sessionRenewalMs and
+   * sessionExpirationMs aliases use milliseconds; zero restores the corresponding native default.
+   * Lifetimes retain current session timestamps and take effect on the next managed activity.
+   * Enabling sessions, persistence and browser storage remain startup-only settings.
+   * azureMonitor.disableBeacon and its onunloadDisableBeacon alias control only this handle's
+   * default Azure Monitor sendBeacon fallback. Undefined resets to false. The current policy is
+   * read at each fallback attempt, including for previously queued telemetry, without cancelling
+   * dispatched requests. Keepalive remains first; updates never create or change a destination.
+   *
+   * mergeExisting defaults to true, preserving omitted fields. False replaces the supported
+   * runtime configuration, resetting omitted fields to their defaults; startup options are unchanged.
+   * Calls are serialized and return a Promise with the committed revision and changed paths.
+   * No-op updates retain the revision. Invalid or unsupported fields reject without changes.
+   * New and queued updates reject once shutdown begins.
+   * disableFetchTracking and disableAjaxTracking gate registered fetch/XHR collection only.
+   * Both default to false; undefined restores false. They never register missing modules or
+   * override an explicit instrumentation pause. Requests already sent are not cancelled.
+   */
+  updateCfg(
+    patch: MicrosoftOpenTelemetryBrowserConfigurationUpdate,
+    mergeExisting?: boolean,
+  ): Promise<MicrosoftOpenTelemetryBrowserConfigurationUpdateResult>;
+  /** Returns this instance's cookie manager, independently of its Web Storage policy. */
+  getCookieMgr(): MicrosoftOpenTelemetryBrowserCookieManager;
   /** Mutable user identity and persistence controls. */
   readonly userContext: MicrosoftOpenTelemetryBrowserUserContext;
   /**

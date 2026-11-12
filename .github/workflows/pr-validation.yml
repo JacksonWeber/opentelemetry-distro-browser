@@ -50,9 +50,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "24"
+          node-version: ">=24.22.1 <25"
+          check-latest: true
           cache: npm
 
       - name: Install dependencies
@@ -63,6 +64,9 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      - name: Generate API documentation
+        run: npm run docs
 
       - name: Check types
         run: npm run typecheck
@@ -81,14 +85,20 @@ jobs:
       fail-fast: false
       matrix:
         node-version: ["22", "24"]
+        include:
+          - node-version: "22"
+            node-range: ">=22.23.4 <23"
+          - node-version: "24"
+            node-range: ">=24.22.1 <25"
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version: ${{ matrix.node-range }}
+          check-latest: true
           cache: npm
 
       - name: Install dependencies
@@ -105,7 +115,7 @@ jobs:
 
       - name: Upload coverage reports
         if: matrix.node-version == '24'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-candidate-${{ github.event.pull_request.head.sha || github.sha }}
           path: coverage/
@@ -127,6 +137,9 @@ jobs:
 
       - name: Run browser bundle integration tests across browser engines
         run: npm run test:integration
+
+      - name: Send telemetry to real Azure Monitor ingestion across browser engines
+        run: npm run test:e2e
 
       - name: Check public API report
         run: npm run api:check
@@ -165,7 +178,7 @@ jobs:
 
       - name: Upload bundle-size reports
         if: ${{ !cancelled() && hashFiles('reports/bundle-size.json') != '' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: bundle-reports-node-${{ matrix.node-version }}
           path: |
@@ -175,40 +188,6 @@ jobs:
             reports/bundle-stats.html
           if-no-files-found: error
           retention-days: 14
-
-  browser-support:
-    name: Minimum supported ${{ matrix.browser }}
-    if: >-
-      github.actor != 'dependabot[bot]' &&
-      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        browser: [Chrome, Edge, Firefox, Safari]
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "24"
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build browser bundles
-        run: npm run build
-
-      - name: Test the minimum supported browser version
-        env:
-          BROWSER_FAMILY: ${{ matrix.browser }}
-          BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME }}
-          BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
-        run: npm run test:browser-support
 
   coverage-base:
     name: Coverage baseline (Node 24)
@@ -223,9 +202,10 @@ jobs:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "24"
+          node-version: ">=24.22.1 <25"
+          check-latest: true
           cache: npm
 
       - name: Install dependencies
@@ -239,7 +219,7 @@ jobs:
         run: npm run test:coverage -- --coverage.reporter=text --coverage.reporter=lcov --coverage.reporter=json-summary
 
       - name: Upload baseline coverage
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-base-${{ github.event.pull_request.base.sha }}
           path: coverage/

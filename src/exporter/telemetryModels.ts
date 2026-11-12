@@ -5,7 +5,7 @@ export type SeverityLevel = 0 | 1 | 2 | 3 | 4;
 
 interface EnvelopeData {
   readonly ver: 2;
-  readonly properties?: Readonly<Record<string, string>>;
+  readonly properties?: Readonly<Record<string, string | boolean>>;
   readonly measurements?: Readonly<Record<string, number>>;
 }
 
@@ -76,6 +76,17 @@ export interface CustomEventData extends EnvelopeData {
   readonly name: string;
 }
 
+export interface MetricData extends EnvelopeData {
+  readonly metrics: readonly {
+    readonly name: string;
+    readonly kind: 0;
+    readonly value: number;
+    readonly count?: number;
+    readonly min?: number;
+    readonly max?: number;
+  }[];
+}
+
 export type AzureMonitorBaseData =
   | RequestData
   | RemoteDependencyData
@@ -83,15 +94,16 @@ export type AzureMonitorBaseData =
   | ExceptionData
   | PageViewData
   | PageViewPerformanceData
-  | CustomEventData;
+  | CustomEventData
+  | MetricData;
 
 export interface AzureMonitorEnvelope<T extends AzureMonitorBaseData = AzureMonitorBaseData> {
   readonly name: string;
   readonly time: string;
   readonly iKey: string;
-  readonly sampleRate: number;
+  readonly sampleRate?: number;
   readonly tags: Readonly<Record<string, string>>;
-  readonly ver: 1;
+  readonly ver?: 1;
   readonly data: {
     readonly baseType:
       | "RequestData"
@@ -100,7 +112,8 @@ export interface AzureMonitorEnvelope<T extends AzureMonitorBaseData = AzureMoni
       | "ExceptionData"
       | "PageViewData"
       | "PageviewPerformanceData"
-      | "EventData";
+      | "EventData"
+      | "MetricData";
     readonly baseData: T;
   };
 }

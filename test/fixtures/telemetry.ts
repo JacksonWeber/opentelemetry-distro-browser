@@ -2,10 +2,13 @@
 // Licensed under the MIT License.
 
 import { SpanKind, SpanStatusCode, type SpanContext } from "@opentelemetry/api";
+import { ConsoleInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/console";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import {
   BatchLogRecordProcessor,
   InMemoryLogRecordExporter,
+  LoggerProvider,
+  SimpleLogRecordProcessor,
   type ReadableLogRecord,
 } from "@opentelemetry/sdk-logs";
 import {
@@ -15,6 +18,19 @@ import {
   type ReadableSpan,
 } from "@opentelemetry/sdk-trace-base";
 import { createDeterministicIdGenerator } from "./ids.js";
+
+/** Disable the instrumentation before shutting down its provider. */
+export function createConsolePipeline(
+  Processor:
+    typeof SimpleLogRecordProcessor | typeof BatchLogRecordProcessor = SimpleLogRecordProcessor,
+) {
+  const exporter = new InMemoryLogRecordExporter();
+  const provider = new LoggerProvider({ processors: [new Processor({ exporter })] });
+  const instrumentation = new ConsoleInstrumentation({ enabled: false, logMethods: ["warn"] });
+  instrumentation.setLoggerProvider(provider);
+  instrumentation.enable();
+  return { exporter, provider, instrumentation };
+}
 
 /**
  * Local exporters and processors only, without registering global providers.

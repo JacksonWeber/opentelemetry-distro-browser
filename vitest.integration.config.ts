@@ -1,15 +1,28 @@
 import { defineConfig } from "vitest/config";
 import config, { browserInstances } from "./vitest.config.js";
-import { loadSnippetPage } from "./test/integration/snippetPageCommand.js";
-import { verifyUnloadDelivery } from "./test/integration/unloadCommand.js";
+import {
+  inspectCrossSiteCookieCleanup,
+  loadSnippetPage,
+} from "./test/integration/snippetPageCommand.js";
+import { inspectPageVisitNamespaces } from "./test/integration/pageVisitNamespaceCommand.js";
+import { verifyReloadDelivery, verifyUnloadDelivery } from "./test/integration/unloadCommand.js";
 
 export default defineConfig({
   ...config,
+  resolve: { ...config.resolve, alias: [] },
   test: {
     ...config.test,
+    // Keep unit mocks out of integration tests.
+    setupFiles: [],
     browser: {
       ...config.test?.browser,
-      commands: { loadSnippetPage, verifyUnloadDelivery },
+      commands: {
+        inspectCrossSiteCookieCleanup,
+        loadSnippetPage,
+        inspectPageVisitNamespaces,
+        verifyReloadDelivery,
+        verifyUnloadDelivery,
+      },
       instances: browserInstances,
     },
     globalSetup: ["./test/integration/redirectServer.ts", "./test/integration/cdnServer.ts"],

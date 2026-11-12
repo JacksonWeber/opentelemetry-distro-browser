@@ -12,6 +12,7 @@ import type { AzureMonitorEnvelope } from "../../src/exporter/telemetryModels.js
 import type { MicrosoftOpenTelemetryBrowser } from "../../src/types.js";
 import { TEST_INSTRUMENTATION_KEY } from "../fixtures/azureMonitor.js";
 import { createInMemoryPipeline } from "../fixtures/telemetry.js";
+import { withoutSdkStats } from "../fixtures/sdkStats.js";
 
 const ENDPOINT = "https://ingestion.example.test/v2/track";
 const REQUEST = {
@@ -46,8 +47,8 @@ describe.each(["index.js", "index.min.js"])("export instrumentation through %s",
       const distro: typeof import("../../src/index.js") = await import(/* @vite-ignore */ url.href);
       const nativeFetch = globalThis.fetch.bind(globalThis);
       const transport = vi.fn(nativeFetch);
-      vi.stubGlobal("fetch", transport);
-      instrumentation = new FetchInstrumentation();
+      vi.stubGlobal("fetch", withoutSdkStats(transport));
+      instrumentation = new FetchInstrumentation({ enabled: false });
       const runId = crypto.randomUUID();
       const ingestionEndpoint = `${inject("ingestionEndpoint")}${runId}`;
       const pipeline = createInMemoryPipeline();
@@ -112,12 +113,22 @@ describe.each(["index.js", "index.min.js"])("export instrumentation through %s",
       const url = new URL(path, import.meta.url);
       const distro: typeof import("../../src/index.js") = await import(/* @vite-ignore */ url.href);
       const transport = vi.fn<typeof fetch>().mockImplementation(async () => new Response(null));
-      vi.stubGlobal("fetch", transport);
+      vi.stubGlobal("fetch", withoutSdkStats(transport));
       instrumentation = new FetchInstrumentation({
         enabled: alreadyEnabled,
         propagateTraceHeaderCorsUrls: [ENDPOINT],
       });
       const pipeline = createInMemoryPipeline();
+      if (alreadyEnabled) {
+        await expect(
+          distro.useMicrosoftOpenTelemetry({
+            ...pipeline.options,
+            instrumentations: [instrumentation],
+            pageView: { enabled: false },
+          }),
+        ).rejects.toThrow("browser-instrumentation-active");
+        return;
+      }
       handle = await distro.useMicrosoftOpenTelemetry({
         ...pipeline.options,
         azureMonitor: {
@@ -166,7 +177,7 @@ describe.each(["index.js", "index.min.js"])("export instrumentation through %s",
 async function startInstrumentedPipeline() {
   const transport = vi.fn<typeof fetch>().mockImplementation(async () => new Response(null));
   vi.stubGlobal("fetch", transport);
-  instrumentation = new FetchInstrumentation();
+  instrumentation = new FetchInstrumentation({ enabled: false });
   const pipeline = createInMemoryPipeline();
   handle = await useMicrosoftOpenTelemetry({
     ...pipeline.options,
@@ -183,7 +194,11 @@ it.each([
 ])("suppresses $name sends without suppressing application context", async (options) => {
   const { pipeline, transport } = await startInstrumentedPipeline();
   if (!options.compression) vi.stubGlobal("CompressionStream", undefined);
-  const sender = new Sender({ endpoint: ENDPOINT, fetch: globalThis.fetch });
+  // Compression only applies to first-party ingestion; fetch is stubbed so nothing leaves the test.
+  const sender = new Sender({
+    endpoint: "https://dc.services.visualstudio.com/v2/track",
+    fetch: globalThis.fetch,
+  });
   const parent = trace.getTracer("sender-test").startSpan("parent");
   const parentContext = trace.setSpan(context.active(), parent);
   const sending = context.with(parentContext, () => {

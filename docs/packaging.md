@@ -10,6 +10,8 @@ for the browser:
 | `dist/commonjs/index.cjs`            | CommonJS package entry point                                                  |
 | `dist/esm/instrumentations.js`       | Tree-shakeable ESM instrumentation loader                                     |
 | `dist/commonjs/instrumentations.cjs` | CommonJS instrumentation loader                                               |
+| `dist/esm/debug.js`                  | Optional ESM in-page telemetry debugger                                       |
+| `dist/commonjs/debug.cjs`            | Optional CommonJS in-page telemetry debugger                                  |
 | `dist/esm/index.min.js`              | Minified ESM bundle for browser size checks                                   |
 | `dist/browser/*umd*.js`              | UMD SDK and instrumentation bundles for CommonJS, AMD, RequireJS, and globals |
 | `dist/browser/*iife*.js`             | IIFE SDK and instrumentation bundles for direct classic-script loading        |
@@ -25,21 +27,39 @@ and point to the same files selected by the explicit `require` and `import` cond
 OpenTelemetry packages, so they target bundlers and Node.js versions with `require(esm)` support;
 CommonJS test runners such as Jest must transform those dependencies.
 
+The development-only `./debug` entry exports `createTelemetryDebugger`. It is not included in the
+root, instrumentation, or CDN bundles. Compose it with standard processor and exporter contracts
+to inspect emitted records and export results in the page, with optional bounded User Timing
+marks and measures. Importing it does not mount a panel or initialize telemetry. See the
+[debugger sample and browser checklist](../samples/README.md#in-page-debugger).
+
 The `opentelemetry-browser.*` SDK bundles are self-contained and expose `Microsoft.OpenTelemetry`.
 They also expose the standard OpenTelemetry APIs used by the bundled SDK, so direct-script
-consumers can emit manual telemetry without loading a second API copy. The
-`opentelemetry-browser-instrumentations.*` bundles expose `Microsoft.OpenTelemetryInstrumentations`
-and include their own API copy, which shares state with the SDK bundle through the OpenTelemetry
-global registry. Use IIFE when RequireJS may already be present; UMD deliberately registers with
+consumers can emit manual telemetry without loading a second API copy. They inline every
+instrumentation and expose `getInstrumentations`, because a page loading them from the CDN has no
+bundler to add instrumentations later. They omit the opt-in browser and user-agent resource
+detectors and customer SDK Stats, which are available from the npm package only. CDN builds remove
+customer reporting and pipeline accounting at build time, rather than only disabling them at runtime.
+The loader snippet does not accept `azureMonitor.sdkStats`, and CDN exporters and initialization
+reject that option. Internal SDK Stats remains unchanged. The
+`opentelemetry-browser-instrumentations.*` bundles expose
+only `Microsoft.OpenTelemetryInstrumentations` and include their own API copy, which shares state
+with the SDK bundle through the OpenTelemetry global registry. Use IIFE when RequireJS may already be present; UMD deliberately registers with
 AMD loaders.
 
 `npm run test:build` checks the output inventory, ESM and CommonJS package resolution, declaration
 consumption with TypeScript Node16, NodeNext, and Bundler resolution, source maps, minification,
 and tree shaking. `npm run test:integration` imports the ESM bundles and loads every minified and
 unminified UMD and IIFE artifact in Chromium, Firefox, and WebKit. It exercises both global and AMD
-loading.
+loading. `npm run test:e2e` sends page views, spans, logs and exceptions from the ESM build and the
+minified CDN bundle to the real Azure Monitor ingestion service in all three engines and requires
+every item to be accepted. It uses the public test resource that the Application Insights
+JavaScript SDK end-to-end tests use and needs network access.
 The `sideEffects: false` contract remains in place; importing the package does not initialize
 telemetry.
+
+The minified ESM artifact uses three Terser compression passes without property mangling or unsafe
+compression options. The self-contained UMD and IIFE bundles use SWC as described below.
 
 `npm run size` bundles real consumers of every published JavaScript entry point with Rollup,
 tree-shakes and minifies each scenario, and reports gzip and Brotli transfer sizes. It measures the
@@ -55,11 +75,12 @@ in each Node job's check summary and uploads all three files as build artifacts.
 
 Every executable published entry point has absolute minified, gzip and Brotli budgets:
 
-| Entry point          | Minified |  Gzip | Brotli |
-| -------------------- | -------: | ----: | -----: |
-| `.`                  |   115 kB | 34 kB |  30 kB |
-| `./instrumentations` |    64 kB | 24 kB |  22 kB |
-| `./snippet`          |     2 kB |  1 kB |   1 kB |
+| Entry point          | Minified |    Gzip |  Brotli |
+| -------------------- | -------: | ------: | ------: |
+| `.`                  |   170 kB | 53.5 kB |   47 kB |
+| `./instrumentations` |    64 kB |   24 kB |   22 kB |
+| `./debug`            |    16 kB |    6 kB |    5 kB |
+| `./snippet`          |  6.75 kB |    3 kB | 2.75 kB |
 
 The generated JSON and Markdown reports show the measured values, ceilings and result for each
 entry point. During alpha releases, violations are report-only so the baselines can stabilize.
@@ -71,24 +92,49 @@ comparison remains informational and does not replace the absolute gate.
 emits them, so it must run after a production build. Their budgets block in every release channel,
 including alpha:
 
-| Artifact                                                   | Minified |  Gzip | Brotli |
-| ---------------------------------------------------------- | -------: | ----: | -----: |
-| `opentelemetry-browser.{iife,umd}.min.js`                  |   135 kB | 41 kB |  36 kB |
-| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |    63 kB | 19 kB |  17 kB |
+| Artifact                                                   | Minified |    Gzip | Brotli |
+| ---------------------------------------------------------- | -------: | ------: | -----: |
+| `opentelemetry-browser.{iife,umd}.min.js`                  |   192 kB | 61.5 kB |  54 kB |
+| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |    63 kB |   19 kB |  17 kB |
+
+SWC minifies the browser bundles and shortens `_`-prefixed properties, the TypeScript `private`
+convention used by OpenTelemetry, so source code keeps descriptive names. Members that
+`sharedBrowserPatches.ts` reads on instrumentations from another bundle keep their names; add any
+new cross-bundle `_` member to `crossBundleProperties` in `rollup.config.mjs`. An integration test
+passes instrumentations from the minified instrumentation bundle to the minified SDK bundle.
 
 The browser bundles contain only ES2022 syntax. `npm run test:build` parses every emitted UMD and
-IIFE file as an ES2022 script and requires a budget for every minified browser bundle. The package
-`browserslist` declares Chrome 94, Edge 94, Firefox 93, and Safari 15.4 as the minimum supported
-versions. `npm run test:browser-support` loads every SDK and instrumentation UMD and IIFE artifact
-and every browser-bundled ESM and CommonJS npm entry in those exact releases through BrowserStack.
-It exercises SDK initialization, flushing, and shutdown and default instrumentation selection. Set
-`BROWSER_FAMILY` to one declared family and provide `BROWSERSTACK_USERNAME` and
-`BROWSERSTACK_ACCESS_KEY`; the PR validation workflow runs one browser family per matrix job.
+IIFE file as an ES2022 script and requires a budget for every minified browser bundle. It also scans
+each bundle for post-ES2022 built-ins such as `Array.prototype.toSorted` or `Object.groupBy`;
+the only allowed exception is ES2023 `Array.prototype.findLast`, which the upstream web-vitals code
+uses. These checks set a language ceiling; they do not validate specific browser versions, which
+remain provisional until exact supported versions are declared and tested.
 
 ## CDN and loader snippet
 
-Each release publishes the UMD and IIFE bundles to an immutable versioned CDN location, following
-the Application Insights JavaScript SDK release layout:
+The publisher supports explicit preview and public destinations with immutable versioned filenames:
+
+```text
+https://js.monitor.azure.com/next/otel/<module>.<version>.<format>
+https://js.monitor.azure.com/scripts/otel/<module>.<version>.<format>
+```
+
+Select one destination per invocation after `npm run build`:
+
+```sh
+npm run cdn:publish -- --account <storage-account> --destination public
+npm run cdn:publish -- --account <storage-account> --destination next
+```
+
+Both copies retain the full package version, including its beta suffix. For `0.1.0-beta.1`, the
+default SDK URLs are
+`https://js.monitor.azure.com/next/otel/opentelemetry-browser.0.1.0-beta.1.min.js` and
+`https://js.monitor.azure.com/scripts/otel/opentelemetry-browser.0.1.0-beta.1.min.js`.
+Instrumentation bundles, UMD variants, source maps, size badges and integrity metadata accompany
+the SDK in each destination. Publishing adapts the integrity URLs to the selected destination in
+temporary local files without changing the prepared `cdn/` files or bundle bytes.
+
+Omitting `--destination` retains the legacy version-derived channel location:
 
 ```text
 https://js.monitor.azure.com/scripts/otel/<channel>/<module>.<version>.<format>
@@ -98,25 +144,101 @@ The channel is `b` for stable releases and the prerelease identifier (`alpha`, `
 otherwise. Each module (`opentelemetry-browser` and `opentelemetry-browser-instrumentations`) is
 published as `min.js` and `js` (IIFE), and `umd.min.js` and `umd.js` (UMD), each with its source
 map, plus `<module>.<version>.integrity.json`. The integrity file lists every file's CDN URL and
-its SHA-256, SHA-384 and SHA-512 Subresource Integrity values.
+its SHA-256, SHA-384 and SHA-512 Subresource Integrity values. `<module>.<version>.size.svg` is a
+badge showing the minified and gzip size of that module's `min.js` bundle.
 
 `npm run build` prepares these files in `cdn/` from the same `dist/browser` bundles, renaming only
 the source map references. `npm run cdn:publish -- --account <storage-account>` uploads them with
 the Azure CLI, using Entra ID login unless `AZURE_STORAGE_SAS_TOKEN` is set, with
 `public, max-age=31536000, immutable, no-transform` caching. It uploads the integrity files last,
 never overwrites a published file, skips files that are already published with identical content,
-and fails if a published file differs. Use `--dry-run` to list the URLs without uploading.
+and fails if a published file differs. Use `--dry-run` to list the URLs without Azure calls,
+uploads or public verification. `--container` defaults to `cdn`; `--container tst` uploads to the
+isolated test container and skips production CDN verification, independently of `--dry-run`.
+Neither destination selection nor test mode changes npm tags, versions or beta release triggers.
+Publishing never deletes or rewrites existing legacy channel assets.
+
+### Major-version aliases and promotion
+
+Customers can use `opentelemetry-browser.0.min.js` to receive updates within major version `0`.
+These aliases deliberately omit the beta suffix. The same major-only naming applies to both
+modules, every IIFE/UMD format, source maps, size badges and integrity files:
+
+```text
+https://js.monitor.azure.com/next/otel/opentelemetry-browser.0.min.js
+https://js.monitor.azure.com/scripts/otel/opentelemetry-browser.0.min.js
+```
+
+Major aliases use `public, max-age=1800, no-transform` caching. Their source map references and
+map `file` fields use the major-only names; their integrity metadata records the full activated
+version and hashes the actual alias bundle bytes. Fully versioned files keep their one-year
+immutable caching and cannot be replaced.
+
+Successful `--destination next` publication activates next aliases after immutable-file verification.
+Public versioned publication never changes public aliases. A caller publishing both destinations
+must publish **public first, then next**, so next activation follows both successful uploads.
+Promote an already-published version to public aliases explicitly:
+
+```sh
+npm run cdn:activate -- --account <storage-account> --destination public
+```
+
+This command requires fresh `cdn/` files for the selected full version, not stale build artifacts.
+For scheduled promotion without local build artifacts, download the immutable release from storage:
+
+```sh
+node scripts/activate-cdn.mjs --account <storage-account> --destination public --version 0.1.0-beta.1 --from-storage
+```
+
+`--version` defaults to `package.json`; `--from-storage` uses that exact published version and
+cleans up its temporary downloads. Activation checks every immutable object's content before any
+alias write and verifies its production CDN URLs unless `--container tst` is selected. It skips
+identical aliases, uses the observed ETag when replacing an alias, and requires absence when
+creating one. Missing versions, content differences and failed conditional writes fail activation.
+All activation clients share a storage lease on
+`<destination>/.major-<major>.activation.lock` in the selected container. Its 60-second lease
+renews during activation and before alias writes; a competing activation fails immediately instead
+of waiting. Renewal failure cancels outstanding Azure work and stops activation; release failures
+are reported, and an abandoned lease expires automatically. Azure CLI operations are bounded to
+30 seconds so renewal can run while commands are in progress. The lock blob itself is not a
+customer artifact and uses `no-store` caching.
+
+Both publication and activation handle `SIGINT`/`SIGTERM` by cancelling active Azure commands,
+stopping further uploads, and awaiting lease and temporary-file cleanup before exiting with
+status 130/143. Cancellation kills isolated POSIX process groups or Windows process trees;
+lease release is attempted separately even after cancellation. This cannot undo writes already
+accepted by storage or provide an atomic multi-file rollback.
+
+The lease serializes writers, but readers still have no atomic multi-file view: interrupted
+activation can leave a partially updated set until a successful retry, and clients can retain
+previous aliases until the 30-minute cache expires. Integrity files are uploaded last.
+`--dry-run` makes no Azure or CDN calls; `--container tst` confines writes to the test container.
+`--destination next` is also supported for an explicit activation retry.
+
+After uploading, `cdn:publish` runs `npm run cdn:verify`, which fetches every public URL and fails
+unless each returns 200 with the expected `Content-Type`, the immutable `Cache-Control` directives,
+`Access-Control-Allow-Origin: *`, bytes identical to `cdn/`, and integrity files whose hashes match
+the served bundles. Local integrity URLs are adapted for comparison to the selected destination.
+Use `npm run cdn:verify -- --destination next` or `--destination public` to verify that destination;
+omitting the option verifies the legacy channel. `--remote-only` skips the local comparison to
+audit an earlier release.
+Use `--major --destination public --version <full-version>` to audit promoted aliases after CDN
+caches expire; it checks their short cache policy, full activated version and alias-specific hashes.
 
 The `./snippet` helper generates the copy/paste loader. Without `src`, it loads the `min.js` IIFE
-bundle for the package version, so the snippet and the bundle versions always match. The loader
-reads the `Microsoft.OpenTelemetry` global, which a UMD bundle does not set when an AMD loader is
+bundle for the package version from the legacy channel, so the snippet and the bundle versions
+always match. Set `src` to an explicit preview/public versioned or major-alias URL to load a new
+destination. A fixed `integrity` value pins the current bytes; omit it for an auto-updating alias
+or update it together with the alias. It enables the
+same defaults as `getInstrumentations()`, `fetch` and XHR, alongside Azure Monitor export and page
+views. The loader reads the `Microsoft.OpenTelemetry` global, which a UMD bundle does not set when an AMD loader is
 present. Add the generated script to the page `<head>` and replace `CHANNEL`, `VERSION`,
 `YOUR_CONNECTION_STRING` and `YOUR_INTEGRITY` in the configuration object at its end:
 
 <!-- prettier-ignore -->
 ```html
 <script>
-!(function(w,d,c){var s=d.createElement("script");w.microsoftOpenTelemetry=new Promise(function(resolve,reject){s.src=c.src;s.crossOrigin=c.crossOrigin;if(c.integrity)s.integrity=c.integrity;s.onload=function(){var sdk=w.Microsoft&&w.Microsoft.OpenTelemetry;if(!sdk||typeof sdk.useMicrosoftOpenTelemetry!=="function"){reject(new Error("OpenTelemetry browser bundle did not expose Microsoft.OpenTelemetry"));return}Promise.resolve().then(function(){return sdk.useMicrosoftOpenTelemetry({azureMonitor:{connectionString:c.connectionString}})}).then(resolve,reject)};s.onerror=function(){reject(new Error("OpenTelemetry browser bundle failed to load: "+c.src))};d.head.appendChild(s)})})(window,document,{"src":"https://js.monitor.azure.com/scripts/otel/CHANNEL/opentelemetry-browser.VERSION.min.js","connectionString":"YOUR_CONNECTION_STRING","crossOrigin":"anonymous","integrity":"YOUR_INTEGRITY"});
+!(function(w,d,c){w.microsoftOpenTelemetry=new Promise(function(resolve,reject){function l(u){var s=d.createElement("script");s.src=u;s.crossOrigin=c.crossOrigin;if(c.integrity)s.integrity=c.integrity;s.onload=function(){var sdk=w.Microsoft&&w.Microsoft.OpenTelemetry;if(!sdk||typeof sdk.useMicrosoftOpenTelemetry!=="function"){reject(new Error("OpenTelemetry browser bundle did not expose Microsoft.OpenTelemetry"));return}Promise.resolve().then(function(){return typeof sdk.getInstrumentations==="function"?sdk.getInstrumentations(c.instrumentationOptions):[]}).then(function(i){var o=c.cfg;o.instrumentations=i;if(c.resourceAttributes)o.resource=sdk.resourceFromAttributes(c.resourceAttributes);return sdk.useMicrosoftOpenTelemetry(o)}).then(resolve,reject)};s.onerror=function(){reject(new Error("OpenTelemetry browser bundle failed to load: "+u))};d.head.appendChild(s)}l(c.src)})})(window,document,{"src":"https://js.monitor.azure.com/scripts/otel/CHANNEL/opentelemetry-browser.VERSION.min.js","crossOrigin":"anonymous","integrity":"YOUR_INTEGRITY","cfg":{"azureMonitor":{"connectionString":"YOUR_CONNECTION_STRING"}}});
 </script>
 ```
 
@@ -126,10 +248,39 @@ or rejects when the bundle fails to load, fails its integrity check or fails to 
 Content Security Policy, allow the snippet's hash or nonce and the CDN origin in `script-src`, and
 the Azure Monitor ingestion origin in `connect-src`.
 
+`getSdkLoaderScript()` also accepts the JSON-serializable distribution options: `samplingPercentage`,
+`azureMonitor.disableBeacon`, `session`, `userContext`, and the data-only `pageView` settings
+(`enabled`, `redactedQueryParams`, `softNavigationSettleTimeoutMs`, `useNavigationApiIfAvailable`).
+They are inlined into the configuration object's `cfg`, which the loader passes to
+`useMicrosoftOpenTelemetry` unchanged with the connection string in `cfg.azureMonitor`. Two settings
+are applied by the bundle instead: `instrumentationOptions`, the `getInstrumentations()` options,
+such as `{ errors: { enabled: true } }`, which default to `fetch` and XHR; and `resourceAttributes`,
+string, number or boolean attributes such as `service.name` that the bundle's
+`Microsoft.OpenTelemetry.resourceFromAttributes` turns into the `resource` option. Optional settings
+that are not configured are omitted from the generated script. The helper throws a `TypeError` for a
+value of the wrong type or one that JSON cannot represent, such as a function or regular expression.
+Hooks, processors, exporters, context managers, propagators and resource detectors require the npm
+package.
+
+Three loader options mirror the Application Insights loader and add code to the generated script
+only when set, so the default snippet stays small:
+
+| Option              | Application Insights | Behavior                                                                                                                                                                                                           |
+| ------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `loadDelay`         | `ld`                 | Milliseconds to wait before adding the bundle's script element. Negative values are rejected; the loader never blocks page load.                                                                                   |
+| `cdnFallback`       | `cr`                 | When the bundle fails to load, retries it from each backup host: `js.cdn.applicationinsights.io`, `js.cdn.monitor.azure.com`, `js0.` and `js2.` variants. Requires `src` on one of them or `js.monitor.azure.com`. |
+| `reportLoadFailure` | Load failure report  | After the last attempt fails, posts an `SDKLoadFailed` exception to the ingestion endpoint resolved from the connection string at generation time.                                                                 |
+
+Unlike the Application Insights loader, fallback and failure reporting are off by default. With
+`cdnFallback`, allow the backup hosts in `script-src`; with `reportLoadFailure`, the ingestion
+origin must already be allowed in `connect-src`.
+
 `npm run test:integration` loads the prepared CDN bundle cross-origin into a plain HTML page
 through the built snippet, under such a policy, in Chromium, Firefox, and WebKit. It verifies that
-page-view and span telemetry reaches an Azure Monitor ingestion endpoint, and that integrity
-mismatches and missing bundles reject initialization.
+page-view, span, `fetch` and XHR dependency telemetry reaches an Azure Monitor ingestion endpoint,
+that an instrumentation enabled through `instrumentationOptions` reports telemetry tagged with the
+configured `resourceAttributes`, that integrity mismatches and missing bundles reject
+initialization, and that `reportLoadFailure` reports a missing bundle.
 
 ## Performance measurements
 
