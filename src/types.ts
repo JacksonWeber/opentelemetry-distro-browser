@@ -75,7 +75,8 @@ export interface DependencyInstrumentationOptions {
    * @remarks
    * Attributes are `browser.dependency.duration` and `browser.dependency.<phase>.duration`
    * for dns, connect, tls, request, response, and redirect. Missing or ambiguous entries are
-   * omitted. Phase timings hidden by Timing-Allow-Origin are omitted rather than inferred.
+   * omitted, including overlapping same-URL requests and requests still in flight when tracking
+   * pauses. Phase timings hidden by Timing-Allow-Origin are omitted rather than inferred.
    * No observer, retry timer, or resource-buffer mutation is introduced.
    */
   enableResourceTiming?: boolean;

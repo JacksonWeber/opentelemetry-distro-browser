@@ -29,7 +29,13 @@ const SENSITIVE_HEADERS = [
 interface RequestData {
   url: string;
   start: number;
+  timing?: PendingTiming;
   headers?: Headers;
+}
+
+interface PendingTiming {
+  count: number;
+  ambiguous: boolean;
 }
 
 interface Quota {
@@ -63,6 +69,10 @@ function setDefaultAttribute(span: Span, name: string, value: AttributeValue): v
 
 /** Uses only an unambiguous completed entry, without waiting or changing the browser's buffer. */
 export function addDependencyTiming(span: Span, request: RequestData, initiatorType: string): void {
+  if (request.timing?.ambiguous) {
+    diag.debug("Dependency resource timing unavailable or ambiguous");
+    return;
+  }
   const end = performance.now();
   const resources = performance.getEntriesByName(request.url, "resource");
   const hash = request.url.indexOf("#");
@@ -158,6 +168,7 @@ export function createDependencyEnrichment(options: DependencyInstrumentationOpt
     let enabled = false;
     let current: RequestData | undefined;
     const requests = new WeakMap<Span, RequestData>();
+    const pending = new Map<string, PendingTiming>();
     const cleanups: (() => void)[] = [];
     const enable = instrumentation.enable.bind(instrumentation);
     const disable = instrumentation.disable.bind(instrumentation);
@@ -201,6 +212,11 @@ export function createDependencyEnrichment(options: DependencyInstrumentationOpt
     }
 
     function duringRequest<T>(request: RequestData | undefined, run: () => T): T {
+      if (request && config.enableResourceTiming) {
+        const competing = pending.get(request.url.split("#", 1)[0]);
+        if (competing) competing.ambiguous = true;
+        request.timing = competing ?? { count: 0, ambiguous: false };
+      }
       const previous = current;
       current = request;
       try {
@@ -257,6 +273,10 @@ export function createDependencyEnrichment(options: DependencyInstrumentationOpt
                 const span = tracer.startSpan(name, options, parent);
                 if (current && span.isRecording()) {
                   requests.set(span, current);
+                  if (current.timing) {
+                    current.timing.count++;
+                    pending.set(current.url.split("#", 1)[0], current.timing);
+                  }
                   const headers = current.headers;
                   if (config.captureRequestHeaders && headers) {
                     enrich(span, () => captureHeaders(span, "request", headers));
@@ -270,6 +290,8 @@ export function createDependencyEnrichment(options: DependencyInstrumentationOpt
       },
       enable(): void {
         if (enabled) return;
+        if (cleanups.length)
+          throw new Error("Dependency cleanup incomplete; disable before enabling");
         enable();
         if (typeof document === "undefined") return;
         enabled = true;
@@ -286,10 +308,14 @@ export function createDependencyEnrichment(options: DependencyInstrumentationOpt
       },
       disable(): void {
         enabled = false;
+        // Once wrappers are removed, competing requests are no longer observable.
+        for (const timing of pending.values()) timing.ambiguous = true;
+        pending.clear();
         const errors: unknown[] = [];
-        for (const cleanup of cleanups.splice(0).reverse()) {
+        for (let index = cleanups.length - 1; index >= 0; index--) {
           try {
-            cleanup();
+            cleanups[index]();
+            cleanups.splice(index, 1);
           } catch (error) {
             errors.push(error);
           }
@@ -312,8 +338,12 @@ export function createDependencyEnrichment(options: DependencyInstrumentationOpt
       finish(span: Span): void {
         const request = requests.get(span);
         requests.delete(span);
-        if (config.enableResourceTiming && request) {
-          addDependencyTiming(span, request, initiatorType);
+        if (request?.timing) {
+          const key = request.url.split("#", 1)[0];
+          if (--request.timing.count === 0 && pending.get(key) === request.timing) {
+            pending.delete(key);
+          }
+          enrich(span, () => addDependencyTiming(span, request, initiatorType));
         }
       },
       installFetch(): void {
@@ -442,8 +472,8 @@ export function createDependencyEnrichment(options: DependencyInstrumentationOpt
               captureHeaders(span, "response", response.headers);
             }
             complete(span, response);
-            state.finish(span);
           });
+          state.finish(span);
           original.applyCustomAttributesOnSpan?.(span, request, response);
         },
       });
@@ -467,8 +497,8 @@ export function createDependencyEnrichment(options: DependencyInstrumentationOpt
               captureHeaders(span, "response", headers);
             }
             complete(span, xhr);
-            state.finish(span);
           });
+          state.finish(span);
           original.applyCustomAttributesOnSpan?.(span, xhr);
         },
       });

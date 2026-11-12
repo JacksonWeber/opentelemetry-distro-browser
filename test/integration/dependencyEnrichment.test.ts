@@ -203,6 +203,67 @@ describe.each<Transport>(["fetch", "xhr"])("%s dependency enrichment", (transpor
     expect(span.attributes["browser.dependency.response.duration"]).toBeUndefined();
   });
 
+  it("does not use a later same-URL entry when the first request's timing is dropped", async () => {
+    let now = 100;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    if (transport === "fetch") {
+      vi.spyOn(globalThis, "fetch").mockImplementation((...args) => {
+        now += 10;
+        return originalFetch(...args);
+      });
+    } else {
+      vi.spyOn(XMLHttpRequest.prototype, "send").mockImplementation(function (
+        this: XMLHttpRequest,
+        body,
+      ) {
+        now += 10;
+        return originalSend.call(this, body);
+      });
+    }
+    const url = `${endpoint}?delay=50`;
+    const entry = {
+      entryType: "resource",
+      name: url,
+      initiatorType: transport === "fetch" ? "fetch" : "xmlhttprequest",
+      startTime: 125,
+      duration: 55,
+      requestStart: 130,
+      responseStart: 160,
+      responseEnd: 180,
+    } as PerformanceResourceTiming;
+    vi.spyOn(performance, "getEntriesByName").mockImplementation((name) =>
+      name === url ? [entry] : [],
+    );
+    const pipeline = await start({ enableResourceTiming: true, captureRequestHeaders: true });
+    const first = send(transport, url, [["x-public", "first"]]);
+    now = 120;
+    const second = send(transport, url, [["x-public", "second"]]);
+    now = 200;
+    await Promise.all([first, second]);
+    const spans = await pipeline.captured(2);
+    const findSpan = (header: string) =>
+      spans.find((span) => {
+        const values = span.attributes["http.request.header.x-public"];
+        return Array.isArray(values) && values[0] === header;
+      })!;
+    const firstSpan = findSpan("first");
+    const secondSpan = findSpan("second");
+    expect(firstSpan).toBeDefined();
+    expect(
+      Object.keys(firstSpan.attributes).filter((name) => name.startsWith("browser.dependency.")),
+    ).toEqual([]);
+    expect(
+      Object.keys(secondSpan.attributes).filter((name) => name.startsWith("browser.dependency.")),
+    ).toEqual([]);
+    Object.assign(entry, { startTime: 215, duration: 15, responseEnd: 230 });
+    now = 210;
+    const third = send(transport, url, [["x-public", "third"]]);
+    now = 250;
+    await third;
+    const completed = await pipeline.captured(3);
+    expect(completed[2].attributes["browser.dependency.duration"]).toBe(15);
+  });
+
   it("does not invent response headers or status text for CORS failures", async () => {
     const pipeline = await start({ captureResponseHeaders: true, includeErrorStatusText: true });
     await expect(send(transport, `${endpoint}?blocked=1`)).rejects.toThrow();
@@ -426,6 +487,77 @@ it("releases owned patches and ignores in-flight enrichment after shutdown", asy
   expect(onEnd).not.toHaveBeenCalled();
 });
 
+it.each(["fetch", "open", "send", "setRequestHeader"] as const)(
+  "retries both patch layers after %s becomes writable again",
+  async (method) => {
+    const transport = method === "fetch" ? "fetch" : "xhr";
+    const target = method === "fetch" ? globalThis : XMLHttpRequest.prototype;
+    const descriptor = Object.getOwnPropertyDescriptor(target, method)!;
+    const pipeline = await start(
+      { captureRequestHeaders: true, enableResourceTiming: true },
+      { [transport === "fetch" ? "xhr" : "fetch"]: { enabled: false } },
+    );
+    const instrumentation = pipeline.handle.instrumentations.get(transport)!;
+    const patched = Object.getOwnPropertyDescriptor(target, method)!;
+    Object.defineProperty(target, method, { ...patched, writable: false });
+    try {
+      expect(() => instrumentation.disable()).toThrow();
+      expect(() => instrumentation.disable()).toThrow();
+      expect(Reflect.get(target, method)).toBe(patched.value);
+    } finally {
+      Object.defineProperty(target, method, patched);
+      instrumentation.disable();
+    }
+    expect(Object.getOwnPropertyDescriptor(target, method)).toEqual(descriptor);
+    expect(globalThis.fetch).toBe(originalFetch);
+    expect(XMLHttpRequest.prototype.open).toBe(originalOpen);
+    expect(XMLHttpRequest.prototype.send).toBe(originalSend);
+    expect(XMLHttpRequest.prototype.setRequestHeader).toBe(originalSetHeader);
+    instrumentation.enable();
+    await send(transport, `${endpoint}?retried=${method}`, [["x-public", "recovered"]]);
+    const [span] = await pipeline.captured(1);
+    expect(span.attributes["http.request.header.x-public"]).toEqual(["recovered"]);
+    expect(span.attributes["browser.dependency.duration"]).toEqual(expect.any(Number));
+    await pipeline.handle.shutdown();
+    expect(Object.getOwnPropertyDescriptor(target, method)).toEqual(descriptor);
+  },
+);
+
+it.each(["fetch", "xhr"] as const)(
+  "keeps a newer %s owner intact when retrying failed metadata cleanup",
+  async (transport) => {
+    const target = transport === "fetch" ? globalThis : XMLHttpRequest.prototype;
+    const method = transport === "fetch" ? "fetch" : "send";
+    const selected = { [transport === "fetch" ? "xhr" : "fetch"]: { enabled: false } };
+    const first = await start(
+      { captureRequestHeaders: true, enableResourceTiming: true },
+      selected,
+    );
+    const instrumentation = first.handle.instrumentations.get(transport)!;
+    const patched = Object.getOwnPropertyDescriptor(target, method)!;
+    Object.defineProperty(target, method, { ...patched, writable: false });
+    try {
+      expect(() => instrumentation.disable()).toThrow();
+    } finally {
+      Object.defineProperty(target, method, patched);
+    }
+    const second = await start(
+      { captureRequestHeaders: true, enableResourceTiming: true },
+      selected,
+    );
+    await first.handle.shutdown();
+    await send(transport, endpoint, [["x-public", "remaining"]]);
+    await first.captured(0);
+    const [span] = await second.captured(1);
+    expect(span.attributes["http.request.header.x-public"]).toEqual(["remaining"]);
+    await second.handle.shutdown();
+    expect(globalThis.fetch).toBe(originalFetch);
+    expect(XMLHttpRequest.prototype.open).toBe(originalOpen);
+    expect(XMLHttpRequest.prototype.send).toBe(originalSend);
+    expect(XMLHttpRequest.prototype.setRequestHeader).toBe(originalSetHeader);
+  },
+);
+
 it.each(["fetch", "xhr"] as const)(
   "isolates two enriched %s owners and restores every patch after out-of-order shutdown",
   async (transport) => {
@@ -461,7 +593,7 @@ it.each(["fetch", "xhr"] as const)(
   },
 );
 
-it("preserves in-flight enrichment and the budget across runtime pause and resume", async () => {
+it("preserves in-flight headers and the budget but omits timing across runtime pause and resume", async () => {
   const pipeline = await start({
     captureRequestHeaders: true,
     captureResponseHeaders: true,
@@ -475,10 +607,11 @@ it("preserves in-flight enrichment and the budget across runtime pause and resum
   const [first] = await pipeline.captured(1);
   expect(first.attributes["http.request.header.x-public"]).toEqual(["pending"]);
   expect(first.attributes["http.response.header.x-public"]).toEqual(["response"]);
-  expect(first.attributes["browser.dependency.duration"]).toEqual(expect.any(Number));
+  expect(first.attributes["browser.dependency.duration"]).toBeUndefined();
   await pipeline.handle.updateCfg({ disableFetchTracking: false });
   await send("fetch");
-  await pipeline.captured(2);
+  const [, resumed] = await pipeline.captured(2);
+  expect(resumed.attributes["browser.dependency.duration"]).toEqual(expect.any(Number));
   await send("xhr");
   await pipeline.captured(2);
 });

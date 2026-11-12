@@ -57,7 +57,11 @@ function timing(overrides: Partial<PerformanceResourceTiming> = {}): Performance
   } as PerformanceResourceTiming;
 }
 
-function enrich(entries: PerformanceResourceTiming[], attributes: Attributes = {}) {
+function enrich(
+  entries: PerformanceResourceTiming[],
+  attributes: Attributes = {},
+  ambiguous = false,
+) {
   vi.spyOn(performance, "now").mockReturnValue(165);
   vi.spyOn(performance, "getEntriesByName").mockReturnValue(entries);
   const span = Object.assign(trace.wrapSpanContext(createSpanContext()), { attributes });
@@ -65,7 +69,11 @@ function enrich(entries: PerformanceResourceTiming[], attributes: Attributes = {
     attributes[name] = value;
     return span;
   });
-  addDependencyTiming(span, { url: "https://example.test/api", start: 100 }, "fetch");
+  addDependencyTiming(
+    span,
+    { url: "https://example.test/api", start: 100, timing: { count: 1, ambiguous } },
+    "fetch",
+  );
   return attributes;
 }
 
@@ -108,4 +116,8 @@ it("does not report redacted, negative or nonfinite timing phases", () => {
       }),
     ]),
   ).toEqual({});
+});
+
+it("omits a lone surviving entry when same-URL requests overlap", () => {
+  expect(enrich([timing()], {}, true)).toEqual({});
 });

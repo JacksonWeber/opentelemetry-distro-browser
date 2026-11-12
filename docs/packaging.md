@@ -70,7 +70,7 @@ Every executable published entry point has absolute minified, gzip and Brotli bu
 | Entry point          | Minified |    Gzip |  Brotli |
 | -------------------- | -------: | ------: | ------: |
 | `.`                  |   170 kB | 53.5 kB |   47 kB |
-| `./instrumentations` |    68 kB |   26 kB |   23 kB |
+| `./instrumentations` |  68.5 kB |   26 kB |   23 kB |
 | `./snippet`          |  6.75 kB |    3 kB | 2.75 kB |
 
 The generated JSON and Markdown reports show the measured values, ceilings and result for each
@@ -83,13 +83,14 @@ comparison remains informational and does not replace the absolute gate.
 emits them, so it must run after a production build. Their budgets block in every release channel,
 including alpha:
 
-| Artifact                                                   | Minified |  Gzip |  Brotli |
-| ---------------------------------------------------------- | -------: | ----: | ------: |
-| `opentelemetry-browser.{iife,umd}.min.js`                  |   198 kB | 64 kB |   56 kB |
-| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |    63 kB | 19 kB | 17.5 kB |
+| Artifact                                                   | Minified |     Gzip |  Brotli |
+| ---------------------------------------------------------- | -------: | -------: | ------: |
+| `opentelemetry-browser.{iife,umd}.min.js`                  | 198.5 kB |    64 kB |   56 kB |
+| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |    63 kB | 19.25 kB | 17.5 kB |
 
-Instrumentation budgets include the opt-in dependency enrichment adapter. The self-contained
-SDK bundles include the instrumentation preset too. The npm root entry and its budgets are unchanged.
+Instrumentation budgets include the opt-in dependency enrichment adapter, retryable patch cleanup,
+and conservative timing-overlap tracking. The self-contained SDK bundles include the instrumentation
+preset too. The npm root budgets are unchanged.
 
 SWC minifies the browser bundles and shortens `_`-prefixed properties, the TypeScript `private`
 convention used by OpenTelemetry, so source code keeps descriptive names. Members that
