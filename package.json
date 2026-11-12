@@ -28,6 +28,16 @@
         "default": "./dist/commonjs/instrumentations.cjs"
       }
     },
+    "./debug": {
+      "import": {
+        "types": "./dist/esm/debug.d.ts",
+        "default": "./dist/esm/debug.js"
+      },
+      "require": {
+        "types": "./dist/commonjs/debug.d.cts",
+        "default": "./dist/commonjs/debug.cjs"
+      }
+    },
     "./snippet": {
       "import": {
         "types": "./dist/esm/snippet.d.ts",
@@ -79,8 +89,8 @@
     "test:coverage": "vitest run --config vitest.config.ts --coverage",
     "test:build": "node --test test/build/package.test.mjs test/build/size-harness.test.mjs test/build/cdn.test.mjs",
     "test:report": "node --test test/report/coverage.test.mjs && python -m unittest discover -s test/report -p *_test.py",
-    "api:check": "api-extractor run && api-extractor run --config api-extractor.instrumentations.json && api-extractor run --config api-extractor.snippet.json",
-    "api:update": "npm run build && api-extractor run --local && api-extractor run --local --config api-extractor.instrumentations.json && api-extractor run --local --config api-extractor.snippet.json",
+    "api:check": "api-extractor run && api-extractor run --config api-extractor.instrumentations.json && api-extractor run --config api-extractor.snippet.json && api-extractor run --config api-extractor.debug.json",
+    "api:update": "npm run build && api-extractor run --local && api-extractor run --local --config api-extractor.instrumentations.json && api-extractor run --local --config api-extractor.snippet.json && api-extractor run --local --config api-extractor.debug.json",
     "cdn:publish": "node scripts/publish-cdn.mjs",
     "size": "node scripts/measure-bundle-size.mjs",
     "size:compare": "node scripts/compare-bundle-size.mjs",

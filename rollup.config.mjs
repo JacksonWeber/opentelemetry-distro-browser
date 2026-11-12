@@ -27,6 +27,23 @@ const commonJsDeclarationImports = {
 
 export default [
   {
+    input: "src/debug/index.ts",
+    external: externalOpenTelemetry,
+    plugins: [compile()],
+    output: [
+      { ...esmOutput, file: "dist/esm/debug.js" },
+      { file: "dist/commonjs/debug.cjs", format: "cjs", exports: "named", sourcemap: true },
+    ],
+  },
+  {
+    input: "src/debug/index.ts",
+    plugins: [dts({ tsconfig: "./tsconfig.src.json" })],
+    output: [
+      { file: "dist/esm/debug.d.ts", format: "es" },
+      { file: "dist/commonjs/debug.d.cts", format: "es", plugins: [commonJsDeclarationImports] },
+    ],
+  },
+  {
     input: "src/index.ts",
     // Share APIs with npm consumers and let their bundler select the SDK platform.
     external: externalOpenTelemetry,

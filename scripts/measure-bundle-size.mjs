@@ -17,6 +17,11 @@ const packageJson = JSON.parse(await readFile(resolve(root, "package.json"), "ut
 const packageName = packageJson.name;
 
 export const entryPointBudgets = {
+  "./debug": {
+    rawBytes: 16 * 1024,
+    gzipBytes: 6 * 1024,
+    brotliBytes: 5 * 1024,
+  },
   ".": {
     rawBytes: 115 * 1024,
     gzipBytes: 34 * 1024,
@@ -198,6 +203,13 @@ export const scenarios = [
   publishedRootScenario,
   publishedInstrumentationsScenario,
   publishedSnippetScenario,
+  {
+    id: "published-debug",
+    label: "Optional in-page telemetry debugger",
+    group: "entry-point",
+    entryPoint: "./debug",
+    code: `import * as debug from "${packageName}/debug";\n${sink("debug")}`,
+  },
   ...instrumentationScenarios,
   everythingScenario,
 ];

@@ -100,6 +100,12 @@ async function bundleConsumer(source, external = []) {
         resolveId(id) {
           if (id === input) return input;
           if (id === "distro") return fileURLToPath(new URL(pkg.exports["."].import.default, root));
+          if (id === `${pkg.name}/debug`) {
+            return {
+              id: fileURLToPath(new URL(pkg.exports["./debug"].import.default, root)),
+              moduleSideEffects: false,
+            };
+          }
         },
         load(id) {
           if (id === input) return source;
@@ -156,6 +162,16 @@ test("the package exposes ESM and CommonJS entry points", () => {
         default: "./dist/esm/snippet.js",
       },
     },
+    "./debug": {
+      import: {
+        types: "./dist/esm/debug.d.ts",
+        default: "./dist/esm/debug.js",
+      },
+      require: {
+        types: "./dist/commonjs/debug.d.cts",
+        default: "./dist/commonjs/debug.cjs",
+      },
+    },
     "./package.json": "./package.json",
   });
   assert.equal(pkg.types, pkg.exports["."].import.types);
@@ -164,6 +180,9 @@ test("the package exposes ESM and CommonJS entry points", () => {
 test("the build produces ESM, CommonJS, UMD, and IIFE artifacts", async () => {
   assert.deepEqual((await readdir(new URL("dist/", root))).sort(), ["browser", "commonjs", "esm"]);
   assert.deepEqual((await readdir(new URL("dist/esm/", root))).sort(), [
+    "debug.d.ts",
+    "debug.js",
+    "debug.js.map",
     "index.d.ts",
     "index.js",
     "index.js.map",
@@ -177,6 +196,9 @@ test("the build produces ESM, CommonJS, UMD, and IIFE artifacts", async () => {
     "snippet.js.map",
   ]);
   assert.deepEqual((await readdir(new URL("dist/commonjs/", root))).sort(), [
+    "debug.cjs",
+    "debug.cjs.map",
+    "debug.d.cts",
     "index.cjs",
     "index.cjs.map",
     "index.d.cts",
@@ -346,6 +368,7 @@ test("standard OTLP processors export alongside other processors", async (t) => 
 test("using the initializer includes both SDKs and their default exporters", async () => {
   const chunk = await bundleConsumer('export { useMicrosoftOpenTelemetry } from "distro";');
   assert.doesNotMatch(chunk.code, /BrowserDetector|UserAgentDetector/);
+  assert.doesNotMatch(chunk.code, /otel\.debug|createTelemetryDebugger|Search telemetry/);
   const modules = Object.entries(chunk.modules)
     .filter(([, module]) => module.renderedLength > 0)
     .map(([id]) => id.replaceAll("\\", "/"));
@@ -363,6 +386,25 @@ test("using the initializer includes both SDKs and their default exporters", asy
       `${name} must be included by the combined initializer`,
     );
   }
+});
+
+test("the optional debugger resolves without importing SDKs or mounting on import", async () => {
+  const esm = await import(`${pkg.name}/debug`);
+  const cjs = require(`${pkg.name}/debug`);
+  assert.deepEqual(Object.keys(esm), ["createTelemetryDebugger"]);
+  assert.deepEqual(Object.keys(cjs), Object.keys(esm));
+  assert.throws(() => esm.createTelemetryDebugger(), /browser mount container/);
+  const chunk = await bundleConsumer(`export * from "${pkg.name}/debug";`);
+  for (const [id, module] of Object.entries(chunk.modules)) {
+    if (module.renderedLength > 0) {
+      assert.doesNotMatch(
+        id.replaceAll("\\", "/"),
+        /\/@opentelemetry\/(?:sdk-|exporter-|browser-instrumentation)/,
+      );
+    }
+  }
+  const unused = await bundleConsumer(`import "${pkg.name}/debug";`);
+  assert.equal(unused.code.trim(), "");
 });
 
 test("individual upstream instrumentation imports do not retain other instrumentations", async () => {
@@ -587,10 +629,12 @@ test("browser bundlers resolve the CommonJS entry without Node runtime imports",
     assert.deepEqual(output[0].dynamicImports, []);
     const moduleIds = Object.keys(output[0].modules).map((id) => id.replaceAll("\\", "/"));
     assert.ok(moduleIds.some((id) => id.includes("/dist/commonjs/index.cjs")));
+    assert.ok(moduleIds.some((id) => id.includes("/dist/commonjs/debug.cjs")));
     assert.ok(moduleIds.every((id) => !id.includes("/dist/esm/index.js")));
     assert.deepEqual(findUndeclaredRequireCalls(output[0].code), []);
     assert.doesNotMatch(output[0].code, /Could not dynamically require/);
     assert.match(output[0].code, /useMicrosoftOpenTelemetry/);
+    assert.match(output[0].code, /createTelemetryDebugger/);
   } finally {
     await bundle.close();
   }

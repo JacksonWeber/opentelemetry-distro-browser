@@ -6,6 +6,8 @@ All notable changes to this package are documented in this file.
 
 ### Added
 
+- Add an optional `/debug` entry with an in-page telemetry inspector, bounded snapshots, export
+  results, and opt-in SDK User Timing marks and measures.
 - Classify named browser log events as Azure Monitor custom events regardless of severity, while
   preserving browser console records as trace messages with their severity.
 
