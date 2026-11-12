@@ -5,8 +5,9 @@ import { expect, inject, it } from "vitest";
 import { Sender } from "../../src/exporter/sender.js";
 
 it("follows a cross-origin CORS redirect without remembering an untrusted endpoint", async () => {
-  const endpoint = inject("redirectEndpoint");
-  const sender = new Sender({ endpoint });
+  const endpoint = new URL(inject("redirectEndpoint"));
+  endpoint.searchParams.set("runId", crypto.randomUUID());
+  const sender = new Sender({ endpoint: endpoint.href });
   const request = {
     body: new TextEncoder().encode("telemetry"),
     contentType: "application/json",
@@ -21,6 +22,8 @@ it("follows a cross-origin CORS redirect without remembering an untrusted endpoi
     statusCode: 200,
   });
 
-  const counts = (await fetch(new URL("/counts", endpoint))).json();
+  const countsUrl = new URL("/counts", endpoint);
+  countsUrl.search = endpoint.search;
+  const counts = (await fetch(countsUrl)).json();
   await expect(counts).resolves.toEqual({ redirectRequests: 2, finalRequests: 2 });
 });

@@ -3,6 +3,10 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": "^22.23.4 || ^24.22.1 || >=26.12.1",
+    "npm": ">=10"
+  },
   "scripts": {
     "build": "tsc --noEmit && vite build",
     "dev": "vite",
@@ -28,6 +32,6 @@
     "@playwright/test": "1.62.1",
     "@types/node": "24.3.0",
     "typescript": "5.9.2",
-    "vite": "8.2.2"
+    "vite": "8.2.4"
   }
 }

@@ -3,12 +3,13 @@
 
 import { ROOT_CONTEXT, SpanKind, TraceFlags, trace } from "@opentelemetry/api";
 import { SamplingDecision, type Sampler } from "@opentelemetry/sdk-trace-base";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   ApplicationInsightsSampler,
   AZURE_MONITOR_SAMPLE_RATE,
   getSamplingScore,
   PageOperationSampler,
+  RuntimeSampler,
 } from "../../../src/sampling.js";
 import { markPageContext } from "../../../src/shared/pageOperationContext.js";
 
@@ -46,6 +47,79 @@ describe("PageOperationSampler", () => {
       decision: SamplingDecision.NOT_RECORD,
     });
   });
+});
+
+describe("RuntimeSampler", () => {
+  it("switches between default parent sampling and current explicit percentages", () => {
+    let percentage: number | undefined;
+    const read = vi.fn(() => percentage);
+    const sampler = new RuntimeSampler(read);
+    const parent = trace.setSpanContext(ROOT_CONTEXT, {
+      traceId: TRACE_ID,
+      spanId: "1111111111111111",
+      traceFlags: TraceFlags.NONE,
+    });
+
+    expect(read).toHaveBeenCalledOnce();
+    expect(sample(sampler, parent).decision).toBe(SamplingDecision.NOT_RECORD);
+    percentage = 50;
+    expect(sample(sampler, parent)).toMatchObject({
+      decision: SamplingDecision.RECORD_AND_SAMPLED,
+      attributes: { [AZURE_MONITOR_SAMPLE_RATE]: 50 },
+    });
+    percentage = 0;
+    expect(sample(sampler).decision).toBe(SamplingDecision.NOT_RECORD);
+    percentage = 100;
+    expect(sample(sampler, parent)).toMatchObject({
+      decision: SamplingDecision.RECORD_AND_SAMPLED,
+      attributes: {},
+    });
+    percentage = undefined;
+    expect(sample(sampler, parent).decision).toBe(SamplingDecision.NOT_RECORD);
+    const page = { traceId: TRACE_ID, spanId: "2222222222222222", traceFlags: TraceFlags.NONE };
+    markPageContext(page);
+    expect(sample(sampler, trace.setSpanContext(ROOT_CONTEXT, page)).decision).toBe(
+      SamplingDecision.RECORD_AND_SAMPLED,
+    );
+    expect(read).toHaveBeenCalledTimes(7);
+    expect(sampler.toString()).toContain("PageOperationSampler");
+  });
+
+  it("reuses delegates until the percentage changes", () => {
+    const calls = vi.spyOn(ApplicationInsightsSampler.prototype, "shouldSample");
+    const defaults = vi.spyOn(PageOperationSampler.prototype, "shouldSample");
+    try {
+      let percentage: number | undefined = 50;
+      const sampler = new RuntimeSampler(() => percentage);
+      sample(sampler);
+      sample(sampler);
+      expect(calls.mock.contexts[0]).toBe(calls.mock.contexts[1]);
+      percentage = 25;
+      sample(sampler);
+      expect(calls.mock.contexts[2]).not.toBe(calls.mock.contexts[0]);
+      percentage = undefined;
+      sample(sampler);
+      sample(sampler);
+      expect(defaults.mock.contexts[0]).toBe(defaults.mock.contexts[1]);
+    } finally {
+      calls.mockRestore();
+      defaults.mockRestore();
+    }
+  });
+
+  it.each([-1, 101, Number.NaN, Infinity, -Infinity])(
+    "rejects invalid initial and updated percentage %s without poisoning the cache",
+    (invalid) => {
+      expect(() => new RuntimeSampler(() => invalid)).toThrow(RangeError);
+      let percentage = 50;
+      const sampler = new RuntimeSampler(() => percentage);
+      percentage = invalid;
+      expect(() => sample(sampler)).toThrow(RangeError);
+      expect(() => sample(sampler)).toThrow(RangeError);
+      percentage = 50;
+      expect(sample(sampler).decision).toBe(SamplingDecision.RECORD_AND_SAMPLED);
+    },
+  );
 });
 
 describe("ApplicationInsightsSampler", () => {

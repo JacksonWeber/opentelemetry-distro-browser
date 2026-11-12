@@ -26,6 +26,20 @@ interface Matcher {
   releases?: Readonly<Record<string, string>>;
 }
 
+interface NavigatorUAData {
+  getHighEntropyValues?: (hints: string[]) => Promise<{ platformVersion?: unknown }>;
+}
+
+interface NavigatorWithUAData extends Navigator {
+  userAgentData?: NavigatorUAData;
+}
+
+const platformVersionCache = new WeakMap<NavigatorUAData, Promise<string | undefined>>();
+
+// Chromium reports Universal API Contract versions for Windows: 13 and later identify Windows 11,
+// while earlier supported values identify Windows 10.
+const WINDOWS_11_PLATFORM_VERSION = 13;
+
 const VERSION_TOKEN = /Version\/([\d.]+)/;
 
 /**
@@ -141,6 +155,53 @@ function findMatch(userAgent: string, matchers: readonly Matcher[]): Matcher | u
   return undefined;
 }
 
+function getPlatformVersion(uaData: NavigatorUAData): Promise<string | undefined> {
+  const cached = platformVersionCache.get(uaData);
+  if (cached) {
+    return cached;
+  }
+
+  let platformVersion: Promise<string | undefined>;
+  try {
+    platformVersion = Promise.resolve(uaData.getHighEntropyValues?.(["platformVersion"]))
+      .then((values) => {
+        const value = values?.platformVersion;
+        return typeof value === "string" && value !== "" ? value : undefined;
+      })
+      .catch(() => undefined);
+  } catch {
+    platformVersion = Promise.resolve(undefined);
+  }
+
+  platformVersionCache.set(uaData, platformVersion);
+  return platformVersion;
+}
+
+function mapPlatformVersion(
+  osName: string,
+  platformVersion: string | undefined,
+  fallback: string | undefined,
+): string | undefined {
+  if (!platformVersion) {
+    return fallback;
+  }
+
+  if (osName !== "Windows") {
+    return platformVersion;
+  }
+
+  const majorVersion = /^(\d+)(?:\.|$)/.exec(platformVersion)?.[1];
+  if (majorVersion === undefined) {
+    return fallback;
+  }
+
+  const major = Number(majorVersion);
+  if (major === 0) {
+    return fallback;
+  }
+  return major >= WINDOWS_11_PLATFORM_VERSION ? "11" : "10";
+}
+
 /**
  * Detects the `user_agent.*` resource attributes: the raw user agent string and the browser and
  * operating system details extracted from it.
@@ -151,10 +212,12 @@ function findMatch(userAgent: string, matchers: readonly Matcher[]): Matcher | u
  * by design, are frozen or reduced by modern browsers, and change without notice. Register this
  * detector when broad coverage matters more than exactness.
  *
- * Detection is fully synchronous and never throws. It yields no attributes outside a browser scope
- * — server-side rendering and prerendering under Node, Deno or Bun included, since those runtimes
- * expose a `navigator` global whose `userAgent` describes the runtime rather than a browser. Web
- * workers remain supported.
+ * User-agent parsing is synchronous. When User-Agent Client Hints are available, the OS version is
+ * resolved asynchronously from the cached high-entropy `platformVersion`; failures fall back to the
+ * user-agent-derived version. Detection yields no attributes outside a browser scope — server-side
+ * rendering and prerendering under Node, Deno or Bun included, since those runtimes expose a
+ * `navigator` global whose `userAgent` describes the runtime rather than a browser. Web workers
+ * remain supported.
  *
  * @public
  */
@@ -171,7 +234,8 @@ export class UserAgentDetector implements ResourceDetector {
       return { attributes };
     }
 
-    const nav: Navigator | undefined = typeof navigator === "undefined" ? undefined : navigator;
+    const nav: NavigatorWithUAData | undefined =
+      typeof navigator === "undefined" ? undefined : navigator;
     const userAgent = nav?.userAgent;
 
     if (typeof userAgent !== "string" || userAgent === "") {
@@ -195,12 +259,15 @@ export class UserAgentDetector implements ResourceDetector {
       attributes[ATTR_USER_AGENT_OS_NAME] = os.name;
 
       const version = matchVersion(userAgent, os.version);
-      if (version) {
-        // An unrecognised Windows kernel version yields no release rather than a raw NT number.
-        const release = os.releases ? os.releases[version] : version;
-        if (release) {
-          attributes[ATTR_USER_AGENT_OS_VERSION] = release;
-        }
+      // An unrecognised Windows kernel version yields no release rather than a raw NT number.
+      const release = version ? (os.releases ? os.releases[version] : version) : undefined;
+      const uaData = nav?.userAgentData;
+      if (typeof uaData?.getHighEntropyValues === "function") {
+        attributes[ATTR_USER_AGENT_OS_VERSION] = getPlatformVersion(uaData).then(
+          (platformVersion) => mapPlatformVersion(os.name, platformVersion, release),
+        );
+      } else if (release) {
+        attributes[ATTR_USER_AGENT_OS_VERSION] = release;
       }
     }
 

@@ -37,7 +37,9 @@ describe.each(["forceFlush", "shutdown"] as const)(
 
       try {
         client.export([spanToEnvelope(createReadableSpan(), TEST_INSTRUMENTATION_KEY)], callback);
-        const results = await Promise.allSettled([client[method]()]);
+        const operation = client[method]();
+        if (method === "shutdown") expect(client.shutdown()).toBe(operation);
+        const results = await Promise.allSettled([operation]);
 
         expect(callback).toHaveBeenCalledExactlyOnceWith(
           code === ExportResultCode.SUCCESS
@@ -47,7 +49,7 @@ describe.each(["forceFlush", "shutdown"] as const)(
                 error: expect.objectContaining({
                   message:
                     typeof response === "number"
-                      ? "Azure Monitor ingestion failed with HTTP status 400."
+                      ? "Azure Monitor export failed with HTTP 400."
                       : "offline",
                 }),
               },
@@ -56,7 +58,7 @@ describe.each(["forceFlush", "shutdown"] as const)(
         expect(results).toEqual([{ status: "rejected", reason: callbackError }]);
         await expect(client.forceFlush()).resolves.toBeUndefined();
       } finally {
-        await client.shutdown();
+        await expect(client.shutdown()).resolves.toBeUndefined();
       }
     });
   },

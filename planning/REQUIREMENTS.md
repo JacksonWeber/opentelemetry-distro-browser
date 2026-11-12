@@ -45,6 +45,8 @@ produces it.
   that exporter package.
 - Keep no Application Insights configuration or tracking-API compatibility
   mapping in core. Legacy Application Insights tracking APIs are out of scope.
+- Built-in outbound propagation uses W3C Trace Context, not legacy `Request-Id` or `Request-Context`
+  headers. See [migration exclusions](../APPINSIGHTS_MIGRATION.md).
 - Import supported public upstream packages directly and expose upstream types.
   Do not reimplement parallel OTel-shaped interfaces, and do not wrap
   `getTracer`, `getLogger` or `getMeter` in proprietary getters — applications

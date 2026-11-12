@@ -18,31 +18,34 @@ const packageName = packageJson.name;
 
 export const entryPointBudgets = {
   ".": {
-    rawBytes: 115 * 1024,
-    gzipBytes: 34 * 1024,
-    brotliBytes: 30 * 1024,
+    rawBytes: 170 * 1024,
+    gzipBytes: 53.5 * 1024,
+    brotliBytes: 47 * 1024,
   },
   "./instrumentations": {
     rawBytes: 68 * 1024,
     gzipBytes: 26 * 1024,
     brotliBytes: 23 * 1024,
   },
+  // The generator validates its options and assembles optional loader steps. It runs where the
+  // page is rendered; the snippet it emits only contains the steps a page enables.
   "./snippet": {
-    rawBytes: 2 * 1024,
-    gzipBytes: 1 * 1024,
-    brotliBytes: 1 * 1024,
+    rawBytes: 6.75 * 1024,
+    gzipBytes: 3 * 1024,
+    brotliBytes: 2.75 * 1024,
   },
 };
 
+// The SDK browser bundle also carries every instrumentation, because CDN users cannot add them later.
 const sdkBrowserBundleBudget = {
-  rawBytes: 135 * 1024,
-  gzipBytes: 41 * 1024,
-  brotliBytes: 36 * 1024,
+  rawBytes: 198 * 1024,
+  gzipBytes: 64 * 1024,
+  brotliBytes: 56 * 1024,
 };
 const instrumentationsBrowserBundleBudget = {
-  rawBytes: 67 * 1024,
-  gzipBytes: 20 * 1024,
-  brotliBytes: 18 * 1024,
+  rawBytes: 63 * 1024,
+  gzipBytes: 19 * 1024,
+  brotliBytes: 17.5 * 1024,
 };
 
 /**

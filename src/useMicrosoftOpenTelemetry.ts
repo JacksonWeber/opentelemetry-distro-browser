@@ -2,40 +2,88 @@
 // Licensed under the MIT License.
 
 import { context, diag, type SpanContext } from "@opentelemetry/api";
-import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
-import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import {
   BrowserContextLogRecordProcessor,
   BrowserContextSpanProcessor,
 } from "./context/contextProcessors.js";
 import { createSession } from "./session/createSession.js";
-import { createUserContext } from "./user/createUserContext.js";
-import {
-  BatchLogRecordProcessor,
-  type BatchLogRecordProcessorBrowserOptions,
-  type LogRecordProcessor,
-} from "@opentelemetry/sdk-logs";
-import { BatchSpanProcessor, type SpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { snapshotSdkStatsOptions } from "./exporter/customerSdkStats.js";
+import { createKeyValueStorage } from "./storage/keyValueStorage.js";
+import { createSessionBufferStorage, sessionBufferStorage } from "./exporter/sessionBuffer.js";
+import { createCookieUserContext } from "./user/createCookieUserContext.js";
+import { createCookieManager } from "./storage/cookieManager.js";
+import { isNonEmptyString } from "./shared/isNonEmptyString.js";
+import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
+import type { SpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { beginUnloading, endUnloading } from "./exporter/common.js";
-import { AzureMonitorLogRecordExporter } from "./exporter/log.js";
-import { AzureMonitorSpanExporter } from "./exporter/trace.js";
-import { PageViewInstrumentation } from "./instrumentation/pageView/index.js";
+import type { AzureMonitorLogRecordExporter } from "./exporter/log.js";
+import type { AzureMonitorSpanExporter } from "./exporter/trace.js";
+import { createAzureMonitorProcessors } from "./exporter/createAzureMonitorProcessors.js";
+import { parseConnectionString } from "./exporter/connectionStringParser.js";
+import { generatePageViewId, PageViewInstrumentation } from "./instrumentation/pageView/index.js";
 import { PageViewCorrelation } from "./instrumentation/pageView/pageViewCorrelation.js";
+import { createInstrumentationRegistry } from "./instrumentation/instrumentationRegistry.js";
+import { createRuntimeConfiguration } from "./configuration/runtimeConfiguration.js";
+import {
+  captureConfigurationSync,
+  createConfigurationSync,
+} from "./configuration/configurationSync.js";
 import {
   ATTR_TELEMETRY_DISTRO_NAME,
   ATTR_TELEMETRY_DISTRO_VERSION,
 } from "@opentelemetry/semantic-conventions";
 import { OPENTELEMETRY_BROWSER_VERSION } from "./shared/constants.js";
 import { getSharedRegistry, reportError } from "./shared/globalOwnership.js";
-import { runLifecycleTasks, subscribeToUnload } from "./shared/lifecycle.js";
-import { getPageOperation, isPageContextRegistered } from "./routing/pageContext.js";
+import { runLifecycleTasks, subscribeToUnload, throwErrors } from "./shared/lifecycle.js";
+import {
+  getPageOperation,
+  getPageOperationName,
+  isPageContextRegistered,
+} from "./routing/pageContext.js";
 import { startTelemetryInstance, type TelemetryInstance } from "./routing/telemetryInstance.js";
-import { ApplicationInsightsSampler, isTraceSampled, PageOperationSampler } from "./sampling.js";
-import { AzureMonitorSamplingLogRecordProcessor } from "./samplingLogRecordProcessor.js";
+import { isTraceSampled, RuntimeSampler } from "./sampling.js";
+import { DEFAULT_QUERY_STRINGS_TO_REDACT } from "./shared/urlRedaction.js";
+import { createExceptionEnrichment } from "./exceptionEnrichment.js";
 import type {
   MicrosoftOpenTelemetryBrowser,
   MicrosoftOpenTelemetryBrowserOptions,
 } from "./types.js";
+
+/** Fork opener-copied visit state once, while retaining later same-tab document handoffs. */
+function preparePageVisitStorage(): boolean {
+  try {
+    const storage = window.sessionStorage;
+    const ownerKey = "otel.pageVisitOwner";
+    const owner = storage.getItem(ownerKey);
+    let copied = false;
+    try {
+      const opener = window.opener as Window | null;
+      // Frames use their top-level tab's owner. Unlike a visit ID, this marker survives
+      // opener navigation before the new tab initializes its telemetry.
+      copied =
+        !!owner &&
+        !!opener &&
+        !opener.closed &&
+        opener.top?.sessionStorage.getItem(ownerKey) === owner;
+    } catch {
+      // A closed or cross-origin opener is inaccessible. Do not break an established tab's
+      // persistence just because its opener subsequently navigates away.
+    }
+    if (copied) {
+      // Snapshot keys before removal: Web Storage enumeration may reorder on mutation.
+      const keys = Array.from({ length: storage.length }, (_, index) => storage.key(index));
+      for (const key of keys) {
+        if (key?.startsWith("otel.pageVisit.")) storage.removeItem(key);
+      }
+    }
+    if (!owner || copied) storage.setItem(ownerKey, generatePageViewId());
+    return true;
+  } catch {
+    // Never consume a predecessor if ownership setup or copied-state cleanup failed.
+    diag.warn("Page visit storage unavailable; using memory.");
+    return false;
+  }
+}
 
 /**
  * Builds the instrumentations this distribution owns and turns on by itself.
@@ -55,18 +103,49 @@ import type {
 function createOwnedInstrumentations(
   options: MicrosoftOpenTelemetryBrowserOptions,
   sharedOperation: () => SpanContext | undefined,
-  samplingPercentage: number,
+  samplingPercentage: () => number,
+  reserveVisitStorageKey: (namespace: string) => string,
 ): PageViewInstrumentation[] {
   if (typeof document === "undefined" || typeof location === "undefined") return [];
 
   const owned: PageViewInstrumentation[] = [];
   const pageView = options.pageView ?? {};
   if (pageView.enabled !== false) {
+    let visitStorageKey: string | undefined;
+    if (pageView.autoTrackPageVisitTime) {
+      const namePrefix = options.storage?.namePrefix ?? "";
+      // An explicit prefix identifies the destination even before a deferred string resolves.
+      const destination =
+        !namePrefix && typeof options.azureMonitor?.connectionString === "string"
+          ? parseConnectionString(options.azureMonitor.connectionString)
+          : undefined;
+      const namespace = JSON.stringify([
+        namePrefix,
+        destination?.instrumentationKey?.toLowerCase(),
+        destination?.ingestionEndpoint,
+      ]);
+      visitStorageKey = reserveVisitStorageKey(namespace);
+    }
     owned.push(
       new PageViewInstrumentation(
-        { ...pageView, enabled: false, sharedOperation },
+        {
+          ...pageView,
+          enabled: false,
+          sharedOperation,
+          visitStorageKey,
+          visitStorage:
+            options.storage?.enabled === false ||
+            // Same-origin frames share sessionStorage, but slot ownership is realm-local.
+            window.parent !== window ||
+            (options.azureMonitor &&
+              typeof options.azureMonitor.connectionString !== "string" &&
+              !options.storage?.namePrefix) ||
+            (pageView.autoTrackPageVisitTime && !preparePageVisitStorage())
+              ? null
+              : undefined,
+        },
         options.traces?.contextManager?.active() ?? context.active(),
-        (traceId) => isTraceSampled(traceId, samplingPercentage),
+        (traceId) => isTraceSampled(traceId, samplingPercentage()),
       ),
     );
   }
@@ -93,51 +172,145 @@ function createOwnedInstrumentations(
 export async function useMicrosoftOpenTelemetry(
   options: MicrosoftOpenTelemetryBrowserOptions = {},
 ): Promise<MicrosoftOpenTelemetryBrowser> {
-  const session = options.session?.enabled === true ? createSession(options.session) : undefined;
+  const sdkStats = snapshotSdkStatsOptions(options.azureMonitor?.sdkStats);
+  const syncOptions = captureConfigurationSync(options.extensionConfig);
+  let stopping = false;
+  let configSync: MicrosoftOpenTelemetryBrowser["configSync"];
+  let instrumentationRegistry: ReturnType<typeof createInstrumentationRegistry> | undefined;
+  const sessionOptions = options.session;
+  const inactivityTimeout = sessionOptions?.inactivityTimeout;
+  const maxDuration = sessionOptions?.maxDuration;
+  const sessionRenewalMs = options.sessionRenewalMs;
+  const sessionExpirationMs = options.sessionExpirationMs;
+  const azureMonitor = options.azureMonitor
+    ? {
+        ...options.azureMonitor,
+        sdkStats,
+      }
+    : undefined;
+  const samplingPercentage = options.samplingPercentage;
+  const configuration = createRuntimeConfiguration(
+    {
+      samplingPercentage,
+      session: {
+        ...((inactivityTimeout !== undefined ||
+          (sessionOptions && Object.hasOwn(sessionOptions, "inactivityTimeout"))) && {
+          inactivityTimeout,
+        }),
+        ...((maxDuration !== undefined ||
+          (sessionOptions && Object.hasOwn(sessionOptions, "maxDuration"))) && {
+          maxDuration,
+        }),
+      },
+      ...((sessionRenewalMs !== undefined || Object.hasOwn(options, "sessionRenewalMs")) && {
+        sessionRenewalMs,
+      }),
+      ...((sessionExpirationMs !== undefined || Object.hasOwn(options, "sessionExpirationMs")) && {
+        sessionExpirationMs,
+      }),
+      azureMonitor: { disableBeacon: azureMonitor?.disableBeacon },
+    },
+    () => {
+      instrumentationRegistry?.check();
+      return stopping;
+    },
+    (next) => instrumentationRegistry?.setNetworkGates(next),
+    samplingPercentage !== undefined || Object.hasOwn(options, "samplingPercentage"),
+  );
+  const redactedQueryParams: readonly string[] = [
+    ...DEFAULT_QUERY_STRINGS_TO_REDACT,
+    ...(options.redactQueryParams ?? []),
+  ];
+  const exceptionEnrichment = createExceptionEnrichment(options.expCfg, redactedQueryParams);
+  if (
+    options.storage !== undefined &&
+    (typeof options.storage !== "object" ||
+      options.storage === null ||
+      Array.isArray(options.storage))
+  ) {
+    throw new TypeError("storage must be a non-null, non-array object.");
+  }
+  const { enabled: storageEnabled = true, namePrefix = "" } = options.storage ?? {};
+  if (typeof storageEnabled !== "boolean" || typeof namePrefix !== "string") {
+    throw new TypeError("storage.enabled must be a boolean and storage.namePrefix a string.");
+  }
+  if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]*$/.test(namePrefix)) {
+    throw new TypeError("storage.namePrefix must contain only cookie-name token characters.");
+  }
+  const cookies = createCookieManager(options.cookieCfg);
+  cookies.setReplayFailureHandler((name, removeSuperseded) => {
+    if (name === `${namePrefix}ai_authUser`) removeSuperseded();
+  });
+  const sessionStorage = storageEnabled
+    ? createKeyValueStorage(
+        "localStorage",
+        "Session storage unavailable; using an in-memory session.",
+        namePrefix,
+      )
+    : null;
+  const session =
+    sessionOptions?.enabled !== false
+      ? createSession(
+          {
+            persist: sessionOptions?.persist,
+            ...configuration.snapshot().session,
+          },
+          sessionStorage,
+          cookies,
+          `${namePrefix}ai_session`,
+          () => configuration.snapshot().session,
+        )
+      : undefined;
   getSharedRegistry();
-  const samplingPercentage = options.samplingPercentage ?? 100;
-  const sampler =
-    options.samplingPercentage === undefined
-      ? new PageOperationSampler()
-      : new ApplicationInsightsSampler(options.samplingPercentage);
-  const userContext = createUserContext(options.userContext?.enabled === true);
-  // The handle flushes owned processors on page hide; avoid a second per-processor hide flush.
-  const batchOptions = {
-    disableAutoFlushOnDocumentHide: true,
-  } satisfies Pick<BatchLogRecordProcessorBrowserOptions, "disableAutoFlushOnDocumentHide">;
-  const azureMonitor = options.azureMonitor ? { ...options.azureMonitor } : undefined;
+  const readSamplingPercentage = () => configuration.snapshot().samplingPercentage;
+  const sampler = new RuntimeSampler(readSamplingPercentage);
+  let userContext!: ReturnType<typeof createCookieUserContext>;
+  if (azureMonitor) {
+    sessionBufferStorage.set(
+      azureMonitor,
+      storageEnabled ? createSessionBufferStorage(namePrefix) : null,
+    );
+  }
   let spanProcessors: SpanProcessor[] | undefined = options.spanProcessors?.slice();
   let logRecordProcessors: LogRecordProcessor[] | undefined = options.logRecordProcessors?.slice();
   const ownedProcessors: (SpanProcessor | LogRecordProcessor)[] = [];
+  const azureMonitorExporters: (AzureMonitorSpanExporter | AzureMonitorLogRecordExporter)[] = [];
+  let stopAzureMonitorStartup: (() => void) | undefined;
+  let startAzureMonitorDiagnostics: (() => void) | undefined;
   const traceOptions = options.traces && {
     ...options.traces,
     propagators: options.traces.propagators?.slice(),
   };
+  const pageViewOptions = options.pageView ?? {};
+  // Preserve legacy replacement semantics unless the additive, instance-wide option is used.
+  const pageView = {
+    ...pageViewOptions,
+    redactedQueryParams:
+      options.redactQueryParams === undefined
+        ? pageViewOptions.redactedQueryParams?.slice()
+        : [...redactedQueryParams, ...(pageViewOptions.redactedQueryParams ?? [])],
+  };
   // While another instance supplies page correlation, page views adopt its operation.
   const correlationState: { current?: PageViewCorrelation } = {};
-  const owned = createOwnedInstrumentations(
-    options,
-    () => getPageOperation(correlationState.current),
-    samplingPercentage,
-  );
-  const pageView = owned[0];
-  const correlation = pageView
-    ? new PageViewCorrelation(() => pageView.getOperationContext())
-    : undefined;
-  correlationState.current = correlation;
-  // Publish the initial page operation before caller instrumentations can emit.
-  const instrumentations = [...owned, ...(options.instrumentations ?? [])];
+  let pageViewInstrumentation: PageViewInstrumentation | undefined;
+  let correlation: PageViewCorrelation | undefined;
+  let releasePageVisitSlot: (() => void) | undefined;
   let instance: TelemetryInstance | undefined;
   let processorsTransferred = false;
   let initialized = false;
-  let stopping = false;
   // Upstream stale tracers can still call processors after provider shutdown.
   const sessionProvider = {
     getSessionId: () => (stopping ? null : (session?.getSessionId() ?? null)),
   };
   const contextProvider = {
-    ...userContext.provider,
+    getAnonymousUserId: () => userContext.provider.getAnonymousUserId(),
+    getAuthenticatedUserId: () => userContext.provider.getAuthenticatedUserId(),
+    getAccountId: () => userContext.provider.getAccountId(),
     ...sessionProvider,
+    getOperationName: (traceId: string | undefined) =>
+      getPageOperation(correlationState.current)
+        ? getPageOperationName(correlationState.current, traceId)
+        : correlation?.operationName(traceId),
   };
   const contextSpanProcessor = new BrowserContextSpanProcessor(contextProvider);
   const contextLogRecordProcessor = new BrowserContextLogRecordProcessor(contextProvider);
@@ -149,7 +322,12 @@ export async function useMicrosoftOpenTelemetry(
   const flushForUnload = (): void => {
     if (stopping || unloadFlushPromise) return;
     beginUnloading();
-    pageView?.settleForUnload();
+    pageViewInstrumentation?.settleForUnload();
+    try {
+      session?.backup();
+    } catch (error) {
+      reportError("Session backup failed", error);
+    }
     const operation = flushProcessors()
       .catch((error: unknown) => {
         reportError("Telemetry unload flush failed", error);
@@ -162,9 +340,11 @@ export async function useMicrosoftOpenTelemetry(
   };
   function flushProcessors(): Promise<void> {
     const processors = [...(spanProcessors ?? []), ...(logRecordProcessors ?? [])];
+    const exporterTasks = azureMonitorExporters.map((exporter) => () => exporter.forceFlush());
     return runLifecycleTasks(
       processors.map((processor) => () => processor.forceFlush()),
       "Telemetry flush failed",
+      exporterTasks,
     );
   }
 
@@ -192,12 +372,23 @@ export async function useMicrosoftOpenTelemetry(
       stopping = true;
       const errors: unknown[] = [];
       for (const cleanup of [
+        () => configSync?.shutdown(),
+        () => {
+          void exceptionEnrichment?.shutdown();
+        },
+        () => {
+          if (!initialized) pageViewInstrumentation?.rollbackStartup();
+        },
+        () => stopAzureMonitorStartup?.(),
+        () => userContext?.shutdown(),
         () => instance?.detach(),
         () => {
           void correlation?.shutdown();
         },
         () => removeUnloadSubscription?.(),
+        () => session?.backup(),
         () => session?.shutdown(),
+        () => cookies.shutdown(),
       ]) {
         try {
           cleanup();
@@ -205,12 +396,10 @@ export async function useMicrosoftOpenTelemetry(
           errors.push(error);
         }
       }
-      for (let i = instance ? instrumentations.length - 1 : -1; i >= 0; i--) {
-        try {
-          instrumentations[i].disable();
-        } catch (error) {
-          errors.push(error);
-        }
+      try {
+        instrumentationRegistry?.shutdown();
+      } catch (error) {
+        errors.push(error);
       }
       if (!initialized) {
         try {
@@ -243,55 +432,164 @@ export async function useMicrosoftOpenTelemetry(
           errors.push(error);
         }
       }
-      if (errors.length === 1) throw errors[0];
-      if (errors.length > 1) throw new AggregateError(errors, "Telemetry shutdown failed");
-    })().then(resolve, reject);
+      try {
+        // Also clean up exporters after processor failures.
+        await runLifecycleTasks(
+          azureMonitorExporters.map((exporter) => () => exporter.shutdown()),
+          "SDK stats shutdown failed",
+        );
+      } catch (error) {
+        errors.push(error);
+      }
+      throwErrors(errors, "Telemetry shutdown failed");
+    })()
+      .finally(() => {
+        const release = releasePageVisitSlot;
+        releasePageVisitSlot = undefined;
+        release?.();
+      })
+      .then(resolve, reject);
     return shutdownPromise;
   }
 
-  const handle = { forceFlush, shutdown, userContext: userContext.context };
+  const handle: MicrosoftOpenTelemetryBrowser = {
+    forceFlush,
+    shutdown,
+    get userContext() {
+      return userContext.context;
+    },
+    getCookieMgr: () => cookies,
+    updateCfg: (patch, mergeExisting) => configuration.updateCfg(patch, mergeExisting),
+    instrumentations: {
+      get: (id) => instrumentationRegistry?.get(id),
+      add: (id, instrumentation) =>
+        configuration.enqueue(() => {
+          if (!instrumentationRegistry) throw new Error("Instrumentation registry is unavailable.");
+          instrumentationRegistry.add(id, instrumentation);
+        }),
+      remove: (id) =>
+        configuration.enqueue(() => {
+          if (!instrumentationRegistry) throw new Error("Instrumentation registry is unavailable.");
+          instrumentationRegistry.remove(id);
+        }),
+      replace: (id, instrumentation) =>
+        configuration.enqueue(() => {
+          if (!instrumentationRegistry) throw new Error("Instrumentation registry is unavailable.");
+          instrumentationRegistry.replace(id, instrumentation);
+        }),
+      setEnabled: (id, enabled) =>
+        configuration.enqueue(() => {
+          if (!instrumentationRegistry) throw new Error("Instrumentation registry is unavailable.");
+          instrumentationRegistry.setEnabled(id, enabled);
+        }),
+    },
+  };
 
   try {
-    if (spanProcessors?.length !== 0 && (azureMonitor || spanProcessors === undefined)) {
-      const spanProcessor = new BatchSpanProcessor(
-        azureMonitor ? new AzureMonitorSpanExporter(azureMonitor) : new OTLPTraceExporter(),
-        batchOptions,
+    // Reserve before construction or callbacks can re-enter startup, with rollback already armed.
+    const owned = createOwnedInstrumentations(
+      { pageView, azureMonitor, storage: options.storage, traces: options.traces },
+      () => getPageOperation(correlationState.current),
+      () => readSamplingPercentage() ?? 100,
+      (namespace) => {
+        const namespaces = (getSharedRegistry().pageVisitSlots ??= new Map<string, Set<number>>());
+        const slots = namespaces.get(namespace) ?? new Set<number>();
+        namespaces.set(namespace, slots);
+        let slot = 0;
+        while (slots.has(slot)) slot++;
+        slots.add(slot);
+        releasePageVisitSlot = () => {
+          slots.delete(slot);
+          if (!slots.size) namespaces.delete(namespace);
+        };
+        return `otel.pageVisit.${namespace}.${slot}`;
+      },
+    );
+    const pageInstrumentation = (pageViewInstrumentation = owned[0]);
+    pageInstrumentation?.beginStartup();
+    correlation = pageInstrumentation
+      ? new PageViewCorrelation(
+          () => pageInstrumentation.getOperationContext(),
+          pageInstrumentation.pageViews,
+          (traceId) => pageInstrumentation.getOperationName(traceId),
+        )
+      : undefined;
+    correlationState.current = correlation;
+    // Publish the initial page operation before caller instrumentations can emit.
+    const instrumentations = [...owned, ...(options.instrumentations ?? [])];
+    if (azureMonitor) {
+      const { span, log, stop, startDiagnostics } = createAzureMonitorProcessors(
+        azureMonitor,
+        spanProcessors?.length !== 0,
+        logRecordProcessors?.length !== 0,
+        readSamplingPercentage,
+        azureMonitorExporters,
+        () => configuration.snapshot().azureMonitor.disableBeacon,
       );
-      ownedProcessors.push(spanProcessor);
-      spanProcessors = [spanProcessor, ...(spanProcessors ?? [])];
+      stopAzureMonitorStartup = stop;
+      startAzureMonitorDiagnostics = startDiagnostics;
+      // Caller processors run first, as in the JavaScript distribution, so their enrichment
+      // reaches Azure Monitor even when sampling forwards a copy of the record.
+      if (span) {
+        ownedProcessors.push(span);
+        spanProcessors = [...(spanProcessors ?? []), span];
+      }
+      if (log) {
+        ownedProcessors.push(log);
+        logRecordProcessors = [...(logRecordProcessors ?? []), log];
+      }
     }
-    if (logRecordProcessors?.length !== 0 && (azureMonitor || logRecordProcessors === undefined)) {
-      const logProcessor = azureMonitor
-        ? options.samplingPercentage === undefined
-          ? new BatchLogRecordProcessor({
-              exporter: new AzureMonitorLogRecordExporter(azureMonitor),
-              ...batchOptions,
-            })
-          : new AzureMonitorSamplingLogRecordProcessor({
-              exporter: new AzureMonitorLogRecordExporter(azureMonitor),
-              samplingPercentage,
-              ...batchOptions,
-            })
-        : new BatchLogRecordProcessor({
-            exporter: new OTLPLogExporter(),
-            ...batchOptions,
-          });
-      ownedProcessors.push(logProcessor);
-      logRecordProcessors = [logProcessor, ...(logRecordProcessors ?? [])];
-    }
+    const noDestination = !azureMonitor && !spanProcessors && !logRecordProcessors;
+    // Validate destinations before persisting identity. A new user invalidates the previous
+    // user's session backup so deleting cookies cannot silently restore their old session.
+    userContext = createCookieUserContext(
+      options.userContext?.enabled,
+      cookies,
+      namePrefix,
+      () => session?.discardBackup(),
+      cookies.canRead(`${namePrefix}ai_user`),
+      (action) => {
+        // Explicit privacy controls also clean records written by older versions. Never restore
+        // legacy authentication or access Web Storage when the caller has disabled it.
+        if (!sessionStorage) return;
+        const key = "opentelemetry-user";
+        if (action === "clear") {
+          const stored = sessionStorage.getItem(key);
+          if (stored.success && stored.value === null) return;
+          if (stored.success && stored.value !== null) {
+            try {
+              const value: unknown = JSON.parse(stored.value);
+              if (
+                typeof value === "object" &&
+                value !== null &&
+                !Array.isArray(value) &&
+                "anonymousId" in value &&
+                isNonEmptyString(value.anonymousId) &&
+                sessionStorage.setItem(key, JSON.stringify({ anonymousId: value.anonymousId }))
+              ) {
+                return;
+              }
+            } catch {
+              // Malformed records are removed rather than retained with stale authentication.
+            }
+          }
+        }
+        sessionStorage.removeItem(key);
+      },
+    );
     await session?.start();
     spanProcessors ??= [];
     logRecordProcessors ??= [];
+    await options.resource?.waitForAsyncAttributes?.();
     if (
       (traceOptions?.contextManager || traceOptions?.propagators) &&
       spanProcessors.length !== 0 &&
       isPageContextRegistered()
     ) {
-      diag.warn(
-        "Trace context options are unused because an earlier instance registered the page context",
-      );
+      diag.warn("Trace context options ignored; page context already registered");
     }
     const instanceOptions = {
+      redactedQueryParams,
       // Spread last: the caller's attributes win.
       resourceAttributes: {
         [ATTR_TELEMETRY_DISTRO_NAME]: "@microsoft/opentelemetry-browser",
@@ -300,9 +598,20 @@ export async function useMicrosoftOpenTelemetry(
       },
       sampler,
       // An empty list turns the signal off. Otherwise enrichment runs first.
-      spanProcessors: spanProcessors.length ? [contextSpanProcessor, ...spanProcessors] : [],
+      spanProcessors: spanProcessors.length
+        ? [
+            contextSpanProcessor,
+            ...(exceptionEnrichment ? [exceptionEnrichment] : []),
+            ...spanProcessors,
+          ]
+        : [],
       logRecordProcessors: logRecordProcessors.length
-        ? [contextLogRecordProcessor, ...(correlation ? [correlation] : []), ...logRecordProcessors]
+        ? [
+            contextLogRecordProcessor,
+            ...(correlation ? [correlation] : []),
+            ...(exceptionEnrichment ? [exceptionEnrichment] : []),
+            ...logRecordProcessors,
+          ]
         : [],
       contextManager: traceOptions?.contextManager,
       correlation,
@@ -311,17 +620,30 @@ export async function useMicrosoftOpenTelemetry(
     // Ownership transfers on call, including failed startup.
     processorsTransferred = true;
     instance = await startTelemetryInstance(instanceOptions);
+    // Warn only once the instance has installed the console diagnostic logger.
+    startAzureMonitorDiagnostics?.();
+    if (noDestination) {
+      diag.warn(
+        "No telemetry destination: set azureMonitor, spanProcessors or logRecordProcessors",
+      );
+    }
+    instrumentationRegistry = createInstrumentationRegistry(
+      instrumentations,
+      instance,
+      spanProcessors.length !== 0,
+      () => stopping,
+    );
     removeUnloadSubscription = subscribeToUnload(flushForUnload);
-
-    // Bind to this instance's own providers, never the global router, so collection stays in
-    // this instance's pipelines whichever instance is the default route.
-    for (const instrumentation of instrumentations) {
-      instrumentation.setTracerProvider(instance.tracerProvider);
-      instrumentation.setLoggerProvider?.(instance.loggerProvider);
-      if (!instrumentation.getConfig().enabled) instrumentation.enable();
+    instrumentationRegistry.enable();
+    if (syncOptions) {
+      const adapter = createConfigurationSync(syncOptions, configuration);
+      configSync = adapter.handle;
+      Object.defineProperty(handle, "configSync", { value: configSync, enumerable: true });
+      adapter.start();
     }
     instance.commit();
     initialized = true;
+    pageViewInstrumentation?.commitStartup();
   } catch (error) {
     try {
       await shutdown();

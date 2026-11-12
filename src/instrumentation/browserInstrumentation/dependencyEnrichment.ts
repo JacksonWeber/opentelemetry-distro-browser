@@ -37,6 +37,14 @@ interface Quota {
   count: number;
 }
 
+/** Metadata wrappers form a removable chain around the shared upstream patch. */
+export interface DependencyPatch {
+  previous: unknown;
+  wrapper?: unknown;
+  before?: DependencyPatch;
+  after?: DependencyPatch;
+}
+
 function requestData(input: string): RequestData {
   return { url: new URL(input, document.baseURI).href, start: performance.now() };
 }
@@ -149,20 +157,46 @@ export function createDependencyEnrichment(options: DependencyInstrumentationOpt
   ) {
     let enabled = false;
     let current: RequestData | undefined;
-    let requests = new WeakMap<Span, RequestData>();
+    const requests = new WeakMap<Span, RequestData>();
     const cleanups: (() => void)[] = [];
+    const enable = instrumentation.enable.bind(instrumentation);
+    const disable = instrumentation.disable.bind(instrumentation);
+    const setTracerProvider = instrumentation.setTracerProvider.bind(instrumentation);
 
     function patch<T extends object, K extends keyof T>(
       target: T,
       key: K,
       wrap: (original: T[K]) => T[K],
     ): void {
-      const previous = target[key];
-      const value = wrap(previous);
+      const targets = (getSharedRegistry().dependencyPatches ??= new WeakMap());
+      let methods = targets.get(target);
+      if (!methods) targets.set(target, (methods = new Map<PropertyKey, DependencyPatch>()));
+      const before = methods.get(key);
+      const link: DependencyPatch = { previous: target[key] };
+      const forward = function (this: unknown, ...args: unknown[]): unknown {
+        if (typeof link.previous !== "function")
+          throw new TypeError("Dependency patch is not callable");
+        return Reflect.apply(link.previous, this, args) as unknown;
+      };
+      const value = wrap(forward as T[K]);
       target[key] = value;
+      link.wrapper = value;
+      if (before && before.wrapper === link.previous) {
+        link.before = before;
+        before.after = link;
+      }
+      methods.set(key, link);
       cleanups.push(() => {
-        // A later SDK or application wrapper may still own the outermost patch.
-        if (target[key] === value) target[key] = previous;
+        if (target[key] === value) target[key] = link.previous as T[K];
+        if (link.after) {
+          link.after.previous = link.previous;
+          link.after.before = link.before;
+        }
+        if (link.before) link.before.after = link.after;
+        if (methods.get(key) === link) {
+          if (link.before) methods.set(key, link.before);
+          else methods.delete(key);
+        }
       });
     }
 
@@ -177,7 +211,7 @@ export function createDependencyEnrichment(options: DependencyInstrumentationOpt
     }
 
     function enrich(span: Span, run: () => void): void {
-      if (!enabled || !span.isRecording()) return;
+      if (!span.isRecording()) return;
       try {
         run();
       } catch {
@@ -187,9 +221,6 @@ export function createDependencyEnrichment(options: DependencyInstrumentationOpt
     }
 
     const adapter = {
-      instrumentationName: instrumentation.instrumentationName,
-      getConfig: () => instrumentation.getConfig(),
-      setLoggerProvider: instrumentation.setLoggerProvider?.bind(instrumentation),
       setTracerProvider(provider: TracerProvider): void {
         let quota = quotas.get(provider);
         if (!quota) {
@@ -197,7 +228,7 @@ export function createDependencyEnrichment(options: DependencyInstrumentationOpt
           quotas.set(provider, quota);
         }
         const budget = quota;
-        instrumentation.setTracerProvider({
+        setTracerProvider({
           getTracer(...args) {
             const tracer = provider.getTracer(...args);
             return {
@@ -239,7 +270,7 @@ export function createDependencyEnrichment(options: DependencyInstrumentationOpt
       },
       enable(): void {
         if (enabled) return;
-        instrumentation.enable();
+        enable();
         if (typeof document === "undefined") return;
         enabled = true;
         try {
@@ -255,7 +286,6 @@ export function createDependencyEnrichment(options: DependencyInstrumentationOpt
       },
       disable(): void {
         enabled = false;
-        requests = new WeakMap();
         const errors: unknown[] = [];
         for (const cleanup of cleanups.splice(0).reverse()) {
           try {
@@ -265,7 +295,7 @@ export function createDependencyEnrichment(options: DependencyInstrumentationOpt
           }
         }
         try {
-          instrumentation.disable();
+          disable();
         } catch (error) {
           errors.push(error);
         }
@@ -277,7 +307,7 @@ export function createDependencyEnrichment(options: DependencyInstrumentationOpt
     let install = (): void => {};
 
     return {
-      adapter,
+      adapter: Object.assign(instrumentation, adapter),
       enrich,
       finish(span: Span): void {
         const request = requests.get(span);

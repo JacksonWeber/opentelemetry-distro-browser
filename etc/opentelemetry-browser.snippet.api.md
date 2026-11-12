@@ -9,11 +9,66 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string;
 
 // @public
 export interface SdkLoaderConfig {
+    readonly azureMonitor?: {
+        readonly disableBeacon?: boolean;
+    };
+    readonly cdnFallback?: boolean;
     readonly connectionString: string;
+    readonly cookieCfg?: {
+        readonly enabled?: boolean;
+        readonly domain?: string;
+        readonly path?: string;
+        readonly ignoreCookies?: readonly string[];
+        readonly blockedCookies?: readonly string[];
+        readonly disableCookieDefer?: boolean;
+    };
     readonly crossOrigin?: string;
+    readonly instrumentationOptions?: {
+        readonly [name in SdkLoaderInstrumentationName]?: SdkLoaderJsonObject & {
+            readonly enabled?: boolean;
+        };
+    };
     readonly integrity?: string;
+    readonly loadDelay?: number;
+    readonly pageView?: {
+        readonly enabled?: boolean;
+        readonly autoTrackPageVisitTime?: boolean;
+        readonly redactedQueryParams?: readonly string[];
+        readonly softNavigationSettleTimeoutMs?: number;
+        readonly useNavigationApiIfAvailable?: boolean;
+    };
+    readonly redactQueryParams?: readonly string[];
+    readonly reportLoadFailure?: boolean;
+    readonly resourceAttributes?: {
+        readonly [key: string]: string | number | boolean;
+    };
+    readonly samplingPercentage?: number;
+    readonly session?: {
+        readonly enabled?: boolean;
+        readonly persist?: boolean;
+        readonly inactivityTimeout?: number;
+        readonly maxDuration?: number;
+    };
     readonly src?: string;
+    readonly storage?: {
+        readonly enabled?: boolean;
+        readonly namePrefix?: string;
+    };
+    readonly userContext?: {
+        readonly enabled?: boolean;
+    };
 }
+
+// @public
+export type SdkLoaderInstrumentationName = "console" | "errors" | "fetch" | "navigation" | "navigationTiming" | "resourceTiming" | "userAction" | "webVitals" | "xhr";
+
+// @public
+export interface SdkLoaderJsonObject {
+    readonly [key: string]: SdkLoaderJsonValue | undefined;
+}
+
+// @public
+export type SdkLoaderJsonValue = string | number | boolean | null | readonly SdkLoaderJsonValue[] | SdkLoaderJsonObject;
 
 // (No @packageDocumentation comment for this package)
 

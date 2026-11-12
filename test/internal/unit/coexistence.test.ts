@@ -4,13 +4,22 @@
 import { context, diag, propagation, trace, type TracerProvider } from "@opentelemetry/api";
 import { logs, type LoggerProvider as ApiLoggerProvider } from "@opentelemetry/api-logs";
 import { W3CTraceContextPropagator } from "@opentelemetry/core";
-import { BatchLogRecordProcessor, LoggerProvider } from "@opentelemetry/sdk-logs";
-import { BasicTracerProvider, BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { resourceFromAttributes } from "@opentelemetry/resources";
+import { LoggerProvider } from "@opentelemetry/sdk-logs";
+import { BrowserBatchLogRecordProcessor } from "../../../src/browserBatchLogRecordProcessor.js";
+import { BatchSpanProcessor } from "@opentelemetry/sdk-trace";
+import { BasicTracerProvider } from "@opentelemetry/sdk-trace-base";
 import { StackContextManager } from "@opentelemetry/sdk-trace-web";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import {
+  getManagedOperationName,
+  setManagedOperationName,
+} from "../../../src/context/operationName.js";
 import { useMicrosoftOpenTelemetry, type BrowserInstrumentation } from "../../../src/index.js";
+import { addPageCorrelation } from "../../../src/routing/pageContext.js";
 import { getRegisteredGlobal, getSharedRegistry } from "../../../src/shared/globalOwnership.js";
 import { startTelemetryInstance } from "../../../src/routing/telemetryInstance.js";
+import { USER_STORAGE_KEY } from "../../../src/user/constants.js";
 import { createInMemoryPipeline } from "../../fixtures/telemetry.js";
 
 const apiKey = Symbol.for("opentelemetry.js.api.1");
@@ -18,9 +27,12 @@ const distroKey = Symbol.for("@microsoft/opentelemetry-browser");
 const realm = globalThis as typeof globalThis & { [key: symbol]: unknown };
 const cleanup: Array<() => Promise<void>> = [];
 let previousSession: string | null;
+let previousUser: string | null;
 
 beforeEach(() => {
   previousSession = localStorage.getItem("opentelemetry-session");
+  previousUser = localStorage.getItem(USER_STORAGE_KEY);
+  localStorage.removeItem(USER_STORAGE_KEY);
 });
 
 afterEach(async () => {
@@ -38,6 +50,8 @@ afterEach(async () => {
     vi.useRealTimers();
     if (previousSession === null) localStorage.removeItem("opentelemetry-session");
     else localStorage.setItem("opentelemetry-session", previousSession);
+    if (previousUser === null) localStorage.removeItem(USER_STORAGE_KEY);
+    else localStorage.setItem(USER_STORAGE_KEY, previousUser);
   }
 });
 
@@ -60,6 +74,26 @@ function probe() {
     },
   } satisfies BrowserInstrumentation & { emit(name: string): void };
 }
+
+it("does not initialize the shared registry for exporter-only operation-name reads", () => {
+  delete realm[distroKey];
+
+  expect(getManagedOperationName({})).toBeUndefined();
+  expect(realm[distroKey]).toBeUndefined();
+});
+
+it("reuses a version 1 operation-name registry across package copies", () => {
+  const legacyRecord = {};
+  const currentRecord = {};
+  const operationNames = new WeakMap<object, string>([[legacyRecord, "Legacy"]]);
+  realm[distroKey] = { version: 1, operationNames };
+
+  setManagedOperationName(currentRecord, "Current");
+
+  expect(getManagedOperationName(legacyRecord)).toBe("Legacy");
+  expect(getManagedOperationName(currentRecord)).toBe("Current");
+  expect(operationNames.has(currentRecord)).toBe(true);
+});
 
 it.each(["trace", "logs", "context", "propagation"] as const)(
   "preserves a pre-existing %s registration while collecting into its own pipelines",
@@ -172,6 +206,35 @@ it("rejects an incompatible distribution registry before accessing storage or ca
   expect(access).not.toHaveBeenCalled();
 });
 
+it.each(["trace", "logs"] as const)(
+  "emits %s with an older page-correlation owner that has no operation name method",
+  async (signal) => {
+    const removeLegacyCorrelation = addPageCorrelation({
+      decorate: (active) => active,
+      operation: () => ({
+        traceId: "12345678901234567890123456789012",
+        spanId: "1234567890123456",
+        traceFlags: 1,
+      }),
+    });
+    cleanup.push(async () => removeLegacyCorrelation());
+    const pipeline = createInMemoryPipeline();
+    const handle = await useMicrosoftOpenTelemetry({
+      spanProcessors: signal === "trace" ? pipeline.options.spanProcessors : [],
+      logRecordProcessors: signal === "logs" ? pipeline.options.logRecordProcessors : [],
+      pageView: { enabled: false },
+    });
+    cleanup.push(() => handle.shutdown());
+
+    if (signal === "trace") trace.getTracer("newer-copy").startSpan("compatible").end();
+    else logs.getLogger("newer-copy").emit({ eventName: "compatible" });
+    await handle.forceFlush();
+
+    if (signal === "trace") expect(pipeline.spanExporter.getFinishedSpans()).toHaveLength(1);
+    else expect(pipeline.logExporter.getFinishedLogRecords()).toHaveLength(1);
+  },
+);
+
 it("allows concurrent initialization without replacing routers or mixing instrumentation telemetry", async () => {
   const first = createInMemoryPipeline();
   const second = createInMemoryPipeline();
@@ -195,12 +258,58 @@ it("allows concurrent initialization without replacing routers or mixing instrum
   await Promise.all(handles.map((handle) => handle.forceFlush()));
   expect(first.spanExporter.getFinishedSpans().map((span) => span.name)).toEqual(["a"]);
   expect(second.spanExporter.getFinishedSpans().map((span) => span.name)).toEqual(["b"]);
+  const anonymousId = first.spanExporter.getFinishedSpans()[0].attributes["enduser.pseudo.id"];
+  expect(anonymousId).toMatch(/^[0-9a-f]{32}$/);
+  for (const pipeline of [first, second]) {
+    expect(pipeline.spanExporter.getFinishedSpans()[0].attributes["enduser.pseudo.id"]).toBe(
+      anonymousId,
+    );
+    expect(pipeline.logExporter.getFinishedLogRecords()[0].attributes["enduser.pseudo.id"]).toBe(
+      anonymousId,
+    );
+  }
   const router = trace.getTracerProvider();
   await handles[0].shutdown();
   trace.getTracer("same-scope").startSpan("next").end();
   await handles[1].forceFlush();
   expect(trace.getTracerProvider()).toBe(router);
   expect(second.spanExporter.getFinishedSpans().map((span) => span.name)).toEqual(["b", "next"]);
+});
+
+it("shares persisted anonymous identity across concurrent instances", async () => {
+  const first = createInMemoryPipeline();
+  const second = createInMemoryPipeline();
+  const a = probe();
+  const b = probe();
+  const handles = await Promise.all([
+    useMicrosoftOpenTelemetry({
+      ...first.options,
+      userContext: { enabled: true },
+      pageView: { enabled: false },
+      instrumentations: [a],
+    }),
+    useMicrosoftOpenTelemetry({
+      ...second.options,
+      userContext: { enabled: true },
+      pageView: { enabled: false },
+      instrumentations: [b],
+    }),
+  ]);
+  cleanup.push(...handles.map((handle) => () => handle.shutdown()));
+  a.emit("a");
+  b.emit("b");
+  await Promise.all(handles.map((handle) => handle.forceFlush()));
+
+  const firstId = first.spanExporter.getFinishedSpans()[0].attributes["enduser.pseudo.id"];
+  const secondId = second.spanExporter.getFinishedSpans()[0].attributes["enduser.pseudo.id"];
+  expect(firstId).toMatch(/^[0-9a-f]{32}$/);
+  expect(secondId).toBe(firstId);
+  expect(first.logExporter.getFinishedLogRecords()[0].attributes["enduser.pseudo.id"]).toBe(
+    firstId,
+  );
+  expect(second.logExporter.getFinishedLogRecords()[0].attributes["enduser.pseudo.id"]).toBe(
+    firstId,
+  );
 });
 
 it.each(
@@ -427,76 +536,74 @@ it("removes only new page registrations when propagation registration fails", as
 
 it("cleans up partially created owned processors before handing them to a pipeline", async () => {
   const spanShutdown = vi.spyOn(BatchSpanProcessor.prototype, "shutdown");
-  const logShutdown = vi.spyOn(BatchLogRecordProcessor.prototype, "shutdown");
-  const failure = new Error("session storage failed");
-  vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
-    throw failure;
-  });
+  const logShutdown = vi.spyOn(BrowserBatchLogRecordProcessor.prototype, "shutdown");
+  const failure = new Error("resource resolution failed");
+  const resource = resourceFromAttributes({});
+  vi.spyOn(resource, "waitForAsyncAttributes").mockRejectedValueOnce(failure);
   await expect(
     useMicrosoftOpenTelemetry({
+      azureMonitor: { connectionString: "InstrumentationKey=00000000-0000-0000-0000-000000000000" },
+      resource,
       session: { enabled: true },
+      userContext: { enabled: false },
       pageView: { enabled: false },
     }),
   ).rejects.toBe(failure);
   expect(spanShutdown).toHaveBeenCalledOnce();
   expect(logShutdown).toHaveBeenCalledOnce();
+  for (const signal of ["trace", "logs", "context", "propagation"] as const) {
+    expect(getRegisteredGlobal(signal)).toBeUndefined();
+  }
 });
 
-it.each(["OTLP", "Azure Monitor"])(
-  "cleans up owned %s processors when the application's diagnostic logger throws during startup",
-  async (destination) => {
-    const failure = new Error("application diagnostic logger failed");
-    const logger = {
-      error: vi.fn(),
-      warn: vi.fn<() => void>(() => {
-        throw failure;
-      }),
-      info: vi.fn(),
-      debug: vi.fn(),
-      verbose: vi.fn(),
-    };
-    diag.setLogger(logger);
-    const spanShutdown = vi.spyOn(BatchSpanProcessor.prototype, "shutdown");
-    const logShutdown = vi.spyOn(BatchLogRecordProcessor.prototype, "shutdown");
-    const instrumentation = probe();
-    const bind = vi.spyOn(instrumentation, "setTracerProvider");
+it("cleans up owned Azure Monitor processors when the application's diagnostic logger throws during startup", async () => {
+  const failure = new Error("application diagnostic logger failed");
+  const logger = {
+    error: vi.fn(),
+    warn: vi.fn<() => void>(() => {
+      throw failure;
+    }),
+    info: vi.fn(),
+    debug: vi.fn(),
+    verbose: vi.fn(),
+  };
+  diag.setLogger(logger);
+  const spanShutdown = vi.spyOn(BatchSpanProcessor.prototype, "shutdown");
+  const logShutdown = vi.spyOn(BrowserBatchLogRecordProcessor.prototype, "shutdown");
+  const instrumentation = probe();
+  const bind = vi.spyOn(instrumentation, "setTracerProvider");
 
-    await expect(
-      useMicrosoftOpenTelemetry({
-        ...(destination === "Azure Monitor"
-          ? {
-              azureMonitor: {
-                connectionString: "InstrumentationKey=00000000-0000-0000-0000-000000000000",
-              },
-            }
-          : {}),
-        pageView: { enabled: false },
-        instrumentations: [instrumentation],
-      }),
-    ).rejects.toBe(failure);
-
-    expect(spanShutdown).toHaveBeenCalledOnce();
-    expect(logShutdown).toHaveBeenCalledOnce();
-    expect(getSharedRegistry().diagInitialized).not.toBe(true);
-    expect(bind).not.toHaveBeenCalled();
-    for (const signal of ["trace", "logs", "context", "propagation"] as const) {
-      expect(getRegisteredGlobal(signal)).toBeUndefined();
-    }
-
-    logger.warn.mockImplementation(() => {});
-    const pipeline = createInMemoryPipeline();
-    const handle = await useMicrosoftOpenTelemetry({
-      ...pipeline.options,
+  await expect(
+    useMicrosoftOpenTelemetry({
+      azureMonitor: {
+        connectionString: "InstrumentationKey=00000000-0000-0000-0000-000000000000",
+      },
       pageView: { enabled: false },
-    });
-    cleanup.push(() => handle.shutdown());
-    expect(logger.warn).toHaveBeenCalledTimes(2);
-    expect(getSharedRegistry().diagInitialized).toBe(true);
-    trace.getTracer("retry").startSpan("retry").end();
-    await handle.forceFlush();
-    expect(pipeline.spanExporter.getFinishedSpans()).toHaveLength(1);
-  },
-);
+      instrumentations: [instrumentation],
+    }),
+  ).rejects.toBe(failure);
+
+  expect(spanShutdown).toHaveBeenCalledOnce();
+  expect(logShutdown).toHaveBeenCalledOnce();
+  expect(getSharedRegistry().diagInitialized).not.toBe(true);
+  expect(bind).not.toHaveBeenCalled();
+  for (const signal of ["trace", "logs", "context", "propagation"] as const) {
+    expect(getRegisteredGlobal(signal)).toBeUndefined();
+  }
+
+  logger.warn.mockImplementation(() => {});
+  const pipeline = createInMemoryPipeline();
+  const handle = await useMicrosoftOpenTelemetry({
+    ...pipeline.options,
+    pageView: { enabled: false },
+  });
+  cleanup.push(() => handle.shutdown());
+  expect(logger.warn).toHaveBeenCalledTimes(2);
+  expect(getSharedRegistry().diagInitialized).toBe(true);
+  trace.getTracer("retry").startSpan("retry").end();
+  await handle.forceFlush();
+  expect(pipeline.spanExporter.getFinishedSpans()).toHaveLength(1);
+});
 
 it.each(["resource", "logger provider"] as const)(
   "shuts down caller processors exactly once after an early %s failure",

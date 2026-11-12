@@ -5,6 +5,7 @@ import { SpanKind, context, diag, propagation, trace } from "@opentelemetry/api"
 import { SeverityNumber, logs } from "@opentelemetry/api-logs";
 import { FetchInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/fetch";
 import { NavigationInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/navigation";
+import { XhrInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/xhr";
 import { afterEach, expect, it, vi } from "vitest";
 import type { MicrosoftOpenTelemetryBrowser } from "../../src/index.js";
 import { createInMemoryPipeline } from "../fixtures/telemetry.js";
@@ -95,7 +96,7 @@ for (const file of ["index.js", "index.min.js"]) {
       kind: SpanKind.CLIENT,
       instrumentationScope: { name: "@opentelemetry/browser-instrumentation/fetch" },
       attributes: {
-        "url.full": "/registration-request",
+        "url.full": new URL("/registration-request", document.baseURI).href,
         "http.request.method": "GET",
         "http.response.status_code": 204,
         "server.address": location.hostname,
@@ -116,28 +117,107 @@ for (const file of ["index.js", "index.min.js"]) {
     expect(httpDisable).toHaveBeenCalledOnce();
   });
 
-  it(`rebinds an already-enabled navigation logger created before initialization through ${file}`, async () => {
+  it.each([
+    [false, true],
+    [true, true],
+    [true, false],
+  ])(
+    `redacts concurrent fetch/XHR URLs per instance without changing requests through ${file} (relative sanitizer: %s, configured parameters: %s)`,
+    async (relative, configured) => {
+      const distro = await loadDistro();
+      const pipelines = [createInMemoryPipeline(), createInMemoryPipeline()];
+      const sanitizeUrl = relative
+        ? (url: string): string => {
+            const parsed = new URL(url);
+            return parsed.pathname + parsed.search + "#access_token=private&alpha=one&beta=two";
+          }
+        : undefined;
+      for (const [index, pipeline] of pipelines.entries()) {
+        const handle = await distro.useMicrosoftOpenTelemetry({
+          ...pipeline.options,
+          session: { enabled: false },
+          userContext: { enabled: false },
+          pageView: { enabled: false },
+          redactQueryParams: configured ? [index === 0 ? "alpha" : "beta"] : undefined,
+          // Independently constructed upstream instances must receive the same protection.
+          instrumentations: [
+            new FetchInstrumentation({ enabled: false, sanitizeUrl }),
+            new XhrInstrumentation({ enabled: false, sanitizeUrl }),
+          ],
+        });
+        handles.add(handle);
+      }
+      const urls = ["fetch-one", "fetch-two", "xhr-one", "xhr-two"].map(
+        (request) =>
+          new URL(`/?request=${request}&token=private&alpha=one&beta=two`, location.origin).href,
+      );
+      const responses = await Promise.all([
+        ...urls.slice(0, 2).map(async (url) => {
+          const response = await fetch(url);
+          await response.text();
+          return response.url;
+        }),
+        ...urls.slice(2).map(
+          (url) =>
+            new Promise<string>((resolve, reject) => {
+              const xhr = new XMLHttpRequest();
+              xhr.open("GET", url);
+              xhr.onload = () => resolve(xhr.responseURL);
+              xhr.onerror = () => reject(new Error("XHR failed"));
+              xhr.send();
+            }),
+        ),
+      ]);
+      expect(responses).toEqual(urls);
+      for (const [index, pipeline] of pipelines.entries()) {
+        // Fetch instrumentation finishes after its response-body reader settles.
+        await vi.waitFor(async () => {
+          await pipeline.forceFlush();
+          expect(pipeline.spanExporter.getFinishedSpans()).toHaveLength(4);
+        });
+        const spans = pipeline.spanExporter.getFinishedSpans();
+        expect(spans).toHaveLength(4);
+        expect(spans.map((span) => span.attributes["url.full"]).sort()).toEqual(
+          urls
+            .map((url) => {
+              const output = relative ? `${url}#access_token=private&alpha=one&beta=two` : url;
+              const redacted = output.replaceAll("token=private", "token=REDACTED");
+              return configured
+                ? redacted.replaceAll(
+                    index === 0 ? "alpha=one" : "beta=two",
+                    index === 0 ? "alpha=REDACTED" : "beta=REDACTED",
+                  )
+                : redacted;
+            })
+            .sort(),
+        );
+        expect(new Set(spans.map((span) => span.instrumentationScope.name))).toEqual(
+          new Set([
+            "@opentelemetry/browser-instrumentation/fetch",
+            "@opentelemetry/browser-instrumentation/xhr",
+          ]),
+        );
+      }
+    },
+  );
+
+  it(`rejects already-enabled navigation before binding providers through ${file}`, async () => {
     const distro = await loadDistro();
     const pipeline = createInMemoryPipeline();
     const navigation = new NavigationInstrumentation();
     const enable = vi.spyOn(navigation, "enable");
-    const handle = await distro.useMicrosoftOpenTelemetry({
-      ...pipeline.options,
-      instrumentations: [navigation],
-      // This covers rebinding, so the distribution's own page view is switched off to keep the
-      // emitted set exact. Left on, upstream navigation and page view both report the route.
-      pageView: { enabled: false },
-    });
-    handles.add(handle);
-    history.pushState(null, "", "/rebound");
-    await pipeline.logProcessor.forceFlush();
-    expect(pipeline.logExporter.getFinishedLogRecords()).toEqual([
-      expect.objectContaining({
-        eventName: "browser.navigation",
-        attributes: expect.objectContaining({ "url.full": `${location.origin}/rebound` }),
-      }),
-    ]);
-    expect(enable).not.toHaveBeenCalled();
+    try {
+      await expect(
+        distro.useMicrosoftOpenTelemetry({
+          ...pipeline.options,
+          instrumentations: [navigation],
+          pageView: { enabled: false },
+        }),
+      ).rejects.toThrow("browser-instrumentation-active");
+      expect(enable).not.toHaveBeenCalled();
+    } finally {
+      navigation.disable();
+    }
   });
 
   it(`leaves browser APIs untouched when everything is switched off through ${file}`, async () => {

@@ -29,6 +29,16 @@ information, see the
 3. Install dependencies and Chromium.
 4. Run the repository checks before opening a pull request.
 
+Use Node.js 22.23.4+, 24.22.1+, or 26.12.1+ on a supported release line. These minimums
+include the CVE-2026-111497 native Brotli decoder fix. Repository, sample, and POC installs
+enforce the engine requirements. CDN verification/publishing and performance tools also reject
+unsupported Node versions before network work, including when invoked directly without npm.
+The checks stay out of the published browser bundles.
+
+CI selects the latest patch satisfying the required minimum for each tested Node major.
+Keep self-hosted runners current as well: JavaScript actions use runner-managed Node runtimes,
+which `actions/setup-node` does not update.
+
 ```powershell
 npm ci
 npm run test:install-browsers

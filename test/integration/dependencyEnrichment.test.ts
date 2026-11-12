@@ -170,7 +170,7 @@ describe.each<Transport>(["fetch", "xhr"])("%s dependency enrichment", (transpor
     );
     await send(transport, `${endpoint}?timing=${transport}#client-fragment`);
     const [span] = await pipeline.captured(1);
-    expect(span.attributes["url.full"]).toBe("/sanitized");
+    expect(span.attributes["url.full"]).toBe(new URL("/sanitized", location.href).href);
     expect(
       span.attributes["browser.dependency.duration"],
       JSON.stringify(
@@ -424,4 +424,61 @@ it("releases owned patches and ignores in-flight enrichment after shutdown", asy
   await pending;
   await send("xhr");
   expect(onEnd).not.toHaveBeenCalled();
+});
+
+it.each(["fetch", "xhr"] as const)(
+  "isolates two enriched %s owners and restores every patch after out-of-order shutdown",
+  async (transport) => {
+    const fetchBefore = globalThis.fetch;
+    const openBefore = XMLHttpRequest.prototype.open;
+    const sendBefore = XMLHttpRequest.prototype.send;
+    const headerBefore = XMLHttpRequest.prototype.setRequestHeader;
+    const selected = { [transport === "fetch" ? "xhr" : "fetch"]: { enabled: false } };
+    const first = await start(
+      { captureRequestHeaders: true, enableResourceTiming: true, maxDependenciesPerView: 1 },
+      selected,
+    );
+    const second = await start(
+      { captureResponseHeaders: true, enableResourceTiming: true, maxDependenciesPerView: 2 },
+      selected,
+    );
+    await send(transport, endpoint, [["x-public", "request"]]);
+    const [firstSpan] = await first.captured(1);
+    const [secondSpan] = await second.captured(1);
+    expect(firstSpan.attributes["http.request.header.x-public"]).toEqual(["request"]);
+    expect(firstSpan.attributes["http.response.header.x-public"]).toBeUndefined();
+    expect(secondSpan.attributes["http.request.header.x-public"]).toBeUndefined();
+    expect(secondSpan.attributes["http.response.header.x-public"]).toEqual(["response"]);
+    expect(firstSpan.parentSpanContext?.spanId).toBe(secondSpan.parentSpanContext?.spanId);
+    await first.handle.shutdown();
+    await send(transport);
+    await second.captured(2);
+    await second.handle.shutdown();
+    expect(globalThis.fetch).toBe(fetchBefore);
+    expect(XMLHttpRequest.prototype.open).toBe(openBefore);
+    expect(XMLHttpRequest.prototype.send).toBe(sendBefore);
+    expect(XMLHttpRequest.prototype.setRequestHeader).toBe(headerBefore);
+  },
+);
+
+it("preserves in-flight enrichment and the budget across runtime pause and resume", async () => {
+  const pipeline = await start({
+    captureRequestHeaders: true,
+    captureResponseHeaders: true,
+    enableResourceTiming: true,
+    maxDependenciesPerView: 2,
+  });
+  const pending = send("fetch", `${endpoint}?delay=50`, [["x-public", "pending"]]);
+  await pipeline.handle.updateCfg({ disableFetchTracking: true });
+  await send("fetch");
+  await pending;
+  const [first] = await pipeline.captured(1);
+  expect(first.attributes["http.request.header.x-public"]).toEqual(["pending"]);
+  expect(first.attributes["http.response.header.x-public"]).toEqual(["response"]);
+  expect(first.attributes["browser.dependency.duration"]).toEqual(expect.any(Number));
+  await pipeline.handle.updateCfg({ disableFetchTracking: false });
+  await send("fetch");
+  await pipeline.captured(2);
+  await send("xhr");
+  await pipeline.captured(2);
 });

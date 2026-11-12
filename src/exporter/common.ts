@@ -2,6 +2,15 @@
 // Licensed under the MIT License.
 
 import type { Attributes, HrTime, SpanContext } from "@opentelemetry/api";
+import { SDK_INFO } from "@opentelemetry/core";
+import {
+  ATTR_SERVICE_VERSION,
+  ATTR_TELEMETRY_SDK_VERSION,
+} from "@opentelemetry/semantic-conventions";
+import {
+  ATTR_USER_AGENT_OS_NAME,
+  ATTR_USER_AGENT_OS_VERSION,
+} from "@opentelemetry/semantic-conventions/incubating";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../shared/constants.js";
 import { isNonEmptyString, selectNonEmptyString } from "../shared/isNonEmptyString.js";
 import { isPageContext } from "../shared/pageOperationContext.js";
@@ -13,8 +22,11 @@ import {
   ATTR_USER_ID,
 } from "../user/constants.js";
 import { AZURE_MONITOR_SAMPLE_RATE } from "../sampling.js";
+import { MaxPropertyLengths } from "./constants.js";
 
 let unloadingCount = 0;
+let textDecoder: TextDecoder | undefined;
+let textEncoder: TextEncoder | undefined;
 
 export function isUnloading(): boolean {
   return unloadingCount > 0;
@@ -68,17 +80,59 @@ export function serializeAttribute(value: unknown): string {
   }
 }
 
+export function truncateToLength(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  const truncated = value.substring(0, maxLength);
+  return /[\uD800-\uDBFF]$/.test(truncated)
+    ? truncated.substring(0, truncated.length - 1)
+    : truncated;
+}
+
+export function getSdkVersion(): string {
+  const sdkVersion = SDK_INFO[ATTR_TELEMETRY_SDK_VERSION];
+  return `browser:otel${sdkVersion}:mot${OPENTELEMETRY_BROWSER_VERSION}`;
+}
+
+export function truncateCustomDimensions(
+  properties: Record<string, unknown>,
+): Record<string, string> {
+  const result: Record<string, string> = {};
+  textEncoder ??= new TextEncoder();
+
+  for (const key of Object.keys(properties)) {
+    let value =
+      typeof properties[key] === "string" ? properties[key] : serializeAttribute(properties[key]);
+    const maxSize: number = MaxPropertyLengths.THIRTEEN_BIT;
+    const valueBytes = textEncoder.encode(value);
+    if (valueBytes.byteLength > maxSize) {
+      let end = maxSize;
+      while ((valueBytes[end] & 0xc0) === 0x80) end--;
+      textDecoder ??= new TextDecoder();
+      value = textDecoder.decode(valueBytes.subarray(0, end));
+    }
+    result[key] = value;
+  }
+
+  return result;
+}
+
 export function mapAttributes(
   attributes: Attributes,
   promotedAttributes: ReadonlySet<string>,
+  omitPromotedOsAttributes = false,
 ): Pick<AzureMonitorBaseData, "properties" | "measurements"> {
   const properties: Record<string, string> = {};
   const measurements: Record<string, number> = {};
+  const hasPromotedOs =
+    omitPromotedOsAttributes &&
+    isNonEmptyString(attributes[ATTR_USER_AGENT_OS_NAME]) &&
+    isNonEmptyString(attributes[ATTR_USER_AGENT_OS_VERSION]);
 
   for (const [key, value] of Object.entries(attributes)) {
     if (
       value === undefined ||
       promotedAttributes.has(key) ||
+      (hasPromotedOs && (key === ATTR_USER_AGENT_OS_NAME || key === ATTR_USER_AGENT_OS_VERSION)) ||
       (key === "session.id" && isNonEmptyString(value))
     ) {
       continue;
@@ -91,7 +145,8 @@ export function mapAttributes(
   }
 
   return {
-    properties: Object.keys(properties).length > 0 ? properties : undefined,
+    properties:
+      Object.keys(properties).length > 0 ? truncateCustomDimensions(properties) : undefined,
     measurements: Object.keys(measurements).length > 0 ? measurements : undefined,
   };
 }
@@ -102,15 +157,39 @@ export function createTags(
   serviceName: unknown,
   attributes: Attributes,
   resourceAttributes: Attributes,
+  operationName?: string,
 ): Record<string, string> {
   const tags: Record<string, string> = {
-    "ai.internal.sdkVersion": `mot${OPENTELEMETRY_BROWSER_VERSION}`,
+    "ai.internal.sdkVersion": getSdkVersion(),
+    "ai.device.type": "Browser",
+    "ai.device.id": "browser",
   };
   if (traceId) tags["ai.operation.id"] = traceId;
+  if (operationName) {
+    tags["ai.operation.name"] = truncateToLength(operationName, MaxPropertyLengths.TEN_BIT);
+  }
   if (parentContext?.spanId && !isPageContext(parentContext)) {
     tags["ai.operation.parentId"] = parentContext.spanId;
   }
   if (serviceName) tags["ai.cloud.role"] = serializeAttribute(serviceName);
+  const serviceInstance = resourceAttributes["service.instance.id"];
+  if (serviceInstance) tags["ai.cloud.roleInstance"] = serializeAttribute(serviceInstance);
+  const serviceVersion = resourceAttributes[ATTR_SERVICE_VERSION];
+  if (serviceVersion) {
+    tags["ai.application.ver"] = truncateToLength(
+      serializeAttribute(serviceVersion),
+      MaxPropertyLengths.TEN_BIT,
+    );
+  }
+  const attributeOsName = attributes[ATTR_USER_AGENT_OS_NAME];
+  const attributeOsVersion = attributes[ATTR_USER_AGENT_OS_VERSION];
+  const resourceOsName = resourceAttributes[ATTR_USER_AGENT_OS_NAME];
+  const resourceOsVersion = resourceAttributes[ATTR_USER_AGENT_OS_VERSION];
+  if (isNonEmptyString(attributeOsName) && isNonEmptyString(attributeOsVersion)) {
+    tags["ai.device.osVersion"] = `${attributeOsName}${attributeOsVersion}`;
+  } else if (isNonEmptyString(resourceOsName) && isNonEmptyString(resourceOsVersion)) {
+    tags["ai.device.osVersion"] = `${resourceOsName}${resourceOsVersion}`;
+  }
   const anonymousUserId = selectNonEmptyString(
     attributes[ATTR_ENDUSER_PSEUDO_ID],
     resourceAttributes[ATTR_ENDUSER_PSEUDO_ID],
@@ -132,15 +211,22 @@ export function createTags(
   if (isNonEmptyString(accountId)) {
     tags["ai.user.accountId"] = accountId;
   }
-  if (isNonEmptyString(attributes["session.id"])) {
-    tags["ai.session.id"] = attributes["session.id"];
+  const sessionId = selectNonEmptyString(
+    attributes["session.id"],
+    resourceAttributes["session.id"],
+  );
+  if (sessionId !== undefined) {
+    tags["ai.session.id"] = sessionId;
   }
   return tags;
 }
 
+/**
+ * Creates an envelope whose name is derived from `baseType`, for example `MessageData` becomes
+ * `Microsoft.ApplicationInsights.Message`.
+ */
 export function createEnvelope<T extends AzureMonitorBaseData>(
   instrumentationKey: string,
-  name: string,
   time: string,
   tags: Readonly<Record<string, string>>,
   baseType: AzureMonitorEnvelope["data"]["baseType"],
@@ -148,14 +234,47 @@ export function createEnvelope<T extends AzureMonitorBaseData>(
   sampleRate = 100,
 ): AzureMonitorEnvelope<T> {
   return {
-    name,
+    name: `Microsoft.ApplicationInsights.${baseType.slice(0, -4)}`,
     time,
     iKey: instrumentationKey,
-    sampleRate,
+    sampleRate: sampleRate === 100 ? undefined : sampleRate,
     tags,
-    ver: 1,
     data: { baseType, baseData },
   };
+}
+
+export interface EnvelopeBatch<T extends AzureMonitorBaseData = AzureMonitorBaseData> {
+  body: string;
+  envelopes: readonly AzureMonitorEnvelope<T>[];
+}
+
+export function createEnvelopeBatches<T extends AzureMonitorBaseData>(
+  envelopes: readonly AzureMonitorEnvelope<T>[],
+  maxBatchSize: number,
+): EnvelopeBatch<T>[] {
+  const encoder = new TextEncoder();
+  const requests: EnvelopeBatch<T>[] = [];
+  let batch: AzureMonitorEnvelope<T>[] = [];
+  let serializedBatch: string[] = [];
+  let batchSize = 2;
+  const flush = (): void => {
+    if (batch.length === 0) return;
+    requests.push({ body: `[${serializedBatch.join(",")}]`, envelopes: batch });
+    batch = [];
+    serializedBatch = [];
+    batchSize = 2;
+  };
+  for (const envelope of envelopes) {
+    // Send an oversized individual envelope alone so ingestion can report its failure.
+    const serialized = JSON.stringify(envelope);
+    const size = encoder.encode(serialized).byteLength;
+    if (batch.length > 0 && batchSize + 1 + size > maxBatchSize) flush();
+    batch.push(envelope);
+    serializedBatch.push(serialized);
+    batchSize += (batch.length === 1 ? 0 : 1) + size;
+  }
+  flush();
+  return requests;
 }
 
 export function getSampleRate(attributes: Attributes): number {

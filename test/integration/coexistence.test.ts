@@ -1,9 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { context, diag, propagation, trace } from "@opentelemetry/api";
+import { context, createContextKey, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
-import { afterEach, expect, inject, it, vi } from "vitest";
+import { BatchLogRecordProcessor } from "@opentelemetry/sdk-logs";
+import { SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { afterEach, beforeEach, expect, inject, it, vi } from "vitest";
 import type { AzureMonitorEnvelope } from "../../src/exporter/telemetryModels.js";
 import {
   useMicrosoftOpenTelemetry,
@@ -13,6 +15,12 @@ import {
 import { createInMemoryPipeline } from "../fixtures/telemetry.js";
 import { loadBrowserScript } from "../fixtures/browserBundle.js";
 import realmSource from "../fixtures/coexistenceRealm.js?raw";
+import { withoutSdkStats } from "../fixtures/sdkStats.js";
+
+beforeEach(() => {
+  const fetch = globalThis.fetch.bind(globalThis);
+  vi.spyOn(globalThis, "fetch").mockImplementation(withoutSdkStats(fetch));
+});
 
 interface Installation {
   trace: typeof trace;
@@ -21,6 +29,8 @@ interface Installation {
   propagation: typeof propagation;
   diag: typeof diag;
   useMicrosoftOpenTelemetry: typeof useMicrosoftOpenTelemetry;
+  AzureMonitorLogRecordExporter: typeof import("../../src/index.js").AzureMonitorLogRecordExporter;
+  AzureMonitorSpanExporter: typeof import("../../src/index.js").AzureMonitorSpanExporter;
 }
 
 const handles: MicrosoftOpenTelemetryBrowser[] = [];
@@ -59,7 +69,7 @@ async function loadCopies(mode = "isolated"): Promise<[Installation, Installatio
       scripts.push(await loadBrowserScript(`opentelemetry-browser.iife.${suffix}`));
       const bundle = window.Microsoft?.OpenTelemetry;
       if (!bundle) throw new Error("The IIFE bundle did not initialize");
-      copy = bundle;
+      copy = bundle as unknown as Installation;
     }
     copies.push(copy);
     installations.push(copy);
@@ -238,6 +248,53 @@ it("hands page correlation to a surviving distribution copy", async () => {
   }
 });
 
+it.each(["shared", "isolated"])(
+  "removes captured server parents across distribution copies with %s APIs",
+  async (mode) => {
+    const meta = document.createElement("meta");
+    meta.name = "traceparent";
+    meta.content = `00-${"1".repeat(32)}-${"2".repeat(16)}-01`;
+    document.head.append(meta);
+    try {
+      const [host, remote] = await loadCopies(mode);
+      const first = createPipeline();
+      const second = createPipeline();
+      const owner = await host.useMicrosoftOpenTelemetry({ ...first.options, pageView: {} });
+      handles.push(owner);
+      const survivor = await remote.useMicrosoftOpenTelemetry(second.options);
+      handles.push(survivor);
+      const key = createContextKey("application-data");
+      const captured = host.context.active().setValue(key, "retained");
+      const parent = host.trace.getSpanContext(captured)!;
+      expect(parent).toMatchObject({
+        traceId: "1".repeat(32),
+        spanId: "2".repeat(16),
+        isRemote: true,
+      });
+      const pageCallback = remote.context.bind(captured, () => remote.context.active());
+      const explicit = remote.trace.setSpanContext(captured, { ...parent });
+      const applicationCallback = remote.context.bind(explicit, () => remote.context.active());
+      await owner.shutdown();
+      const remaining = pageCallback();
+      expect(remote.trace.getSpanContext(remaining)).toBeUndefined();
+      expect(remaining.getValue(key)).toBe("retained");
+      expect(applicationCallback()).toBe(explicit);
+      const headers: Record<string, string> = {};
+      remote.propagation.inject(remaining, headers);
+      expect(headers).toEqual({});
+      remote.context.with(captured, () => {
+        remote.trace.getTracer("survivor").startSpan("after shutdown").end();
+        remote.logs.getLogger("survivor").emit({ body: "after shutdown" });
+      });
+      await survivor.forceFlush();
+      expect(second.spans.getFinishedSpans()[0].parentSpanContext).toBeUndefined();
+      expect(second.records.getFinishedLogRecords()[0].spanContext).toBeUndefined();
+    } finally {
+      meta.remove();
+    }
+  },
+);
+
 it("recognizes another copy's page context when exporting to Azure Monitor", async () => {
   const [host, remote] = await loadCopies();
   const first = createPipeline();
@@ -264,6 +321,43 @@ it("recognizes another copy's page context when exporting to Azure Monitor", asy
   for (const envelope of captured) {
     expect(envelope.tags["ai.operation.id"]).toBe(operation?.traceId);
     expect(envelope.tags).not.toHaveProperty("ai.operation.parentId");
+  }
+});
+
+it("shares managed operation names with exporters from another distribution copy", async () => {
+  const [host, remote] = await loadCopies();
+  const runId = crypto.randomUUID();
+  const endpoint = `${inject("ingestionEndpoint")}${runId}`;
+  const azureMonitor = {
+    connectionString:
+      `InstrumentationKey=00000000-0000-0000-0000-000000000000;` + `IngestionEndpoint=${endpoint}`,
+  };
+  const handle = await host.useMicrosoftOpenTelemetry({
+    spanProcessors: [new SimpleSpanProcessor(new remote.AzureMonitorSpanExporter(azureMonitor))],
+    logRecordProcessors: [
+      new BatchLogRecordProcessor({
+        exporter: new remote.AzureMonitorLogRecordExporter(azureMonitor),
+      }),
+    ],
+    pageView: { routeResolver: () => "Cross-copy route" },
+  });
+  handles.push(handle);
+
+  host.trace.getTracer("cross-copy-exporter").startSpan("cross-copy-span").end();
+  host.logs.getLogger("cross-copy-exporter").emit({ eventName: "cross-copy-log" });
+  await handle.forceFlush();
+
+  const captured: AzureMonitorEnvelope[] = await fetch(
+    `${new URL(endpoint).origin}/captured?runId=${encodeURIComponent(runId)}`,
+  ).then((response) => response.json());
+  const application = captured.filter((envelope) =>
+    ["cross-copy-span", "cross-copy-log"].includes(
+      String("name" in envelope.data.baseData ? envelope.data.baseData.name : ""),
+    ),
+  );
+  expect(application).toHaveLength(2);
+  for (const envelope of application) {
+    expect(envelope.tags["ai.operation.name"]).toBe("Cross-copy route");
   }
 });
 

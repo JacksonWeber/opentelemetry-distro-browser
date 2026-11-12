@@ -1,6 +1,6 @@
 {
   "name": "@microsoft/opentelemetry-browser",
-  "version": "0.1.0-alpha.3",
+  "version": "0.1.0-beta.2",
   "description": "OpenTelemetry distribution for the browser",
   "license": "MIT",
   "type": "module",
@@ -43,14 +43,8 @@
     "LICENSE"
   ],
   "sideEffects": false,
-  "browserslist": [
-    "Chrome >= 94",
-    "Edge >= 94",
-    "Firefox >= 93",
-    "Safari >= 15.4"
-  ],
   "engines": {
-    "node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+    "node": "^22.23.4 || ^24.22.1 || >=26.12.1",
     "npm": ">=10"
   },
   "repository": {
@@ -59,11 +53,12 @@
   },
   "publishConfig": {
     "access": "public",
-    "tag": "alpha"
+    "tag": "beta"
   },
   "scripts": {
     "clean": "node scripts/clean.mjs",
     "build": "npm run clean && rollup --config && node scripts/cdn.mjs",
+    "docs": "typedoc",
     "typecheck": "tsc --noEmit -p tsconfig.src.json && tsc --noEmit -p tsconfig.test.json",
     "lint": "eslint . --max-warnings 0",
     "lint:fix": "npm run lint -- --fix",
@@ -73,22 +68,24 @@
     "test": "vitest run",
     "test:unit": "vitest run --config vitest.unit.config.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
-    "test:browser-support": "node --test test/acceptance/browserSupport.test.mjs",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "test:install-browsers": "playwright install chromium firefox webkit",
     "test:watch": "vitest",
     "test:coverage": "vitest run --config vitest.config.ts --coverage",
-    "test:build": "node --test test/build/package.test.mjs test/build/size-harness.test.mjs test/build/cdn.test.mjs",
+    "test:build": "node --test test/build/package.test.mjs test/build/size-harness.test.mjs test/build/cdn.test.mjs test/build/cdn-aliases.test.mjs",
     "test:report": "node --test test/report/coverage.test.mjs && python -m unittest discover -s test/report -p *_test.py",
     "api:check": "api-extractor run && api-extractor run --config api-extractor.instrumentations.json && api-extractor run --config api-extractor.snippet.json",
     "api:update": "npm run build && api-extractor run --local && api-extractor run --local --config api-extractor.instrumentations.json && api-extractor run --local --config api-extractor.snippet.json",
     "cdn:publish": "node scripts/publish-cdn.mjs",
+    "cdn:activate": "node scripts/activate-cdn.mjs",
+    "cdn:verify": "node scripts/verify-cdn.mjs",
     "size": "node scripts/measure-bundle-size.mjs",
     "size:compare": "node scripts/compare-bundle-size.mjs",
     "size:report": "npm run size",
     "perf": "node scripts/perf/run.mjs",
     "perf:export": "node scripts/perf/export.mjs",
     "test:perf": "node --test test/perf/*.test.mjs",
-    "check": "npm run format && npm run lint && npm run typecheck && npm run test:report && npm run test:perf && npm run test:unit && npm run test:coverage && npm run build && npm run test:build && npm run test:integration && npm run api:check && npm run size",
+    "check": "npm run format && npm run lint && npm run docs && npm run typecheck && npm run test:report && npm run test:perf && npm run test:unit && npm run test:coverage && npm run build && npm run test:build && npm run test:integration && npm run test:e2e && npm run api:check && npm run size",
     "prepack": "npm run build"
   },
   "dependencies": {
@@ -117,23 +114,26 @@
     "@rollup/plugin-node-resolve": "^16.0.3",
     "@rollup/plugin-terser": "^1.0.0",
     "@rollup/plugin-typescript": "^12.3.0",
+    "@swc/core": "^1.16.18",
     "@types/node": "^22.20.2",
-    "@vitest/browser-playwright": "5.0.0",
-    "@vitest/coverage-v8": "5.0.0",
+    "@vitest/browser": "5.0.5",
+    "@vitest/browser-playwright": "5.0.5",
+    "@vitest/coverage-v8": "5.0.5",
     "acorn": "^8.18.0",
     "eslint": "^10.10.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-security": "4.0.1",
     "globals": "^17.12.0",
+    "magic-string": "^0.30.21",
     "playwright": "^1.63.0",
     "prettier": "3.9.6",
     "rollup": "^4.63.1",
     "rollup-plugin-dts": "^6.5.1",
     "rollup-plugin-visualizer": "^7.1.1",
-    "selenium-webdriver": "4.50.0",
     "tslib": "^2.8.1",
+    "typedoc": "^0.28.20",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.70.0",
-    "vitest": "5.0.0"
+    "vitest": "5.0.5"
   }
 }

@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/@microsoft/opentelemetry-browser?label=npm&color=cb3837)](https://www.npmjs.com/package/@microsoft/opentelemetry-browser)
 [![Build](https://github.com/microsoft/opentelemetry-distro-browser/actions/workflows/pr-validation.yml/badge.svg)](https://github.com/microsoft/opentelemetry-distro-browser/actions/workflows/pr-validation.yml)
-[![Status: alpha](https://img.shields.io/badge/status-alpha-orange)](CHANGELOG.md)
+[![Status: beta](https://img.shields.io/badge/status-beta-yellow)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Microsoft's OpenTelemetry distribution for browser applications. It provides one initialization
@@ -15,7 +15,10 @@ This package is the browser sibling of the Microsoft OpenTelemetry distributions
 [Python](https://github.com/microsoft/opentelemetry-distro-python).
 
 > [!IMPORTANT]
-> The package is currently an alpha release. APIs may change before the first stable release.
+> The package is currently a beta release. APIs may change before the first stable release.
+
+See the [configuration reference](docs/configuration-reference.md),
+[event catalogue](docs/event-catalogue.md), and [known beta limitations](#known-beta-limitations).
 
 ## Getting started
 
@@ -28,8 +31,12 @@ This package is the browser sibling of the Microsoft OpenTelemetry distributions
 ### Install the package
 
 ```bash
-npm install @microsoft/opentelemetry-browser@alpha
+npm install @microsoft/opentelemetry-browser@beta @opentelemetry/api@1.9.1 @opentelemetry/api-logs@0.222.0 @opentelemetry/resources@2.11.0
 ```
+
+The OpenTelemetry versions above match `0.1.0-beta.2` and the imports in this guide. Keep them
+aligned with the distribution when upgrading. Use a browser bundler for the npm package, or follow
+[Snippet setup](#snippet-setup) for classic script loading.
 
 ### Quick start
 
@@ -61,9 +68,11 @@ const telemetry = await useMicrosoftOpenTelemetry({
 await import("./app.js");
 ```
 
-`useMicrosoftOpenTelemetry()` is asynchronous and should normally run once per page. Page-view
-collection is enabled by default. `getInstrumentations()` loads fetch and XHR instrumentation by
-default; its other instrumentations are opt-in.
+`useMicrosoftOpenTelemetry()` is asynchronous and is normally called once per page. Multiple calls
+are supported: each returns a handle with independent telemetry pipelines and lifecycle, while
+page context and propagation are shared within the browser realm. Page-view collection is enabled
+by default. `getInstrumentations()` loads fetch and XHR instrumentation by default; its other
+instrumentations are opt-in.
 
 See the runnable [Azure Monitor, console, OTLP, and telemetry viewer samples](samples/) for
 complete applications.
@@ -91,6 +100,41 @@ logs.getLogger("my-app", "1.0.0").emit({
 Use log records with a top-level `eventName` for browser occurrences and spans for operations with
 duration or distributed-trace correlation.
 
+### Verify the first telemetry
+
+1. Initialize telemetry with a real connection string, await completion, then run the manual
+   telemetry example above. Call `await telemetry.forceFlush()` to send the current batches.
+2. In browser DevTools, check for requests to the configured ingestion endpoint's `/v2/track`
+   path. A successful request confirms transport, not that every item was accepted; inspect the
+   response for partial-ingestion errors. Allow ingestion time before querying Azure Monitor.
+3. In the Application Insights resource's Logs view, look for the manual event:
+
+   ```kusto
+   customEvents
+   | where timestamp > ago(30m)
+   | where name == "app.checkout_started"
+   | project timestamp, name, operation_Id, session_Id, customDimensions, customMeasurements
+   ```
+
+   In a Log Analytics workspace context, use `AppEvents` with its workspace column names instead.
+   See the [event catalogue](docs/event-catalogue.md#azure-monitor-mapping) for the other tables.
+
+For a backend-free check, run the [console or telemetry viewer sample](samples/README.md).
+For a CDN setup, wait for `window.microsoftOpenTelemetry` before emitting manual telemetry through
+`Microsoft.OpenTelemetry.trace` and `Microsoft.OpenTelemetry.logs`.
+
+If telemetry is missing:
+
+- Check initialization errors and console diagnostics. The first initialization installs an INFO
+  diagnostic logger; call OpenTelemetry `diag.setLogger()` afterward to change its level or sink.
+- Ensure a destination is configured. Without `azureMonitor` or custom processors, nothing exports.
+  `spanProcessors: []` or `logRecordProcessors: []` disables that signal.
+- Confirm instrumentations were passed to initialization, and initialize before application code.
+  Importing the package alone does not collect telemetry. For smoke tests, omit percentage sampling.
+- Check CSP, CORS, network blockers, connection-string validity and ingestion responses. The CDN
+  loader also needs the correct version-matched integrity hash; see [Packaging](docs/packaging.md#cdn-and-loader-snippet).
+- Do not rely on unload delivery to verify setup. It is best effort and browser payload limits apply.
+
 ### Flush and shutdown
 
 Telemetry is batched and flushed automatically on `pagehide` and `visibilitychange`. The handle
@@ -101,20 +145,93 @@ await telemetry.forceFlush();
 await telemetry.shutdown();
 ```
 
+### Snippet setup
+
+If the application does not use npm or a bundler, paste this snippet as the first script in each
+page's `<head>`, replacing `CHANNEL`, `VERSION`, `YOUR_CONNECTION_STRING`, and `YOUR_INTEGRITY`:
+
+<!-- prettier-ignore -->
+```html
+<script>
+!(function(w,d,c){w.microsoftOpenTelemetry=new Promise(function(resolve,reject){function l(u){var s=d.createElement("script");s.src=u;s.crossOrigin=c.crossOrigin;if(c.integrity)s.integrity=c.integrity;s.onload=function(){var sdk=w.Microsoft&&w.Microsoft.OpenTelemetry;if(!sdk||typeof sdk.useMicrosoftOpenTelemetry!=="function"){reject(new Error("OpenTelemetry browser bundle did not expose Microsoft.OpenTelemetry"));return}Promise.resolve().then(function(){return typeof sdk.getInstrumentations==="function"?sdk.getInstrumentations(c.instrumentationOptions):[]}).then(function(i){var o=c.cfg;o.instrumentations=i;if(c.resourceAttributes)o.resource=sdk.resourceFromAttributes(c.resourceAttributes);return sdk.useMicrosoftOpenTelemetry(o)}).then(resolve,reject)};s.onerror=function(){reject(new Error("OpenTelemetry browser bundle failed to load: "+u))};d.head.appendChild(s)}l(c.src)})})(window,document,{"src":"https://js.monitor.azure.com/scripts/otel/CHANNEL/opentelemetry-browser.VERSION.min.js","crossOrigin":"anonymous","integrity":"YOUR_INTEGRITY","cfg":{"azureMonitor":{"connectionString":"YOUR_CONNECTION_STRING"}}});
+</script>
+```
+
+For example, `0.1.0-beta.2` uses channel `beta`, and its `YOUR_INTEGRITY` is the
+`ext["@min.js"].integrity` value in
+[`opentelemetry-browser.0.1.0-beta.2.integrity.json`](https://js.monitor.azure.com/scripts/otel/beta/opentelemetry-browser.0.1.0-beta.2.integrity.json).
+The snippet enables Azure Monitor export, page views, and `fetch` and XHR dependency collection.
+To change that, add JSON settings to the configuration object at the end of the snippet. Settings in
+`cfg` use the same names as the npm options and are passed to `useMicrosoftOpenTelemetry` as is;
+`instrumentationOptions` is passed to `getInstrumentations()`, and `resourceAttributes` becomes the
+resource:
+
+```json
+{
+  "src": "...",
+  "crossOrigin": "anonymous",
+  "integrity": "YOUR_INTEGRITY",
+  "cfg": {
+    "azureMonitor": { "connectionString": "YOUR_CONNECTION_STRING", "disableBeacon": false },
+    "samplingPercentage": 50,
+    "session": { "enabled": true },
+    "userContext": { "enabled": true },
+    "pageView": { "redactedQueryParams": ["token"], "autoTrackPageVisitTime": true }
+  },
+  "instrumentationOptions": { "errors": { "enabled": true }, "webVitals": { "enabled": true } },
+  "resourceAttributes": { "service.name": "my-web-app", "service.version": "1.2.3" }
+}
+```
+
+`cfg.pageView.autoTrackPageVisitTime` opts into previous-page visit timing; it defaults to `false`.
+See [Page visit time](#page-visit-time) for its measurement and storage behavior.
+
+Options that take functions, such as page-view hooks, processors, and context managers, require the
+npm package.
+
+Like the Application Insights loader, `getSdkLoaderScript()` can also delay loading the bundle
+(`loadDelay`, Application Insights `ld`), retry it from backup Azure Monitor CDN hosts
+(`cdnFallback`, `cr`), and report a bundle that fails to load to Azure Monitor as an
+`SDKLoadFailed` exception (`reportLoadFailure`). These add code to the snippet only when enabled, so
+generate the snippet with them rather than editing the configuration object.
+
+`window.microsoftOpenTelemetry` is a promise that resolves to the telemetry handle, or rejects when
+the bundle fails to load, fails its integrity check, or fails to initialize:
+
+```javascript
+window.microsoftOpenTelemetry.catch(function (error) {
+  console.error(error);
+});
+```
+
+See [Packaging](docs/packaging.md#cdn-and-loader-snippet) for CDN endpoints, Content Security
+Policy requirements, and generating the snippet with `getSdkLoaderScript()`.
+
 ## Configuration
 
 ### `MicrosoftOpenTelemetryBrowserOptions`
+
+The tables below are an overview. See the [full configuration reference](docs/configuration-reference.md)
+for nested settings, defaults, sampling, identity and context behavior.
 
 | Option                | Type                                   | Default                            | Description                                                                 |
 | --------------------- | -------------------------------------- | ---------------------------------- | --------------------------------------------------------------------------- |
 | `azureMonitor`        | `AzureMonitorOptions`                  | —                                  | Enables Azure Monitor trace and log export                                  |
 | `resource`            | `Resource`                             | OpenTelemetry default resource     | Resource attributes attached to every span and log record                   |
-| `session`             | `{ enabled?: boolean }`                | Disabled                           | Adds a persisted `session.id` with a 30-minute inactivity timeout           |
+| `samplingPercentage`  | `number`                               | Parent-based traces; no Azure Monitor log percentage sampling | Fixed percentage from 0 through 100 for traces and default Azure Monitor log export |
+| `session`             | `MicrosoftOpenTelemetryBrowserSessionOptions` | Enabled, persisted          | Adds `session.id` with a 30-minute inactivity timeout and a 24-hour maximum lifetime |
+| `userContext`         | `{ enabled?: boolean }`                | Enabled                            | Persists managed anonymous identity and authenticated user and account IDs set through the handle |
 | `traces`              | `MicrosoftOpenTelemetryBrowserTraceOptions` | Browser SDK defaults          | Replaces the browser context manager or trace propagators                    |
-| `spanProcessors`      | `SpanProcessor[]`                      | Upstream default when applicable   | Registers custom trace processors; `[]` skips trace initialization          |
-| `logRecordProcessors` | `LogRecordProcessor[]`                 | Upstream default when applicable   | Registers custom log processors; `[]` skips log initialization              |
+| `spanProcessors`      | `SpanProcessor[]`                      | Azure Monitor only, if configured  | Registers custom trace processors; `[]` skips trace initialization          |
+| `logRecordProcessors` | `LogRecordProcessor[]`                 | Azure Monitor only, if configured  | Registers custom log processors; `[]` skips log initialization              |
 | `instrumentations`    | `BrowserInstrumentation[]`             | `[]`                               | Instrumentation instances owned and registered by this SDK                  |
 | `pageView`            | `PageViewInstrumentationConfig`        | Enabled                            | Configures built-in `browser.page_view` log collection                      |
+
+Session and user identity use same-origin `localStorage` by default. Set `session.enabled: false`
+to disable managed sessions without accessing session storage, or `session.persist: false` to keep
+sessions in memory. Set `userContext.enabled: false` to disable managed identity persistence and
+anonymous-ID enrichment without accessing user storage; application-supplied authenticated identity
+remains available in memory.
 
 ### `azureMonitor` options
 
@@ -122,6 +239,25 @@ await telemetry.shutdown();
 | ----------------- | --------- | ------- | ----------------------------------------------------------------------------- |
 | `connectionString` | `string` | —       | Application Insights connection string, including sovereign-cloud endpoints  |
 | `disableBeacon`   | `boolean` | `false` | Disables the `sendBeacon` fallback used when a page unloads                    |
+
+### Page visit time
+
+Set `pageView: { autoTrackPageVisitTime: true }` at initialization to report the previous page's
+visit when the next page view starts. This is off by default and adds no telemetry unless enabled.
+It emits a portable `browser.page_visit` log with the previous page's name, sanitized URL, page-view
+ID and duration in milliseconds. Azure Monitor exports it as a separate `PageVisitTime` custom
+metric, not as the page-view load duration or an OpenTelemetry Metrics API instrument.
+
+Visit time runs from one page-view start to the next, including hidden-tab time; it is not active
+engagement time. No visit metric is emitted on `pagehide`, hidden visibility or unload, so the final
+visit is skipped if no next instrumented page starts.
+
+Same-origin, same-tab full navigations use `sessionStorage`, respecting `storage.enabled` and
+`storage.namePrefix`. If storage is disabled or unavailable, only in-memory SPA timing remains;
+back/forward cache away time cannot be bridged. For multiple instances sending to the same
+destination, keep initialization order consistent across pages; distinct `storage.namePrefix`
+values are recommended. See the [configuration reference](docs/configuration-reference.md#page-visit-time)
+and [event schema](docs/event-catalogue.md#page-visit-browserpage_visit).
 
 ### Browser instrumentations
 
@@ -150,7 +286,9 @@ compatible upstream instrumentation instances yourself and pass them directly.
 
 ### OTLP and custom exporters
 
-Use standard OpenTelemetry processors to export to OTLP or another backend. For OTLP/HTTP:
+The distribution exports to Azure Monitor when `azureMonitor` is set. It does not bundle an OTLP
+exporter: without `azureMonitor`, `spanProcessors` or `logRecordProcessors`, no telemetry is
+exported. Use standard OpenTelemetry processors to export to OTLP or another backend. For OTLP/HTTP:
 
 ```typescript
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
@@ -197,18 +335,37 @@ await useMicrosoftOpenTelemetry({
 });
 ```
 
+The detectors are available from the npm package only. The CDN bundles and the loader snippet do
+not include them, so pages that load the SDK from the CDN do not download code they cannot use.
+
 ## Bundle size
 
-The production bundle is built and measured in CI. For `0.1.0-alpha.3`:
+The size depends on how the package is loaded. Sizes in KiB, measured from the current source:
 
-| Artifact                   | Size      |
-| -------------------------- | --------: |
-| Minified ESM               | 129.27 kB |
-| Minified ESM + gzip        |  39.40 kB |
-| Minified ESM + Brotli      |  33.96 kB |
+| Loaded from | Includes                                          | Minified |  gzip | Brotli |
+| ----------- | ------------------------------------------------- | -------: | ----: | -----: |
+| npm         | Distribution, page views and Azure Monitor export |    115.2 |  36.0 |   31.8 |
+| CDN         | Everything except the npm-only resource detectors |    156.4 |  47.6 |   41.6 |
 
-Run `npm run build && npm run size` to reproduce these measurements. Optional browser
-instrumentations are loaded through dynamic imports and remain outside the root bundle unless used.
+**npm.** The application's bundler removes code the application does not use. Instrumentations are
+loaded through dynamic imports only when enabled, so each one adds only its own code. Gzip added
+by each instrumentation, measured on its own:
+
+| Instrumentation | gzip | Instrumentation    | gzip |
+| --------------- | ---: | ------------------ | ---: |
+| `fetch`         |  2.3 | `navigationTiming` |  0.9 |
+| `xhr`           |  1.8 | `resourceTiming`   |  1.5 |
+| `console`       |  0.3 | `userAction`       |  0.8 |
+| `errors`        |  0.3 | `webVitals`        |  5.3 |
+| `navigation`    |  0.8 |                    |      |
+
+**CDN.** A page that loads a script file cannot remove unused code, and the file cannot know which
+features the page will enable, so `opentelemetry-browser.<version>.min.js` includes every
+instrumentation. The loader snippet enables `fetch` and `xhr`; the others are included but stay off
+unless enabled through the snippet's `instrumentationOptions`. The browser and user-agent resource
+detectors are npm-only; see [Browser resource attributes](#browser-resource-attributes).
+
+Run `npm run build && npm run size` to reproduce these measurements.
 
 ## Package formats
 
@@ -222,15 +379,17 @@ Choose the format that matches how the application loads JavaScript:
 | Direct `<script>` loading | `dist/browser/opentelemetry-browser.iife.min.js` |
 
 The IIFE bundle exposes `Microsoft.OpenTelemetry`. Use it instead of UMD when RequireJS might already
-be present but the SDK should load as a global. Optional instrumentations have matching
-`opentelemetry-browser-instrumentations.{umd,iife}.js` bundles, each with a `.min.js` variant, that
-expose `Microsoft.OpenTelemetryInstrumentations`.
+be present but the SDK should load as a global. The SDK bundles include every instrumentation and
+expose `Microsoft.OpenTelemetry.getInstrumentations`; pass its result as `instrumentations`.
 
 ```html
 <script src="/vendor/opentelemetry-browser.iife.min.js"></script>
 <script>
-  Microsoft.OpenTelemetry.useMicrosoftOpenTelemetry({
-    azureMonitor: { connectionString: "InstrumentationKey=...;IngestionEndpoint=..." },
+  Microsoft.OpenTelemetry.getInstrumentations().then(function (instrumentations) {
+    return Microsoft.OpenTelemetry.useMicrosoftOpenTelemetry({
+      azureMonitor: { connectionString: "InstrumentationKey=...;IngestionEndpoint=..." },
+      instrumentations: instrumentations,
+    });
   });
 </script>
 ```
@@ -240,27 +399,76 @@ OpenTelemetry APIs used by the distribution, including `trace` and `logs`.
 
 ## Browser support
 
-The package targets ES2022 and supports these browser versions:
+Like the Application Insights JavaScript SDK, support tracks the latest stable releases of the
+major browser families:
 
-| Chrome | Edge | Firefox | Safari |       Opera |
-| -----: | ---: | ------: | -----: | ----------: |
-|    94+ |  94+ |     93+ |  15.4+ | Latest stable |
+| Chrome   | Firefox  | Edge     | Opera    | Safari   |
+| -------- | -------- | -------- | -------- | -------- |
+| Latest ✔ | Latest ✔ | Latest ✔ | Latest ✔ | Latest ✔ |
 
-The `browserslist` field in `package.json` is the machine-readable source of truth for the Chrome,
-Edge, Firefox, and Safari minimums. Raising one of those minimums is a compatibility change and must
-be reflected there and in this table. Opera support tracks its latest stable release. Internet
-Explorer and other browsers requiring ES5 are not supported. The ESM and CommonJS npm entries
-require a browser bundler; UMD and IIFE artifacts support classic script loading.
+Internet Explorer and other browsers requiring ES5 are not supported. The ESM and CommonJS npm
+entries require a browser bundler; UMD and IIFE artifacts support classic script loading.
 
 CI runs the complete unit and emitted-bundle integration suites in current Playwright Chromium,
-Firefox, and WebKit. Chromium provides engine coverage for Chrome, Edge, and Opera; WebKit provides
-engine coverage for Safari. Real-browser acceptance tests require the
-`BROWSERSTACK_USERNAME` and `BROWSERSTACK_ACCESS_KEY` repository secrets and therefore do not run
-for pull requests from forks. For a local run, also set `BROWSER_FAMILY` to one of the four names in
-the versioned support matrix.
+Firefox, and WebKit, and sends telemetry from the npm and CDN builds to the real Azure Monitor
+ingestion service in all three. Chromium provides engine coverage for Chrome, Edge, and Opera;
+WebKit provides engine coverage for Safari. Older browser versions are not tested.
 
 The package publishes ESM and CommonJS entries through its `exports` map. Server-rendered builds can
 import the package, but browser telemetry should be initialized in client-side code.
+
+## Known beta limitations
+
+- **Modern browsers only.** Internet Explorer and ES5 browsers are unsupported. The browser bundles
+  use ES2022 syntax and ES2022 built-ins, plus ES2023 `Array.prototype.findLast` from the upstream
+  web-vitals code, so ES2015 support alone is not sufficient. Support follows the
+  [latest-stable policy](#browser-support); exact minimum browser versions are not declared.
+- **Evolving semantic conventions.** Browser events use experimental/development-stability upstream
+  conventions and distribution-owned page-view conventions, not a stable browser event schema.
+  Event names and attributes can change during beta; pin versions and review the
+  [event catalogue](docs/event-catalogue.md) when upgrading. This does not make all OpenTelemetry
+  semantic conventions experimental.
+- **No offline telemetry persistence.** Batching and bounded retries are in memory; unsent telemetry
+  is not durably queued for replay after reload. Session and identity persistence are separate.
+  Page-hide delivery uses browser-limited keepalive/Beacon transport and is not guaranteed.
+- **No built-in Microsoft Entra ID (AAD) authentication for Azure Monitor ingestion.** Export uses
+  a connection string with an instrumentation key, not a token credential. Parsing an audience
+  field does not enable authentication. Do not embed credentials or bearer tokens in browser code;
+  use a collector or gateway for authenticated ingestion architectures.
+- **Async context is not automatic across every boundary.** The default context manager is
+  synchronous. Unbound promises and `await` continuations do not retain the active span. Pass
+  explicit context when starting spans or emitting logs, or bind callbacks with `context.bind()`.
+  Page-operation correlation is a fallback, not a replacement for explicit parent context.
+- **Optional does not mean unavailable.** Fetch and XHR are defaults only when `getInstrumentations()`
+  is called; console, errors, navigation, timing, user actions and Web Vitals are available but opt-in.
+  Framework-specific integrations and richer Click Analytics are not included. Web Vitals are log
+  events; this distribution does not initialize the OpenTelemetry Metrics API.
+- **Multiple instances share realm-wide facilities.** Pipelines and lifecycle are independent, but
+  page context, propagation and page-operation correlation are coordinated. Later propagator options
+  do not replace the page-lifetime registration. Fetch uses the last writer's trace headers; XHR
+  preserves existing headers. Do not share processor or instrumentation objects between handles.
+
+For example, retain a parent context explicitly after an asynchronous operation:
+
+```typescript
+import { context, trace } from "@opentelemetry/api";
+import { logs } from "@opentelemetry/api-logs";
+
+const tracer = trace.getTracer("my-app");
+const parent = tracer.startSpan("checkout");
+const parentContext = trace.setSpan(context.active(), parent);
+try {
+  await Promise.resolve(); // Represents application work; implicit parent context is not retained.
+  const child = tracer.startSpan("confirm", {}, parentContext);
+  child.end();
+  logs.getLogger("my-app").emit({
+    eventName: "app.checkout_confirmed",
+    context: parentContext,
+  });
+} finally {
+  parent.end();
+}
+```
 
 ## Contributing
 

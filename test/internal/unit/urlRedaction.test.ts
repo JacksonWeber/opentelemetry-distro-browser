@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { describe, expect, it } from "vitest";
-import { redactUrl } from "../../../src/instrumentation/pageView/urlRedaction.js";
+import { redactUrl } from "../../../src/shared/urlRedaction.js";
 
 describe("redactUrl", () => {
   it.each([
