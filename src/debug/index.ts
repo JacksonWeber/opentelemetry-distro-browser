@@ -4,7 +4,7 @@
 import { ExportResultCode, type ExportResult } from "@opentelemetry/core";
 import type { ReadableLogRecord } from "@opentelemetry/sdk-logs";
 import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
-import { reportError } from "../shared/globalOwnership.js";
+import { reportError, reportWithoutTelemetry } from "../shared/globalOwnership.js";
 import { createPanel } from "./panel.js";
 import { logDetails, snapshot, spanDetails } from "./snapshot.js";
 import type { TelemetryDebugEntry, TelemetryDebugger, TelemetryDebuggerOptions } from "./types.js";
@@ -59,7 +59,9 @@ export function createTelemetryDebugger(options: TelemetryDebuggerOptions = {}):
     try {
       action();
     } catch {
-      reportError("[telemetry-debug] Observation failed. Telemetry processing continues.");
+      reportWithoutTelemetry(() =>
+        reportError("[telemetry-debug] Observation failed. Telemetry processing continues."),
+      );
     } finally {
       observing = false;
     }

@@ -71,8 +71,7 @@ export function createPanel(
   let entries: readonly TelemetryDebugEntry[] = [];
   let selected: number | undefined;
   function render(): void {
-    const focused =
-      root.activeElement instanceof HTMLElement ? root.activeElement.dataset.id : undefined;
+    const focused = root.activeElement?.getAttribute("data-id");
     const query = search.value.toLowerCase();
     list.replaceChildren();
     const current = entries.find((entry) => entry.id === selected);

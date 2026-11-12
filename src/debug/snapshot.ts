@@ -4,7 +4,10 @@
 import type { ReadableLogRecord } from "@opentelemetry/sdk-logs";
 import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
 
-/** Copy a bounded tree before serialization, without invoking payload getters or toJSON methods. */
+/**
+ * Copy a bounded tree without invoking payload getters or toJSON methods.
+ * Array holes become null, matching JSON serialization without shifting later entries.
+ */
 export function snapshot(value: unknown, limit: number): string {
   const seen = new WeakSet<object>();
   let remaining = limit;
@@ -22,22 +25,36 @@ export function snapshot(value: unknown, limit: number): string {
     if (value === null || typeof value !== "object") return value;
     if (seen.has(value)) return "[Circular]";
     seen.add(value);
-    const result: Record<string, unknown> | unknown[] = Array.isArray(value)
-      ? []
-      : (Object.create(null) as Record<string, unknown>);
+    if (Array.isArray(value)) {
+      const result: unknown[] = [];
+      for (let index = 0; index < value.length; index++) {
+        if (remaining <= 0 || nodes >= 1000) {
+          result.push("[Truncated]");
+          break;
+        }
+        remaining -= String(index).length;
+        const property = Object.getOwnPropertyDescriptor(value, index);
+        const child: unknown = property
+          ? "value" in property
+            ? property.value
+            : "[Accessor]"
+          : null;
+        result.push(copy(child, depth + 1));
+      }
+      seen.delete(value);
+      return result;
+    }
+    const result = Object.create(null) as Record<string, unknown>;
     for (const key in value) {
       if (!Object.hasOwn(value, key)) continue;
       if (remaining <= 0 || nodes >= 1000) {
-        if (Array.isArray(result)) result.push("[Truncated]");
-        else result["[Truncated]"] = true;
+        result["[Truncated]"] = true;
         break;
       }
       remaining -= key.length;
       const property = Object.getOwnPropertyDescriptor(value, key);
       const child: unknown = property && "value" in property ? property.value : "[Accessor]";
-      const copied = copy(child, depth + 1);
-      if (Array.isArray(result)) result.push(copied);
-      else result[key.slice(0, limit)] = copied;
+      result[key.slice(0, limit)] = copy(child, depth + 1);
     }
     seen.delete(value);
     return result;

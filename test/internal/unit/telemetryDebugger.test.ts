@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 import { diag, ROOT_CONTEXT, trace } from "@opentelemetry/api";
+import { logs } from "@opentelemetry/api-logs";
 import { ExportResultCode, type ExportResult } from "@opentelemetry/core";
 import {
   LoggerProvider,
@@ -17,7 +18,13 @@ import {
   type TelemetryDebuggerOptions,
 } from "../../../src/debug/index.js";
 import { snapshot } from "../../../src/debug/snapshot.js";
-import { createReadableLogRecord, createReadableSpan } from "../../fixtures/telemetry.js";
+import { startTelemetryInstance } from "../../../src/routing/telemetryInstance.js";
+import {
+  createConsolePipeline,
+  createInMemoryPipeline,
+  createReadableLogRecord,
+  createReadableSpan,
+} from "../../fixtures/telemetry.js";
 
 const cleanup: (() => void | Promise<void>)[] = [];
 afterEach(async () => {
@@ -339,6 +346,103 @@ describe("telemetry debugger", () => {
     expect(root.querySelector("pre")?.textContent).not.toContain("<script>");
   });
 
+  it.each(["document", "iframe"])(
+    "preserves focused rows during selection and incoming telemetry in the %s",
+    async (mount) => {
+      let container = document.body;
+      if (mount === "iframe") {
+        const frame = document.createElement("iframe");
+        cleanup.push(() => frame.remove());
+        await new Promise<void>((resolve) => {
+          frame.onload = () => resolve();
+          document.body.append(frame);
+        });
+        container = frame.contentDocument!.body;
+      }
+      const debug = debuggerForTest({ container });
+      const sdk = pipeline(debug);
+      sdk.logger.emit({ eventName: "first" });
+      await sdk.flush();
+      const root = debug.element.shadowRoot!;
+      await vi.waitFor(() => expect(root.querySelectorAll("li")).toHaveLength(2));
+      const row = root.querySelector<HTMLButtonElement>("li button")!;
+      const id = row.dataset.id;
+      await vi.waitFor(() => {
+        container.ownerDocument.defaultView?.focus();
+        row.focus();
+        expect(root.activeElement).toBe(row);
+      });
+      row.click();
+      expect(root.activeElement?.getAttribute("data-id")).toBe(id);
+      expect(root.activeElement?.getAttribute("aria-pressed")).toBe("true");
+      sdk.logger.emit({ eventName: "second" });
+      await sdk.flush();
+      await vi.waitFor(() => expect(root.querySelectorAll("li")).toHaveLength(4));
+      expect(root.activeElement?.getAttribute("data-id")).toBe(id);
+    },
+  );
+
+  it.each(["span", "log"] as const)(
+    "keeps %s observation diagnostics out of console telemetry and another distribution",
+    async (signal) => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const consolePipeline = createConsolePipeline();
+      cleanup.push(async () => {
+        consolePipeline.instrumentation.disable();
+        await consolePipeline.provider.shutdown();
+      });
+      const other = createInMemoryPipeline();
+      const instance = await startTelemetryInstance({
+        resourceAttributes: {},
+        spanProcessors: [],
+        logRecordProcessors: other.options.logRecordProcessors,
+      });
+      instance.commit();
+      cleanup.push(async () => {
+        await instance.shutdown();
+        logs.disable();
+        diag.disable();
+      });
+      const logger = instance.loggerProvider.getLogger("diagnostic");
+      const wrappedWarn = console.warn;
+      const report = vi.spyOn(diag, "error").mockImplementation(() => {
+        console.warn("observation failed");
+        logger.emit({ body: "observation failed" });
+      });
+      const debug = debuggerForTest();
+      const delegate = {
+        export: vi.fn((_records: unknown[], done: (result: ExportResult) => void) =>
+          done({ code: ExportResultCode.SUCCESS }),
+        ),
+        forceFlush: async () => {},
+        shutdown: async () => {},
+      };
+      const callback = vi.fn();
+      const span = createReadableSpan();
+      const log = createReadableLogRecord();
+      Object.defineProperty(signal === "span" ? span : log, "attributes", {
+        get() {
+          throw new Error("snapshot failure");
+        },
+      });
+      if (signal === "span") debug.wrapSpanExporter(delegate).export([span], callback);
+      else debug.wrapLogRecordExporter(delegate).export([log], callback);
+      expect(report).toHaveBeenCalledOnce();
+      expect(delegate.export).toHaveBeenCalledOnce();
+      expect(callback).toHaveBeenCalledExactlyOnceWith({ code: ExportResultCode.SUCCESS });
+      expect(console.warn).toBe(wrappedWarn);
+      console.warn("application warning");
+      logger.emit({ body: "application log" });
+      await Promise.all([consolePipeline.provider.forceFlush(), other.forceFlush()]);
+      expect(consolePipeline.exporter.getFinishedLogRecords().map((record) => record.body)).toEqual(
+        ["application warning"],
+      );
+      expect(other.logExporter.getFinishedLogRecords().map((record) => record.body)).toEqual([
+        "application log",
+      ]);
+    },
+  );
+
   it("reports snapshot failures without leaking payloads, recursing, or disrupting exports", () => {
     const debug = debuggerForTest();
     const span = createReadableSpan();
@@ -381,6 +485,28 @@ describe("telemetry debugger", () => {
         256,
       ).length,
     ).toBeLessThanOrEqual(256);
+  });
+
+  it("preserves sparse array positions without reading accessors or non-index properties", () => {
+    const values = new Array<unknown>(4);
+    values[1] = "kept";
+    const getter = vi.fn(() => "secret");
+    Object.defineProperty(values, "2", { enumerable: true, get: getter });
+    Object.defineProperty(values, "metadata", { enumerable: true, get: getter });
+    Object.defineProperty(values, "-1", { enumerable: true, value: "not an index" });
+    expect(JSON.parse(snapshot(values, 1000))).toEqual([null, "kept", "[Accessor]", null]);
+    expect(getter).not.toHaveBeenCalled();
+  });
+
+  it("bounds sparse arrays by the snapshot node and payload limits", () => {
+    const values = new Array<unknown>(2 ** 32 - 1);
+    const copied: unknown[] = JSON.parse(snapshot(values, 1000000));
+    expect(copied).toHaveLength(1000);
+    expect(copied.slice(0, -1).every((value) => value === null)).toBe(true);
+    expect(copied.at(-1)).toBe("[Truncated]");
+    const limited = snapshot(values, 256);
+    expect(limited.length).toBeLessThanOrEqual(256);
+    expect(limited).toContain("[Truncated]");
   });
 
   it.each([0, -1, 1.5, NaN, Infinity, 10001])(
