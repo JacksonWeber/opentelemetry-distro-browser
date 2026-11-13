@@ -261,8 +261,8 @@ export function createDependencyEnrichment(options: DependencyInstrumentationOpt
                   }
                   if (budget.count >= limit) {
                     if (budget.count === limit) {
-                      diag.warn("Dependency limit reached for this page view");
                       budget.count++;
+                      diag.warn("Dependency limit reached for this page view");
                     }
                     return trace.wrapSpanContext(
                       trace.getSpanContext(parent) ?? INVALID_SPAN_CONTEXT,

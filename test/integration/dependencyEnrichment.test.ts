@@ -392,6 +392,26 @@ it("shares the budget at request start, resets on navigation and preserves expli
   ).toBeDefined();
 });
 
+it.each<Transport>(["fetch", "xhr"])(
+  "warns only once when the diagnostic logger starts a nested %s request",
+  async (transport) => {
+    const pipeline = await start({ maxDependenciesPerView: 1 });
+    await send(transport);
+    const requests: Promise<void>[] = [];
+    const warn = vi.fn(() => {
+      // Bound reentry so a regression cannot flood the server.
+      if (warn.mock.calls.length === 1) requests.push(send(transport));
+    });
+    diag.disable();
+    diag.setLogger({ error: vi.fn(), warn, info: vi.fn(), debug: vi.fn(), verbose: vi.fn() });
+    await send(transport);
+    await Promise.all(requests);
+    expect(requests).toHaveLength(1);
+    expect(warn).toHaveBeenCalledExactlyOnceWith("Dependency limit reached for this page view");
+    await pipeline.captured(1);
+  },
+);
+
 it("still sends requests and propagates the parent when the limit is zero", async () => {
   const pipeline = await start(
     { maxDependenciesPerView: 0 },
