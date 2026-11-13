@@ -2,9 +2,10 @@
 
 ## Pinned versions
 
-OpenTelemetry dependencies use exact versions in the root `package.json`. Exact pins are required
-because the logs SDK and browser instrumentation are pre-1.0 and may introduce breaking changes
-in a minor release.
+OpenTelemetry runtime dependencies use exact versions in the root `package.json`. Exact pins are
+required because the logs SDK and browser instrumentation are pre-1.0 and may introduce breaking
+changes in a minor release. `@opentelemetry/api` is the exception: it is a peer dependency with
+range `>=1.9.1 <1.10.0`, and is pinned to `1.9.1` for development.
 
 | Release cohort          | Packages                                                                                                                                                                    | Version   |
 | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |

@@ -4,6 +4,10 @@ All notable changes to this package are documented in this file.
 
 ## Unreleased
 
+### Fixed
+
+- Preserve attributes added by later log processors when Azure Monitor sampling adds metadata.
+
 ### Added
 
 - Add an optional `/debug` entry with an in-page telemetry inspector, bounded snapshots, export
@@ -150,10 +154,6 @@ All notable changes to this package are documented in this file.
 
 - Include the browser runtime and upstream OpenTelemetry SDK version in the Azure Monitor
   `ai.internal.sdkVersion` tag.
-- Persist distribution-generated anonymous user IDs by default so Application Insights user
-  metrics remain stable across page loads and SDK instances. Authenticated user and account IDs
-  remain memory-only unless `userContext: { enabled: true }` is configured; set `enabled: false`
-  to disable managed identity persistence and user metrics.
 
 ### Fixed
 
