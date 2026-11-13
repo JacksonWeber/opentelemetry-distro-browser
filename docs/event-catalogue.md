@@ -140,8 +140,10 @@ failure, abort and timeout determine the final status/attributes. URL filters ca
 
 Request/attribute hooks can add fields. Automatic request/response body capture is not provided.
 Cross-origin trace headers require explicit URL allowance and server CORS support. Page-view
-redaction settings do not sanitize dependency URLs. Distribution-owned Azure Monitor export
-requests suppress tracing to avoid self-collection loops.
+redaction settings do not control dependency URLs. Fetch/XHR URLs have built-in signing/OAuth
+parameter and credential redaction; root `redactQueryParams` extends that protection for both
+dependencies and page views. See [URL redaction](configuration-reference.md#url-redaction).
+Distribution-owned Azure Monitor export requests suppress tracing to avoid self-collection loops.
 
 ## Console: `browser.console`
 

@@ -38,7 +38,7 @@ credentials in a browser bundle; place authenticated OTLP ingestion behind a col
 `@microsoft/opentelemetry-browser` configures browser OpenTelemetry traces and logs. It provides:
 
 - Azure Monitor span and log exporters.
-- OTLP/HTTP defaults or customer-supplied OpenTelemetry processors and exporters.
+- Customer-supplied OpenTelemetry processors and exporters for OTLP/HTTP or other destinations.
 - Built-in `browser.page_view` log collection for initial loads and route changes.
 - Optional browser instrumentations loaded through a separate, tree-shakeable entry point.
 - Resource detection, W3C trace propagation, sampling, session correlation, and user context.
@@ -81,7 +81,7 @@ For an application without npm, use the generated copy/paste block under **Snipp
 `CHANNEL`, `VERSION`, `YOUR_CONNECTION_STRING`, and `YOUR_INTEGRITY` with values from one package
 release. Keep the bundle version and integrity manifest version identical.
 
-`getSdkLoaderScript()` accepts these fields:
+Basic `getSdkLoaderScript()` fields:
 
 - `connectionString` is required and must be a non-empty Azure Monitor connection string.
 - `src` optionally replaces the version-matched CDN URL and must be a non-empty string.
@@ -156,18 +156,26 @@ window.microsoftOpenTelemetry.then(function () {
 Use the lifecycle handle resolved by `window.microsoftOpenTelemetry` for `forceFlush()`,
 `shutdown()`, and user context. Do not read the global APIs or handle before the promise resolves.
 
-Use the npm setup instead of altering the generated loader when the customer needs additional
-instrumentations, resource attributes, sessions, identity controls, sampling, custom exporters,
-page-view configuration, or consent-driven initialization.
+The helper also accepts `instrumentationOptions`, `resourceAttributes`, `session`, `userContext`,
+`storage`, `cookieCfg`, `samplingPercentage`, `redactQueryParams`, `azureMonitor.disableBeacon` and data-only
+`pageView` settings. Regenerate the snippet with those options rather than editing its loader body.
+Web Storage and cookies are enabled by default. `storage: { enabled: false }` blocks only
+SDK-managed Web Storage, not identity or session cookies. When browser persistence is prohibited,
+also set `cookieCfg: { enabled: false, disableCookieDefer: true }` to disable cookie access and
+discard deferred cookie operations. These options do not stop collection or export or erase
+existing data. If consent must precede collection or network activity, defer inserting the snippet
+until consent is granted.
+
+Use npm initialization for functions or non-JSON settings, such as instrumentation hooks, custom
+processors/exporters, context managers and resource detectors. The snippet supports the listed
+JSON configuration without requiring npm in the application.
 
 ## Configure an npm application
 
-Install the distribution, its OpenTelemetry API peer dependency, and the packages imported by the
-examples below. Keep OpenTelemetry package versions aligned with the selected distro version; for
-the currently published package:
+Install the distribution; its OpenTelemetry dependencies and API peer are resolved by npm:
 
 ```bash
-npm install @microsoft/opentelemetry-browser@0.1.0-beta.2 @opentelemetry/api@1.9.1 @opentelemetry/api-logs@0.222.0 @opentelemetry/resources@2.11.0
+npm install @microsoft/opentelemetry-browser@beta
 ```
 
 Initialize telemetry before importing application code that needs instrumentation:
@@ -175,17 +183,11 @@ Initialize telemetry before importing application code that needs instrumentatio
 ```typescript
 import { useMicrosoftOpenTelemetry } from "@microsoft/opentelemetry-browser";
 import { getInstrumentations } from "@microsoft/opentelemetry-browser/instrumentations";
-import { resourceFromAttributes } from "@opentelemetry/resources";
 
 const telemetry = await useMicrosoftOpenTelemetry({
   azureMonitor: {
     connectionString: "InstrumentationKey=...;IngestionEndpoint=...",
   },
-  resource: resourceFromAttributes({
-    "service.name": "shop-web",
-    "service.version": "1.0.0",
-  }),
-  session: { enabled: true },
   instrumentations: await getInstrumentations({
     errors: { enabled: true },
     userAction: { enabled: true },
@@ -200,7 +202,17 @@ Keep `getInstrumentations` on the `/instrumentations` entry point. Its dynamic i
 code splitting and avoid adding unselected instrumentations to the main entry point. Set
 `fetch: { enabled: false }` or `xhr: { enabled: false }` to disable either default.
 
-Use standard OpenTelemetry APIs for manual telemetry:
+Use standard OpenTelemetry APIs for manual telemetry. Only applications using this optional example
+need to declare these API imports as direct dependencies:
+
+```bash
+npm install @opentelemetry/api@1.9.1 @opentelemetry/api-logs@0.222.0
+```
+
+These versions match `0.1.0-beta.2`; check the selected distribution's dependencies when upgrading.
+Likewise, an application that imports `resourceFromAttributes` for custom resource attributes should
+declare `@opentelemetry/resources` directly. Do not require these extra installs for automatic
+Azure Monitor collection.
 
 ```typescript
 import { trace } from "@opentelemetry/api";
@@ -232,8 +244,13 @@ await telemetry.shutdown();
 
 Use `telemetry.userContext.setAuthenticatedUserContext(userId, accountId)` only with identifiers
 approved for telemetry. Do not use raw personal information, secrets, or tokens. Authenticated
-identity remains in memory unless identity persistence is enabled. Call
-`clearAuthenticatedUserContext()` during sign-out.
+identity is memory-only by default; pass `true` as the third argument
+(`telemetry.userContext.setAuthenticatedUserContext(userId, accountId, true)`) to opt into a session
+cookie. `userContext: { enabled: false }` disables managed anonymous-ID enrichment and identity
+persistence; it is not required for memory-only authenticated identity. To block both SDK-managed
+Web Storage and cookies, use `storage: { enabled: false }` together with
+`cookieCfg: { enabled: false, disableCookieDefer: true }`. Call
+`telemetry.userContext.clearAuthenticatedUserContext()` during sign-out.
 
 ## Validate the integration
 

@@ -2,7 +2,7 @@
 
 **Status:** Active
 **Approach:** Greenfield browser distribution built on upstream OpenTelemetry APIs
-**Latest release:** `@microsoft/opentelemetry-browser@0.1.0-beta.1` on npm and the CDN
+**Release baseline:** `@microsoft/opentelemetry-browser@0.1.0-beta.2`; see [release notes](../CHANGELOG.md)
 **Prior evidence:** Multi-instance browser PoC in [`../poc/`](../poc/)
 **Upstream alignment verified:** 2026-09-10 against
 [`open-telemetry/opentelemetry-browser`](https://github.com/open-telemetry/opentelemetry-browser)
@@ -20,7 +20,8 @@ This document holds the *why*. Everything else has its own document.
 | [`M3_PLANNING.md`](M3_PLANNING.md) | Advanced configuration, optional integrations, loader and delivery parity, and remaining Application Insights JavaScript feature gaps |
 | [`M4_PLANNING.md`](M4_PLANNING.md) | General availability of `1.0.0` by February 2027 and migration from ApplicationInsights-JS |
 | [`../APPINSIGHTS_MIGRATION.md`](../APPINSIGHTS_MIGRATION.md) | ApplicationInsights-JS migration paths, intentional exclusions and current gaps |
-| [`../poc/SIZE_REPORT.md`](../poc/SIZE_REPORT.md) | Generated bundle size measurements |
+| [`../docs/packaging.md`](../docs/packaging.md) | Production artifacts, size budgets and measurement commands |
+| [`../poc/SIZE_REPORT.md`](../poc/SIZE_REPORT.md) | Historical PoC bundle size measurements, not production distribution sizes |
 
 ## 1. Goal
 
@@ -155,7 +156,7 @@ Milestone-scoped decisions live in the milestone that owns them:
 [`M3_PLANNING.md`](M3_PLANNING.md) and
 [`M4_PLANNING.md`](M4_PLANNING.md). What remains here is owned by no single milestone.
 
-- **Whether property mangling is revisited, and on what threshold.** The current answer is no:
-  readable source and safe property access outrank the bytes. It is reopened only against a measured
-  threshold, and it would affect every published artifact at once, including the
-  [M2 CDN bundle](M2_PLANNING.md).
+- **Whether to expand property mangling.** CDN bundles already shorten `_`-prefixed private members
+  with SWC, preserving cross-bundle members explicitly; ESM size-check bundles do not mangle
+  properties. Any broader use needs measured savings and compatibility evidence. See
+  [packaging](../docs/packaging.md) for the current boundaries.
