@@ -526,6 +526,115 @@ it("keeps separate presets and providers isolated through shutdown", async () =>
   await second.captured(2);
 });
 
+it.each<Transport>(["fetch", "xhr"])(
+  "keeps timing ambiguous across two %s owners when the first starts a nested request",
+  async (transport) => {
+    let now = 100;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    const url = `${endpoint}?delay=50`;
+    const entry = {
+      entryType: "resource",
+      name: url,
+      initiatorType: transport === "fetch" ? "fetch" : "xmlhttprequest",
+      startTime: 125,
+      duration: 55,
+      requestStart: 130,
+      responseStart: 160,
+      responseEnd: 180,
+    } as PerformanceResourceTiming;
+    vi.spyOn(performance, "getEntriesByName").mockImplementation((name) =>
+      name === url ? [entry] : [],
+    );
+    let reenter = true;
+    let nested: Promise<void> | undefined;
+    const startNested = () => {
+      if (!reenter) return;
+      reenter = false;
+      now = 120;
+      nested = send(transport, url);
+    };
+    const first = await start(
+      { enableResourceTiming: true },
+      transport === "fetch" ? { fetch: { requestHook: startNested } } : {},
+    );
+    const second = await start({ enableResourceTiming: true });
+    if (transport === "xhr") {
+      vi.spyOn(first.spanProcessor, "onStart").mockImplementationOnce(startNested);
+    }
+    const outer = send(transport, url);
+    expect(nested).toBeDefined();
+    now = 200;
+    await Promise.all([outer, nested]);
+    for (const pipeline of [first, second]) {
+      for (const span of await pipeline.captured(2)) {
+        expect(
+          Object.keys(span.attributes).filter((name) => name.startsWith("browser.dependency.")),
+        ).toEqual([]);
+      }
+    }
+    Object.assign(entry, { startTime: 215, duration: 15, responseEnd: 230 });
+    now = 210;
+    const next = send(transport, url);
+    now = 250;
+    await next;
+    for (const pipeline of [first, second]) {
+      const spans = await pipeline.captured(3);
+      expect(spans[2].attributes["browser.dependency.duration"]).toBe(15);
+    }
+  },
+);
+
+it.each(["before initialization", "during a pause"])(
+  "omits pending XHR timing when an XHR opened %s is sent",
+  async (opened) => {
+    const url = `${endpoint}?delay=50`;
+    const xhr = new XMLHttpRequest();
+    const completion = new Promise<void>((resolve, reject) => {
+      xhr.onloadend = () => resolve();
+      xhr.onerror = () => reject(new Error("Test XHR failed"));
+    });
+    if (opened === "before initialization") xhr.open("GET", url);
+    const pipeline = await start({ enableResourceTiming: true });
+    if (opened === "during a pause") {
+      await pipeline.handle.updateCfg({ disableAjaxTracking: true });
+      xhr.open("GET", url);
+      await pipeline.handle.updateCfg({ disableAjaxTracking: false });
+    }
+    let now = 100;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    const entry = {
+      entryType: "resource",
+      name: url,
+      initiatorType: "xmlhttprequest",
+      startTime: 125,
+      duration: 55,
+      requestStart: 130,
+      responseStart: 160,
+      responseEnd: 180,
+    } as PerformanceResourceTiming;
+    vi.spyOn(performance, "getEntriesByName").mockImplementation((name) =>
+      name === url ? [entry] : [],
+    );
+    const tracked = send("xhr", url);
+    now = 120;
+    xhr.send();
+    now = 200;
+    await Promise.all([tracked, completion]);
+    expect(xhr.status).toBe(200);
+    const [span] = await pipeline.captured(1);
+    expect(
+      Object.keys(span.attributes).filter((name) => name.startsWith("browser.dependency.")),
+    ).toEqual([]);
+    Object.assign(entry, { startTime: 215, duration: 15, responseEnd: 230 });
+    now = 210;
+    const next = send("xhr", url);
+    now = 250;
+    await next;
+    const spans = await pipeline.captured(2);
+    expect(spans[1].attributes["browser.dependency.duration"]).toBe(15);
+  },
+);
+
 it("releases owned patches and ignores in-flight enrichment after shutdown", async () => {
   const pipeline = await start({
     captureRequestHeaders: true,

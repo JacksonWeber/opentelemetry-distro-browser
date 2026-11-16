@@ -280,8 +280,15 @@ export function createDependencyEnrichment(options: DependencyInstrumentationOpt
                 }
                 const request = current;
                 if (request?.timing) {
+                  const key = request.url.split("#", 1)[0];
+                  const competing = pending.get(key);
+                  // Another owner's hook may have registered a nested request in the meantime.
+                  if (competing && competing !== request.timing) {
+                    request.timing.ambiguous = competing.ambiguous = true;
+                    request.timing = competing;
+                  }
                   request.timing.count++;
-                  pending.set(request.url.split("#", 1)[0], request.timing);
+                  pending.set(key, request.timing);
                 }
                 let recording = false;
                 try {
@@ -448,6 +455,10 @@ export function createDependencyEnrichment(options: DependencyInstrumentationOpt
             (send) =>
               function (this: XMLHttpRequest, body) {
                 const record = enabled ? records.get(this) : undefined;
+                if (enabled && !record) {
+                  // Without an observed open(), any pending URL could compete with this send.
+                  for (const timing of pending.values()) timing.ambiguous = true;
+                }
                 const request = record && {
                   ...record,
                   start: performance.now(),
