@@ -23,9 +23,9 @@ export const entryPointBudgets = {
     brotliBytes: 47 * 1024,
   },
   "./instrumentations": {
-    rawBytes: 68.5 * 1024,
-    gzipBytes: 26 * 1024,
-    brotliBytes: 23 * 1024,
+    rawBytes: 78.25 * 1024,
+    gzipBytes: 29.75 * 1024,
+    brotliBytes: 26.5 * 1024,
   },
   // The generator validates its options and assembles optional loader steps. It runs where the
   // page is rendered; the snippet it emits only contains the steps a page enables.
@@ -36,9 +36,9 @@ export const entryPointBudgets = {
   },
 };
 
-// The SDK browser bundle also carries every instrumentation, because CDN users cannot add them later.
+// CDN bundles inline supported instrumentations but exclude npm-only Click Analytics.
 const sdkBrowserBundleBudget = {
-  rawBytes: 198.5 * 1024,
+  rawBytes: 198.75 * 1024,
   gzipBytes: 64 * 1024,
   brotliBytes: 56 * 1024,
 };
@@ -202,6 +202,19 @@ export const scenarios = [
   publishedInstrumentationsScenario,
   publishedSnippetScenario,
   ...instrumentationScenarios,
+  {
+    id: "instrumentation-click-analytics",
+    label: "+ Click Analytics instrumentation (factory and async chunk)",
+    group: "instrumentation",
+    entryPoint: "./instrumentations",
+    baseline: "distribution",
+    code:
+      API_IMPORTS +
+      SDK_IMPORTS +
+      DISTRIBUTION_IMPORTS +
+      `import { createClickAnalyticsInstrumentation } from "${packageName}/instrumentations";\n` +
+      sink(...DISTRIBUTION_SYMBOLS, "createClickAnalyticsInstrumentation"),
+  },
   everythingScenario,
 ];
 

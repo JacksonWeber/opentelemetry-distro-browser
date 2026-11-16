@@ -257,6 +257,7 @@ function isPatchable(value: BrowserInstrumentation): value is Patchable {
     "instrumentationName" in value &&
     typeof value.instrumentationName === "string" &&
     (value.instrumentationName === "@microsoft/opentelemetry-browser/page-view" ||
+      value.instrumentationName === "@microsoft/opentelemetry-browser/click-analytics" ||
       /^@opentelemetry\/browser-instrumentation\/(fetch|xhr|console|navigation)$/.test(
         value.instrumentationName,
       ))
@@ -297,7 +298,12 @@ function adapt(instrumentation: Patchable): void {
       "Construct shared instrumentations with enabled: false",
     );
   }
-  if (adapted) return;
+  // Click Analytics owns event listeners, not shared method patches. Keep its activation-aware rollback.
+  if (
+    adapted ||
+    instrumentation.instrumentationName === "@microsoft/opentelemetry-browser/click-analytics"
+  )
+    return;
   const entries: {
     target: object;
     name: PropertyKey;

@@ -4,7 +4,8 @@ This catalogue describes customer telemetry from `@microsoft/opentelemetry-brows
 **0.1.0-beta.2**, including its pinned `@opentelemetry/browser-instrumentation` **0.8.1** dependency.
 It describes the records before exporter-specific mapping. Application hooks and processors can
 modify them. Browser conventions are experimental/development-stability; the distribution-owned
-page-view schema is not an upstream stable convention. Pin versions and review schema changes.
+page-view schema is not an upstream stable convention. Click Analytics uses vendor extension
+attributes, not official OpenTelemetry semantic conventions. Pin versions and review schema changes.
 
 See [getting started](../README.md#getting-started) and the
 [configuration reference](configuration-reference.md) for setup. Timing support varies by browser,
@@ -28,11 +29,12 @@ automatic log events use INFO severity (`9`) and have no required body.
 | Document timing    | Log `browser.navigation_timing`     | Opt-in                | `@opentelemetry/browser-instrumentation/experimental/navigation-timing`                             |
 | Subresource timing | Log `browser.resource_timing`       | Opt-in                | `@opentelemetry/browser-instrumentation/experimental/resource-timing`                               |
 | Clicks             | Log `browser.user_action.click`     | Opt-in                | `@opentelemetry/browser-instrumentation/experimental/user-action`                                   |
+| Click Analytics    | Log `browser.click`                 | Opt-in, npm-only      | [Click Analytics](../src/instrumentation/clickAnalytics/clickAnalyticsInstrumentation.ts)           |
 | Web Vitals         | Log `browser.web_vital`             | Opt-in                | `@opentelemetry/browser-instrumentation/experimental/web-vitals`                                    |
 
 The [instrumentation helper](../src/instrumentation/browserInstrumentation/getInstrumentations.ts)
-loads only selected modules in npm applications. The CDN SDK includes all modules but enables only
-fetch/XHR unless configured otherwise. Merely importing the distribution installs none of these;
+loads only selected modules in npm applications. The CDN SDK includes all CDN-supported modules but
+enables only fetch/XHR unless configured otherwise. Merely importing the distribution installs none of these;
 initialization must include an exporting pipeline for the relevant signal.
 
 ## Common enrichment and correlation
@@ -257,6 +259,97 @@ Emitted for captured document clicks. Currently click is the supported automatic
 This is basic click capture, not the full Application Insights Click Analytics feature. Selectors
 can contain element IDs; custom element attributes can contain application data. Use a log hook to
 sanitize before emission. Structured attributes are subject to downstream SDK/exporter handling.
+
+## Click Analytics: `browser.click`
+
+Opt-in, npm-only distribution instrumentation, separate from the unchanged `userAction` module above.
+**Enabling both can emit duplicate action records for the same interaction.** The implementation
+lives in the new [Click Analytics folder](../src/instrumentation/clickAnalytics/clickAnalyticsInstrumentation.ts),
+not a separate package, and is exposed through the existing
+`@microsoft/opentelemetry-browser/instrumentations` export. Use the async
+`createClickAnalyticsInstrumentation(config)` factory for a deferred instance; the class is type-only,
+not a public runtime constructor. Click Analytics, its factory and behavior validators are excluded
+from both CDN bundle families and the loader configuration. See
+[configuration, manual APIs and parity differences](configuration-reference.md#click-analytics).
+
+Records use standard **OpenTelemetry log transport**, with top-level `eventName: "browser.click"`,
+INFO severity (`9`), no default body and the active OTel context. The instrumentation scope is
+`@microsoft/opentelemetry-browser/click-analytics`, versioned with the distribution. The event and
+`browser.click.*` attributes are **distribution/vendor extensions, not official OTel semantic
+conventions**. Reusing the distribution's `browser.page_view.name` does not emit a page view.
+
+Automatic capture listens for `mousedown` and Enter/Space `keyup`, selecting the nearest supported
+element (default `A`, `BUTTON`, `AREA`, `INPUT`; `trackElementTypes` replaces this list), including associated label
+controls. Only input types `button`, `checkbox`, `radio`, `reset` and `submit` are eligible. This
+records an interaction, not proof of navigation, form submission or a completed business action.
+
+The exact `trackPageAction()` field mapping is below. `capturePageAction()` derives those fields
+from DOM/configuration as described in the final column. Empty strings and nullish fields are
+omitted; numeric zero is retained by the emitter. `applyCustomLogRecordData` can modify the record
+before built-in URL redaction.
+
+| Attribute                      | Type/unit                  | Action field and DOM-capture mapping                                                                                                                                                                                                                           |
+| ------------------------------ | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `browser.click.name`           | string                     | `name`: truthy extracted `id`, then exact `contentName`, then `"not_specified"`, converted to a string. This is not the top-level event name.                                                                                                                  |
+| `url.full`                     | string, optional           | `uri`: nonempty `coreData.requestUri`, otherwise origin + pathname, optionally hash then query.                                                                                                                                                                |
+| `browser.page_view.name`       | string, optional           | `pageName`: nonempty override, page-name callback, `coreData.pageName`, then document title.                                                                                                                                                                   |
+| `browser.click.page_type`      | string, optional           | `pageType`: nonempty override, `coreData.pageType`, then exact metadata name `pageType`.                                                                                                                                                                       |
+| `url.referrer`                 | string, optional           | `refUri`: a nonempty override, then `coreData.referrerUri`, then `document.referrer`; an empty capture override falls back. An empty configured referrer suppresses the attribute.                                                                             |
+| `browser.click.target_url`     | string, optional           | `targetUri`: override, otherwise anchor/area `href`, or an eligible input's form action (pathname fallback without a form). Other elements have no derived target.                                                                                             |
+| `browser.click.action_type`    | string, optional           | `actionType`: automatic `CL` (left), `CM` (middle), `CR` (right), `KE` (Enter), `KS` (Space); manual values are unrestricted.                                                                                                                                  |
+| `browser.click.behavior`       | string or number, optional | `behavior`: capture validates the override/metadata and eligible `bhvr` tag, with a special right-click default; see [precedence](configuration-reference.md#click-analytics-defaults-and-hooks). Direct tracking emits the supplied value without validation. |
+| `browser.click.coordinates`    | string, optional           | `clickCoordinates`: capture encodes both document-relative coordinates as `xXy`, e.g. `12X34`, in CSS pixels. Keyboard events usually have no coordinates; browser exposure varies.                                                                            |
+| `browser.click.content`        | string, optional           | `content`: capture serializes a one-object JSON array after extraction/removal and `contentTags` overrides, e.g. `[{"category":"checkout"}]` or `[{}]`. Direct tracking accepts the supplied string unchanged.                                                 |
+| `browser.click.time_to_action` | number, ms, optional       | `timeToAction`: capture uses `Date.now() - performance.timeOrigin`, or `-1` when unavailable. Elapsed document time, not interaction latency or time since an SPA navigation.                                                                                  |
+| `browser.click.parent_id`      | string, optional           | `parentId`: truthy extracted `parentid`, then exact `parentName`, then `"not_specified"`, converted to a string. Lowercase `parentname` is not that fallback, matching upstream's casing quirk.                                                                |
+| `browser.click.properties`     | string, always emitted     | JSON object merging `customProperties` then `action.properties` (latter wins); `{}` when neither is supplied. DOM capture supplies managed `pageTags` here.                                                                                                    |
+
+Content keys keep their source casing: HTML `data-contentname` becomes `contentname`, not the
+special `contentName`; blob keys retain JSON casing. Capture removes `id`, `parentid`, `parentname`
+and the exact configured boundary key before `contentTags` is merged. A consumed `bhvr` tag is also
+removed. Other keys stay inside JSON rather than becoming individual OTel attributes. `isAuto` is
+accepted in capture overrides but is not emitted; no `baseTypeSource` attribute is added.
+
+For DOM capture, `browser.click.properties` contains `pageTags` shallowly merged from configuration,
+`callback.pageActionPageTags(element)` and capture overrides. Managed `pageTags.metaTags` then wins,
+containing the metadata snapshot except exact `behavior`, `market` and `pageType`. The default
+empty metadata prefix matches **all named metadata**, despite `captureAllMetaDataContent: false`.
+Metadata prefixes are retained and the last duplicate wins.
+
+Behavior overrides of `undefined`, `null` or `""` fall back to metadata before validation; this uses
+an assigned-value check, not nullish coalescing. Right-click defaults and eligible `bhvr` tags can
+then replace the value as described in the [precedence rules](configuration-reference.md#click-analytics-defaults-and-hooks).
+
+A nonempty `data-ai-blob` takes precedence over individual data tags and HTML fallbacks; invalid
+JSON/non-object roots yield empty blob content without falling back. Ancestor content and inferred
+parent identity require a nonempty `parentDataTag`; nearest assigned content wins, the boundary
+level is included, and the separate parent-ID search can extend beyond it. See
+[extraction and privacy rules](configuration-reference.md#data-tags-blobs-and-privacy).
+
+Automatic capture is suppressed only by a **nonempty** DNT value on the selected control or any
+ancestor: `data-ai-dnt="false"` suppresses it, but `data-ai-dnt=""` does not. Manual
+`capturePageAction()` and `trackPageAction()` do not enforce DNT. HTML ID/name fallback is off by
+default, but tagged content and metadata can still contain sensitive data.
+
+After `applyCustomLogRecordData`, absolute URLs in `url.full`, `url.referrer` and
+`browser.click.target_url` receive built-in credential and sensitive query/fragment-parameter
+redaction, including explicit manual and hook-added values. The default parameter list matches
+[page-view defaults](configuration-reference.md#page-view-options), but page-view sanitizer settings
+do not apply. Relative or opaque non-URL strings are retained unchanged. Content, properties and
+other fields are not sanitized; review all collected fields.
+
+`dropInvalidEvents: true` drops DOM captures only when name and parent ID are both `not_specified`
+and content is `[{}]`; the default is false. Direct `trackPageAction()` bypasses DOM extraction,
+defaults, validation and this filter. Neither method emits while the instrumentation is disabled.
+
+Azure Monitor maps `browser.click` to `EventData` named `browser.click`
+(`customEvents` / `AppEvents`), not to a separate legacy Click Analytics transport. Numeric fields
+such as time-to-action and numeric behavior become custom measurements; string fields, including
+serialized content/properties, become custom dimensions. OTLP/custom exporters receive the OTel
+log and the same extension attributes without the Azure Monitor projection. There is no
+Application Insights dependency, plugin lifecycle or bundled `Behavior` enum. The parity target is
+[ApplicationInsights-JS `main` page-action source](https://github.com/microsoft/ApplicationInsights-JS/blob/main/extensions/applicationinsights-clickanalytics-js/src/events/PageAction.ts),
+with [explicit browser/API differences](configuration-reference.md#application-insights-parity-target-and-differences).
 
 ## Web Vitals: `browser.web_vital`
 

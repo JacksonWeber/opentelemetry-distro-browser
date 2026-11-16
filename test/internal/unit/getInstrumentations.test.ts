@@ -1,8 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { describe, expect, it } from "vitest";
-import { getInstrumentations } from "../../../src/instrumentation/browserInstrumentation/index.js";
+import { describe, expect, expectTypeOf, it } from "vitest";
+import {
+  createClickAnalyticsInstrumentation,
+  getInstrumentations,
+  type ClickAnalyticsInstrumentation,
+} from "../../../src/instrumentation/browserInstrumentation/index.js";
 import type { BrowserInstrumentation, InstrumentationOptions } from "../../../src/types.js";
 
 /** Every key of {@link InstrumentationOptions}, paired with the name upstream reports. */
@@ -16,6 +20,7 @@ const ALL: ReadonlyArray<[keyof InstrumentationOptions, string]> = [
   ["userAction", "@opentelemetry/browser-instrumentation/user-action"],
   ["webVitals", "@opentelemetry/browser-instrumentation/web-vitals"],
   ["console", "@opentelemetry/browser-instrumentation/console"],
+  ["clickAnalytics", "@microsoft/opentelemetry-browser/click-analytics"],
 ];
 
 /** The instrumentations that collect unless they are turned off. */
@@ -52,6 +57,43 @@ function only(
 ): InstrumentationOptions {
   return { ...OFF, [key]: { enabled: true, ...settings } } as InstrumentationOptions;
 }
+
+describe("createClickAnalyticsInstrumentation", () => {
+  it("returns a deferred instance with typed manual capture APIs by default", async () => {
+    const pending = createClickAnalyticsInstrumentation();
+    expectTypeOf(pending).toEqualTypeOf<Promise<ClickAnalyticsInstrumentation>>();
+    const instrumentation = await pending;
+
+    expectTypeOf(instrumentation).toExtend<BrowserInstrumentation>();
+    expect(instrumentation.getConfig().enabled).toBe(false);
+    expect(instrumentation.capturePageAction).toBeTypeOf("function");
+    expect(instrumentation.trackPageAction).toBeTypeOf("function");
+  });
+
+  it.each([undefined, false, true])(
+    "returns fresh deferred instances and configurations without mutating enabled=%s options",
+    async (enabled) => {
+      const settings = Object.freeze({
+        enabled,
+        autoCapture: false,
+        dataTags: { customDataPrefix: "data-factory-" },
+        pageTags: { owner: "factory" },
+        callback: { pageName: () => "factory page" },
+      });
+      const first = await createClickAnalyticsInstrumentation(settings);
+      const second = await createClickAnalyticsInstrumentation(settings);
+
+      expect(first).not.toBe(second);
+      expect(first.getConfig()).not.toBe(settings);
+      expect(first.getConfig()).not.toBe(second.getConfig());
+      expect(first.getConfig()).toEqual({ ...settings, enabled: false });
+      expect(second.getConfig()).toEqual({ ...settings, enabled: false });
+      expect(settings.enabled).toBe(enabled);
+      first.setConfig({ enabled: false, pageTags: { owner: "changed" } });
+      expect(second.getConfig()).toEqual({ ...settings, enabled: false });
+    },
+  );
+});
 
 describe("getInstrumentations", () => {
   describe("enabling", () => {
@@ -193,6 +235,31 @@ describe("getInstrumentations", () => {
   });
 
   describe("upstream settings pass through", () => {
+    it("forwards click analytics settings without enabling capture or mutating options", async () => {
+      const behaviorValidator = (value: string | number): string | number => value;
+      const contentName = (): string => "custom content";
+      const settings = {
+        enabled: true,
+        autoCapture: false,
+        behaviorValidator,
+        callback: { contentName },
+        dataTags: { customDataPrefix: "data-test-", parentDataTag: "boundary" },
+        pageTags: { source: "factory" },
+      } as const;
+      const options: InstrumentationOptions = { ...OFF, clickAnalytics: settings };
+      const instrumentations = await getInstrumentations(options);
+
+      expect(names(instrumentations)).toEqual(["@microsoft/opentelemetry-browser/click-analytics"]);
+      expect(
+        configOf<typeof settings>(
+          instrumentations,
+          "@microsoft/opentelemetry-browser/click-analytics",
+        ),
+      ).toEqual({ ...settings, enabled: false });
+      expect(options.clickAnalytics).toBe(settings);
+      expect(settings.enabled).toBe(true);
+    });
+
     it("forwards fetch settings", async () => {
       const requestHook = (): void => {};
       const sanitizeUrl = (url: string): string => url;

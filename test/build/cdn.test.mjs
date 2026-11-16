@@ -438,7 +438,7 @@ function loadInWorkerRealm(code, file) {
 const runtimeKeys = async (entry) =>
   Object.keys(await import(pathToFileURL(resolve(root, "dist", "esm", entry)).href));
 
-test("every CDN bundle loads without window and exposes its documented npm API", async () => {
+test("every CDN bundle loads without window and omits npm-only features", async () => {
   const otelApi = ["context", "diag", "logs", "metrics", "propagation", "trace"];
   // The loader snippet builds its resource with this; npm consumers import it themselves.
   const loaderApi = ["resourceFromAttributes"];
@@ -448,6 +448,12 @@ test("every CDN bundle loads without window and exposes its documented npm API",
     "UserAgentDetector",
     "userAgentDetector",
   ];
+  const clickAnalyticsExports = [
+    "createClickAnalyticsInstrumentation",
+    "BehaviorMapValidator",
+    "BehaviorValueValidator",
+    "BehaviorEnumValidator",
+  ];
   const npmKeys = [
     ...new Set([
       ...(await runtimeKeys("index.js")),
@@ -456,9 +462,12 @@ test("every CDN bundle loads without window and exposes its documented npm API",
       ...loaderApi,
     ]),
   ];
-  // The opt-in resource detectors are npm-only; no CDN bundle carries them.
-  const sdkKeys = npmKeys.filter((key) => !resourceDetectors.includes(key)).sort();
-  const instrumentationKeys = (await runtimeKeys("instrumentations.js")).sort();
+  const sdkKeys = npmKeys
+    .filter((key) => !resourceDetectors.includes(key) && !clickAnalyticsExports.includes(key))
+    .sort();
+  const instrumentationKeys = (await runtimeKeys("instrumentations.js"))
+    .filter((key) => !clickAnalyticsExports.includes(key))
+    .sort();
   assert.ok(sdkKeys.includes("useMicrosoftOpenTelemetry"));
   assert.ok(sdkKeys.includes("getInstrumentations"));
   assert.ok(resourceDetectors.every((key) => npmKeys.includes(key)));
@@ -466,6 +475,24 @@ test("every CDN bundle loads without window and exposes its documented npm API",
   for (const artifact of getCdnArtifacts(version)) {
     const code = await readFile(resolve(cdnDirectory, artifact.file), "utf8");
     const microsoft = loadInWorkerRealm(code, artifact.file);
+    assert.doesNotMatch(
+      code,
+      /browser\.click|ClickAnalyticsInstrumentation|BehaviorMapValidator|BehaviorValueValidator|BehaviorEnumValidator/,
+      artifact.file,
+    );
+    const map = JSON.parse(await readFile(resolve(cdnDirectory, `${artifact.file}.map`), "utf8"));
+    assert.ok(
+      !map.sources.some((source) => /[\\/]clickAnalytics[\\/]/.test(source)),
+      artifact.file,
+    );
+    const bundle = microsoft.OpenTelemetry ?? microsoft.OpenTelemetryInstrumentations;
+    for (const clickAnalytics of [undefined, {}, { enabled: false }, { enabled: true }]) {
+      await assert.rejects(
+        bundle.getInstrumentations({ clickAnalytics }),
+        /Click Analytics is only available through the npm package/,
+        artifact.file,
+      );
+    }
     if (artifact.module === "opentelemetry-browser") {
       assert.deepEqual(Object.keys(microsoft.OpenTelemetry).sort(), sdkKeys, artifact.file);
       assert.doesNotMatch(code, /user_agent\.original/, artifact.file);
@@ -501,7 +528,7 @@ test("every CDN bundle loads without window and exposes its documented npm API",
   }
 });
 
-test("the default CDN bundle carries every instrumentation without loading other files", async () => {
+test("the default CDN bundle carries supported instrumentations without loading other files", async () => {
   const code = await readFile(
     resolve(cdnDirectory, `opentelemetry-browser.${version}.min.js`),
     "utf8",
@@ -524,7 +551,10 @@ test("the default CDN bundle carries every instrumentation without loading other
   );
   const instrumentations = await getInstrumentations(all);
   assert.equal(instrumentations.length, Object.keys(all).length);
-  assert.equal(new Set(instrumentations.map((i) => i.instrumentationName)).size, 9);
+  assert.equal(
+    new Set(instrumentations.map((i) => i.instrumentationName)).size,
+    Object.keys(all).length,
+  );
   assert.equal((await getInstrumentations()).length, 2, "fetch and xhr are on by default");
 });
 

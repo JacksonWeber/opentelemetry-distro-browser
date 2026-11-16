@@ -96,6 +96,14 @@ export default async function setup(project: TestProject): Promise<() => Promise
           await new Promise((resolve) => setTimeout(resolve, 2_000));
         }
         response.writeHead(200, { "content-type": "application/json" });
+        if (
+          runId.endsWith("-streaming-response") &&
+          request.headers.host?.startsWith("localhost:")
+        ) {
+          // Resolve fetch headers before the body completes, beyond the timing assertion's poll.
+          response.write(" ");
+          await new Promise((resolve) => setTimeout(resolve, 1_250));
+        }
         response.end(
           JSON.stringify({
             itemsAccepted: envelopes.length,

@@ -3,6 +3,24 @@
 
 import type { BrowserInstrumentation, InstrumentationOptions } from "../../types.js";
 import { createDependencyEnrichment } from "./dependencyEnrichment.js";
+import { CLICK_ANALYTICS_ENABLED } from "../../shared/buildFeatures.js";
+import type {
+  ClickAnalyticsInstrumentation,
+  ClickAnalyticsInstrumentationConfig,
+} from "../clickAnalytics/types.js";
+
+/**
+ * Creates a deferred npm-only Click Analytics instance with manual capture APIs, without eagerly
+ * loading its implementation into applications that use only other instrumentations.
+ * @public
+ */
+export async function createClickAnalyticsInstrumentation(
+  config: ClickAnalyticsInstrumentationConfig = {},
+): Promise<ClickAnalyticsInstrumentation> {
+  const { ClickAnalyticsInstrumentation } =
+    await import("../clickAnalytics/clickAnalyticsInstrumentation.js");
+  return new ClickAnalyticsInstrumentation({ ...config, enabled: false });
+}
 
 const DEFAULT_INITIATOR_TYPES: readonly string[] = ["script", "link", "css"];
 const DEFAULT_MAX_QUEUE_SIZE = 256;
@@ -41,14 +59,15 @@ function isEnabled(options: { enabled?: boolean } | undefined, defaultEnabled: b
  * `fetch` and `xhr` are constructed unless they are turned off, matching the Application Insights
  * JavaScript SDK, where `disableAjaxTracking` and `disableFetchTracking` both default to false.
  * Everything else is constructed only when `enabled` is `true`.
+ * Click Analytics is npm-only; CDN bundles reject its configuration.
  *
  * Instances are returned inert, with `enabled: false`, which is the deferred-enablement contract
  * `MicrosoftOpenTelemetryBrowserOptions.instrumentations` documents: registration binds their
  * providers first and enables them afterwards, so nothing is collected before it can be exported.
  *
  * The only settings applied beyond what a caller passes are bounds on subresource timing volume,
- * which are defaults a caller can override. Every instrumentation here comes from
- * `@opentelemetry/browser-instrumentation`. Registration shares their browser method patches
+ * which are defaults a caller can override. Apart from distribution-owned Click Analytics,
+ * instrumentations come from `@opentelemetry/browser-instrumentation`. Registration shares their browser method patches
  * without replacing their collection logic or per-instance configuration.
  * Opt-in `dependencies` adds header, error and timing enrichment and a shared per-provider
  * request budget through narrow adapters.
@@ -61,6 +80,9 @@ function isEnabled(options: { enabled?: boolean } | undefined, defaultEnabled: b
 export async function getInstrumentations(
   options: InstrumentationOptions = {},
 ): Promise<BrowserInstrumentation[]> {
+  if (!CLICK_ANALYTICS_ENABLED && "clickAnalytics" in options) {
+    throw new Error("Click Analytics is only available through the npm package.");
+  }
   const pending: Promise<BrowserInstrumentation>[] = [];
   const enrichment = options.dependencies
     ? createDependencyEnrichment(options.dependencies)
@@ -154,6 +176,15 @@ export async function getInstrumentations(
       import("@opentelemetry/browser-instrumentation/experimental/web-vitals").then(
         ({ WebVitalsInstrumentation }) =>
           new WebVitalsInstrumentation({ ...options.webVitals, ...DEFERRED }),
+      ),
+    );
+  }
+
+  if (CLICK_ANALYTICS_ENABLED && isEnabled(options.clickAnalytics, false)) {
+    pending.push(
+      import("../clickAnalytics/clickAnalyticsInstrumentation.js").then(
+        ({ ClickAnalyticsInstrumentation }) =>
+          new ClickAnalyticsInstrumentation({ ...options.clickAnalytics, ...DEFERRED }),
       ),
     );
   }
