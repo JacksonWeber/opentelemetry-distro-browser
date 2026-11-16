@@ -4,6 +4,7 @@
 import { diag, ROOT_CONTEXT, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { ExportResultCode, type ExportResult } from "@opentelemetry/core";
+import { detectResources, type Resource } from "@opentelemetry/resources";
 import {
   LoggerProvider,
   SimpleLogRecordProcessor,
@@ -44,7 +45,7 @@ function debuggerForTest(options: TelemetryDebuggerOptions = {}): TelemetryDebug
   return debug;
 }
 
-function pipeline(debug: TelemetryDebugger, sampled = true) {
+function pipeline(debug: TelemetryDebugger, sampled = true, resource?: Resource) {
   const exportSpan = vi.fn<SpanExporter["export"]>((_records, callback) =>
     callback({ code: ExportResultCode.SUCCESS }),
   );
@@ -52,6 +53,7 @@ function pipeline(debug: TelemetryDebugger, sampled = true) {
     callback({ code: ExportResultCode.SUCCESS }),
   );
   const spans = new TracerProvider({
+    resource,
     ...(sampled ? {} : { sampler: new AlwaysOffSampler() }),
     spanProcessors: [
       debug.wrapSpanProcessor(
@@ -65,6 +67,7 @@ function pipeline(debug: TelemetryDebugger, sampled = true) {
     ],
   });
   const logs = new LoggerProvider({
+    resource,
     processors: [
       debug.wrapLogRecordProcessor(
         new SimpleLogRecordProcessor({
@@ -116,6 +119,61 @@ describe("telemetry debugger", () => {
         .getEntriesByType("measure")
         .filter((entry) => entry.name.startsWith("otel.debug.")),
     ).toHaveLength(0);
+  });
+
+  it("shows pending resources without reading attributes or emitting diagnostic logs", async () => {
+    let resolveAttribute!: (value: string) => void;
+    const resource = detectResources({
+      detectors: [
+        {
+          detect: () => ({
+            attributes: {
+              "service.name": new Promise<string>((resolve) => {
+                resolveAttribute = resolve;
+              }),
+              "service.version": "1.0",
+            },
+          }),
+        },
+      ],
+    });
+    cleanup.push(() => resolveAttribute("checkout"));
+    const debug = debuggerForTest();
+    const sdk = pipeline(debug, true, resource);
+    const readAttributes = vi.spyOn(resource, "attributes", "get");
+    const report = vi.spyOn(diag, "error").mockImplementation(() => {
+      sdk.logger.emit({ eventName: "sdk.diagnostic" });
+    });
+
+    sdk.tracer.startSpan("checkout").end();
+    sdk.logger.emit({ eventName: "cart.ready" });
+    expect(resource.asyncAttributesPending).toBe(true);
+    expect(readAttributes).not.toHaveBeenCalled();
+    expect(report).not.toHaveBeenCalled();
+    expect(sdk.exportSpan).not.toHaveBeenCalled();
+    expect(sdk.exportLog).not.toHaveBeenCalled();
+    const pending = debug.getEntries();
+    expect(pending).toHaveLength(2);
+    for (const entry of pending) {
+      expect(entry.phase).toBe("emitted");
+      expect(JSON.parse(entry.payload)).toHaveProperty("resource", "[Pending]");
+    }
+
+    resolveAttribute("checkout");
+    await sdk.flush();
+    expect(resource.asyncAttributesPending).toBe(false);
+    expect(report).not.toHaveBeenCalled();
+    expect(sdk.exportSpan).toHaveBeenCalledOnce();
+    expect(sdk.exportLog).toHaveBeenCalledOnce();
+    for (const signal of ["span", "log"]) {
+      const entries = debug.getEntries().filter((entry) => entry.signal === signal);
+      expect(entries.map((entry) => entry.phase)).toEqual(["emitted", "exported"]);
+      expect(JSON.parse(entries[0].payload)).toHaveProperty("resource", "[Pending]");
+      expect(JSON.parse(entries[1].payload)).toHaveProperty("resource", {
+        "service.name": "checkout",
+        "service.version": "1.0",
+      });
+    }
   });
 
   it("keeps instances independent and does not make sampled-out spans visible", async () => {

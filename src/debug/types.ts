@@ -37,7 +37,10 @@ export interface TelemetryDebugEntry {
   readonly traceId?: string;
   /** Span identity when present. */
   readonly spanId?: string;
-  /** Bounded JSON snapshot. Truncation and circular references are explicitly indicated. */
+  /**
+   * Bounded JSON snapshot. Truncation and circular references are explicitly indicated.
+   * Unresolved resource attributes appear as "[Pending]" without waiting for detection.
+   */
   readonly payload: string;
 }
 

@@ -76,7 +76,7 @@ export function spanDetails(span: ReadableSpan): object {
     attributes: span.attributes,
     events: span.events,
     links: span.links,
-    resource: span.resource.attributes,
+    resource: span.resource.asyncAttributesPending ? "[Pending]" : span.resource.attributes,
     instrumentationScope: span.instrumentationScope,
     droppedAttributesCount: span.droppedAttributesCount,
     droppedEventsCount: span.droppedEventsCount,
@@ -94,7 +94,7 @@ export function logDetails(record: ReadableLogRecord): object {
     hrTimeObserved: record.hrTimeObserved,
     spanContext: record.spanContext,
     attributes: record.attributes,
-    resource: record.resource.attributes,
+    resource: record.resource.asyncAttributesPending ? "[Pending]" : record.resource.attributes,
     instrumentationScope: record.instrumentationScope,
     droppedAttributesCount: record.droppedAttributesCount,
   };
