@@ -20,6 +20,22 @@ import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { BatchLogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import {
+  getInstrumentations,
+  type DependencyInstrumentationOptions,
+} from "@microsoft/opentelemetry-browser/instrumentations";
+
+export const dependencies: DependencyInstrumentationOptions = {
+  captureRequestHeaders: true,
+  captureResponseHeaders: true,
+  ignoreHeaders: ["x-secret"],
+  includeErrorStatusText: true,
+  maxDependenciesPerView: 500,
+  enableResourceTiming: true,
+};
+void getInstrumentations({ dependencies });
+// @ts-expect-error Dependency limits must be numeric.
+void getInstrumentations({ dependencies: { maxDependenciesPerView: "500" } });
 
 export const version: string = OPENTELEMETRY_BROWSER_VERSION;
 export const session: MicrosoftOpenTelemetryBrowserSessionOptions = {

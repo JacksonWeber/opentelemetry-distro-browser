@@ -23,9 +23,9 @@ export const entryPointBudgets = {
     brotliBytes: 47 * 1024,
   },
   "./instrumentations": {
-    rawBytes: 70.75 * 1024,
-    gzipBytes: 26.75 * 1024,
-    brotliBytes: 23.5 * 1024,
+    rawBytes: 78.25 * 1024,
+    gzipBytes: 29.75 * 1024,
+    brotliBytes: 26.5 * 1024,
   },
   // The generator validates its options and assembles optional loader steps. It runs where the
   // page is rendered; the snippet it emits only contains the steps a page enables.
@@ -38,14 +38,14 @@ export const entryPointBudgets = {
 
 // CDN bundles inline supported instrumentations but exclude npm-only Click Analytics.
 const sdkBrowserBundleBudget = {
-  rawBytes: 192 * 1024,
-  gzipBytes: 61.5 * 1024,
-  brotliBytes: 54 * 1024,
+  rawBytes: 198.75 * 1024,
+  gzipBytes: 64 * 1024,
+  brotliBytes: 56 * 1024,
 };
 const instrumentationsBrowserBundleBudget = {
   rawBytes: 63 * 1024,
-  gzipBytes: 19 * 1024,
-  brotliBytes: 17 * 1024,
+  gzipBytes: 19.25 * 1024,
+  brotliBytes: 17.5 * 1024,
 };
 
 /**

@@ -120,12 +120,23 @@ export type ClickAnalyticsProperties = Record<string, string | number | boolean 
 export function createClickAnalyticsInstrumentation(config?: ClickAnalyticsInstrumentationConfig): Promise<ClickAnalyticsInstrumentation>;
 
 // @public
+export interface DependencyInstrumentationOptions {
+    captureRequestHeaders?: boolean;
+    captureResponseHeaders?: boolean;
+    enableResourceTiming?: boolean;
+    ignoreHeaders?: readonly string[];
+    includeErrorStatusText?: boolean;
+    maxDependenciesPerView?: number;
+}
+
+// @public
 export function getInstrumentations(options?: InstrumentationOptions): Promise<BrowserInstrumentation[]>;
 
 // @public
 export interface InstrumentationOptions {
     clickAnalytics?: ClickAnalyticsInstrumentationConfig;
     console?: ConsoleInstrumentationConfig;
+    dependencies?: DependencyInstrumentationOptions;
     errors?: ErrorsInstrumentationConfig;
     fetch?: FetchInstrumentationConfig;
     navigation?: NavigationInstrumentationConfig;

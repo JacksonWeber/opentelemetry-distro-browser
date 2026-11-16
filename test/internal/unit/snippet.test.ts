@@ -287,7 +287,7 @@ const pageViewDataFields = (
 void snippetOptionsMatchTheDistribution;
 void pageViewDataFields;
 const instrumentationNamesMatch = (
-  name: Exclude<keyof InstrumentationOptions, "clickAnalytics">,
+  name: Exclude<keyof InstrumentationOptions, "dependencies" | "clickAnalytics">,
 ): SdkLoaderInstrumentationName => name;
 const instrumentationNamesExist = (
   name: SdkLoaderInstrumentationName,

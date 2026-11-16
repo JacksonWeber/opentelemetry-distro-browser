@@ -35,7 +35,7 @@ afterEach(async () => {
     propagation.disable();
     diag.disable();
     vi.restoreAllMocks();
-    history.replaceState(null, "", originalUrl);
+    if (location.href !== originalUrl) history.replaceState(null, "", originalUrl);
     for (const script of scripts.splice(0)) script.remove();
     delete window.Microsoft;
   }

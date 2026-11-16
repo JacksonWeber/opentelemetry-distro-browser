@@ -269,6 +269,48 @@ async function exercise(bundle: BrowserBundle): Promise<void> {
   }
 }
 
+async function exerciseDependencies(bundle: InstrumentationBundle): Promise<void> {
+  const pipeline = createInMemoryPipeline();
+  const originalFetch = globalThis.fetch;
+  const recording: boolean[] = [];
+  const handle = await useMicrosoftOpenTelemetry({
+    ...pipeline.options,
+    instrumentations: await bundle.getInstrumentations({
+      xhr: { enabled: false },
+      dependencies: { captureRequestHeaders: true, maxDependenciesPerView: 1 },
+      fetch: {
+        requestHook: (span) => {
+          recording.push(span.isRecording());
+        },
+      },
+    }),
+  });
+  try {
+    for (let i = 0; i < 2; i++) {
+      await (await fetch("/__dependency_format__", { headers: { "x-public": "format" } })).text();
+    }
+    expect(recording).toEqual([true, false]);
+    await vi.waitFor(async () => {
+      await handle.forceFlush();
+      expect(pipeline.spanExporter.getFinishedSpans()).toHaveLength(1);
+    });
+    expect(
+      pipeline.spanExporter.getFinishedSpans()[0].attributes["http.request.header.x-public"],
+    ).toEqual(["format"]);
+  } finally {
+    try {
+      await handle.shutdown();
+    } finally {
+      globalThis.fetch = originalFetch;
+      trace.disable();
+      logs.disable();
+      propagation.disable();
+      context.disable();
+      diag.disable();
+    }
+  }
+}
+
 it.each([
   "opentelemetry-browser.umd.js",
   "opentelemetry-browser.umd.min.js",
@@ -780,6 +822,7 @@ it.each([
         xhr: { enabled: false },
       }),
     ).toEqual([]);
+    await exerciseDependencies(bundle);
     await expectClickAnalyticsUnavailable(bundle);
   } finally {
     script?.remove();
@@ -806,6 +849,7 @@ it.each([
         xhr: { enabled: false },
       }),
     ).toEqual([]);
+    await exerciseDependencies(bundle);
     await expectClickAnalyticsUnavailable(bundle);
   } finally {
     script?.remove();

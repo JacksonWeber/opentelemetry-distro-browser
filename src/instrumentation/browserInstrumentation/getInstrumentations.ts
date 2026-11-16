@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 import type { BrowserInstrumentation, InstrumentationOptions } from "../../types.js";
+import { createDependencyEnrichment } from "./dependencyEnrichment.js";
 import { CLICK_ANALYTICS_ENABLED } from "../../shared/buildFeatures.js";
 import type {
   ClickAnalyticsInstrumentation,
@@ -68,6 +69,8 @@ function isEnabled(options: { enabled?: boolean } | undefined, defaultEnabled: b
  * which are defaults a caller can override. Apart from distribution-owned Click Analytics,
  * instrumentations come from `@opentelemetry/browser-instrumentation`. Registration shares their browser method patches
  * without replacing their collection logic or per-instance configuration.
+ * Opt-in `dependencies` adds header, error and timing enrichment and a shared per-provider
+ * request budget through narrow adapters.
  *
  * @param options - Selects which instrumentations to construct and configures each one.
  * @returns The constructed instrumentations, in the order they were selected.
@@ -81,11 +84,17 @@ export async function getInstrumentations(
     throw new Error("Click Analytics is only available through the npm package.");
   }
   const pending: Promise<BrowserInstrumentation>[] = [];
+  const enrichment = options.dependencies
+    ? createDependencyEnrichment(options.dependencies)
+    : undefined;
 
   if (isEnabled(options.fetch, ON_BY_DEFAULT)) {
     pending.push(
       import("@opentelemetry/browser-instrumentation/experimental/fetch").then(
-        ({ FetchInstrumentation }) => new FetchInstrumentation({ ...options.fetch, ...DEFERRED }),
+        ({ FetchInstrumentation }) => {
+          const instrumentation = new FetchInstrumentation({ ...options.fetch, ...DEFERRED });
+          return enrichment ? enrichment.fetch(instrumentation) : instrumentation;
+        },
       ),
     );
   }
@@ -93,7 +102,10 @@ export async function getInstrumentations(
   if (isEnabled(options.xhr, ON_BY_DEFAULT)) {
     pending.push(
       import("@opentelemetry/browser-instrumentation/experimental/xhr").then(
-        ({ XhrInstrumentation }) => new XhrInstrumentation({ ...options.xhr, ...DEFERRED }),
+        ({ XhrInstrumentation }) => {
+          const instrumentation = new XhrInstrumentation({ ...options.xhr, ...DEFERRED });
+          return enrichment ? enrichment.xhr(instrumentation) : instrumentation;
+        },
       ),
     );
   }

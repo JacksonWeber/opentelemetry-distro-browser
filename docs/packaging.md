@@ -72,7 +72,7 @@ Every executable published entry point has absolute minified, gzip and Brotli bu
 | Entry point          | Minified |     Gzip |  Brotli |
 | -------------------- | -------: | -------: | ------: |
 | `.`                  |   170 kB |  53.5 kB |   47 kB |
-| `./instrumentations` | 70.75 kB | 26.75 kB | 23.5 kB |
+| `./instrumentations` | 78.25 kB | 29.75 kB | 26.5 kB |
 | `./snippet`          |  6.75 kB |     3 kB | 2.75 kB |
 
 The generated JSON and Markdown reports show the measured values, ceilings and result for each
@@ -85,10 +85,15 @@ comparison remains informational and does not replace the absolute gate.
 emits them, so it must run after a production build. Their budgets block in every release channel,
 including alpha:
 
-| Artifact                                                   | Minified |    Gzip | Brotli |
-| ---------------------------------------------------------- | -------: | ------: | -----: |
-| `opentelemetry-browser.{iife,umd}.min.js`                  |   192 kB | 61.5 kB |  54 kB |
-| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |    63 kB |   19 kB |  17 kB |
+| Artifact                                                   |  Minified |     Gzip |  Brotli |
+| ---------------------------------------------------------- | --------: | -------: | ------: |
+| `opentelemetry-browser.{iife,umd}.min.js`                  | 198.75 kB |    64 kB |   56 kB |
+| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |     63 kB | 19.25 kB | 17.5 kB |
+
+Instrumentation budgets include the opt-in dependency enrichment adapter, retryable patch cleanup,
+and conservative timing-overlap tracking. The self-contained SDK bundles include the instrumentation
+preset too. The npm instrumentations budget also includes the lazy Click Analytics chunk.
+The npm root budgets are unchanged.
 
 Click Analytics is available only through the npm instrumentations entry, including its factory and
 behavior validators. Its implementation remains a lazy npm chunk; neither the root SDK nor either
