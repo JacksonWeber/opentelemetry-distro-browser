@@ -40,8 +40,13 @@ Keep self-hosted runners current as well: JavaScript actions use runner-managed 
 which `actions/setup-node` does not update.
 
 ```powershell
+# Install dependencies using the committed lockfile.
 npm ci
+
+# Install the Playwright-managed Chromium, Firefox, and WebKit builds used by the tests.
 npm run test:install-browsers
+
+# Run the full repository validation pipeline.
 npm run check
 ```
 
