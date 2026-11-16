@@ -650,10 +650,22 @@ it("re-arms pending counters when an interval expires during a slow report", asy
   const finish = holdNextFetch();
   stats.count("Success", "TRACE");
   await clock.advance(10);
+  expect(fetch).toHaveBeenCalledOnce();
+  // Capture the in-flight report before adding counts; do not force-flush the later counters.
+  const first = stats.forceFlush();
   stats.count("Success", "DEPENDENCY");
   await clock.advance(20);
+  expect(fetch).toHaveBeenCalledOnce();
   finish();
-  await clock.advance(20);
+  // Native Request/Response body reads are not driven by the fake clock.
+  await first;
+  expect(totals()).toEqual({ "Item_Success_Count:TRACE": 1 });
+  expect(vi.getTimerCount()).toBe(1);
+  await clock.advance(9);
+  expect(fetch).toHaveBeenCalledOnce();
+  await clock.advance(1);
+  expect(fetch).toHaveBeenCalledTimes(2);
+  await stats.forceFlush();
   expect(totals()).toEqual({ "Item_Success_Count:TRACE": 1, "Item_Success_Count:DEPENDENCY": 1 });
   expect(vi.getTimerCount()).toBe(0);
 });

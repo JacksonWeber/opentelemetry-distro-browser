@@ -3,8 +3,9 @@
 This reference describes `@microsoft/opentelemetry-browser` **0.1.0-beta.2**, plus explicitly marked
 unreleased additions. Start with the [getting-started guide](../README.md#getting-started), and consult the
 [event catalogue](event-catalogue.md) for emitted data. The public TypeScript contracts are in
-[distribution types](../src/types.ts), [page-view options](../src/instrumentation/pageView/types.ts)
-and [loader options](../src/snippet.ts).
+[distribution types](../src/types.ts), [page-view options](../src/instrumentation/pageView/types.ts),
+[Click Analytics options](../src/instrumentation/clickAnalytics/types.ts) and
+[loader options](../src/snippet.ts).
 
 For ApplicationInsights-JS applications, see the [migration guide](../APPINSIGHTS_MIGRATION.md)
 for API replacements, intentional exclusions and current gaps.
@@ -707,8 +708,8 @@ BFCache away time.
 Import `getInstrumentations` from `@microsoft/opentelemetry-browser/instrumentations`, await it, and
 pass the returned array as `instrumentations`. Calling the helper is opt-in: without it, fetch and
 XHR are not installed automatically. Its options use the upstream configuration types from
-`@opentelemetry/browser-instrumentation` **0.8.1**; do not confuse them with the initialization
-object or loader configuration.
+`@opentelemetry/browser-instrumentation` **0.8.1**, except for distribution-owned `clickAnalytics`;
+do not confuse them with the initialization object or loader configuration.
 
 | Helper key         | Constructed by default | Settings beyond `enabled`                                                                                                       |
 | ------------------ | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
@@ -721,6 +722,7 @@ object or loader configuration.
 | `resourceTiming`   | No                     | `initiatorTypes`, `ignoreUrls`, `batchSize`, `maxQueueSize`, `forceProcessingAfter`, `maxProcessingTime`                        |
 | `userAction`       | No                     | `autoCapturedActions`, `applyCustomLogRecordData`                                                                               |
 | `webVitals`        | No                     | `includeRawAttribution`, `applyCustomLogRecordData`                                                                             |
+| `clickAnalytics`   | No                     | npm-only: `autoCapture`, `callback`, `pageTags`, `coreData`, `dataTags`; [all options](#click-analytics)                        |
 
 - `enabled` is a boolean. Fetch/XHR are constructed unless `false`; other modules require `true`.
   All returned instances are initially inert; registration enables them after provider binding.
@@ -828,6 +830,214 @@ await telemetry.instrumentations.replace(
 );
 await telemetry.instrumentations.remove("application-errors");
 ```
+
+### Click Analytics
+
+Click Analytics is **opt-in and npm-only** and emits `browser.click` log records. It lives in the new
+[Click Analytics source folder](../src/instrumentation/clickAnalytics/clickAnalyticsInstrumentation.ts),
+not a separate package. Import `createClickAnalyticsInstrumentation`, types and behavior validators through the existing
+`@microsoft/opentelemetry-browser/instrumentations` export, not the SDK root. It has no
+Application Insights (`ApplicationInsights`) runtime dependency. A log pipeline is required to
+export records; the example uses Azure Monitor, but OTLP/custom log processors work too.
+`ClickAnalyticsInstrumentation` is a type-only export; its internal constructor is not a public
+runtime API. Click Analytics, its factory and behavior validators are excluded from both the SDK
+and instrumentation CDN bundles. The loader does not accept `clickAnalytics` configuration.
+
+```typescript
+import { useMicrosoftOpenTelemetry } from "@microsoft/opentelemetry-browser";
+import { getInstrumentations } from "@microsoft/opentelemetry-browser/instrumentations";
+
+const telemetry = await useMicrosoftOpenTelemetry({
+  azureMonitor: { connectionString },
+  instrumentations: await getInstrumentations({
+    clickAnalytics: {
+      enabled: true,
+      dataTags: { useDefaultContentNameOrId: true },
+    },
+  }),
+});
+```
+
+This explicitly allows HTML-derived identifiers/names, including input values, as fallbacks.
+Review markup, metadata and callbacks for sensitive data before opting in. The helper also selects
+fetch/XHR by default; set their `enabled` options to `false` if unwanted. Existing `userAction`
+behavior and its `browser.user_action.click` event are unchanged. **Do not enable both for the same
+interactions unless duplicate action records are intended.**
+
+For manual-only collection, keep the instance returned by the async factory and let the distribution
+bind its providers before enabling it. The factory returns `Promise<ClickAnalyticsInstrumentation>`
+and forces `enabled: false`, regardless of configuration; no explicit `enabled` setting is needed.
+`autoCapture: false` prevents automatic listeners while keeping manual APIs:
+
+```typescript
+import { useMicrosoftOpenTelemetry } from "@microsoft/opentelemetry-browser";
+import { createClickAnalyticsInstrumentation } from "@microsoft/opentelemetry-browser/instrumentations";
+
+const clicks = await createClickAnalyticsInstrumentation({ autoCapture: false });
+const telemetry = await useMicrosoftOpenTelemetry({
+  azureMonitor: { connectionString },
+  instrumentations: [clicks],
+});
+
+const purchase = document.querySelector('[data-id="purchase"]');
+if (purchase) {
+  clicks.capturePageAction(
+    purchase,
+    { actionType: "CL", contentTags: { category: "checkout" } },
+    { source: "application" },
+  );
+}
+clicks.trackPageAction({
+  name: "purchase",
+  actionType: "custom",
+  content: '[{"category":"checkout"}]',
+  properties: { source: "application" },
+});
+```
+
+`capturePageAction(element, overrides?, customProperties?, isRightClick = false)` extracts DOM
+content and assembles page context. Overrides accept `refUri`, `actionType`, `targetUri`,
+`clickCoordinateX`, `clickCoordinateY`, `contentTags`, `behavior`, `pageName`, `pageType`, `pageTags`
+and `isAuto`; `isAuto` is accepted but not emitted. `contentTags` shallowly overrides the serialized
+content after name/parent resolution, so it does not rename the event.
+
+`trackPageAction(action, customProperties?)` emits the supplied action without DOM extraction,
+page defaults, behavior validation or `dropInvalidEvents` filtering. Only `name` is required by its
+TypeScript contract; optional fields and their exact mappings are in the
+[event schema](event-catalogue.md#click-analytics-browserclick). `action.properties` shallowly wins
+over `customProperties`. Neither manual method enforces DOM DNT exclusions; callers must enforce
+consent and privacy policy themselves. Both methods return `void` and do nothing while disabled.
+
+#### Click Analytics defaults and hooks
+
+Defaults below apply once selected. Helper construction requires `clickAnalytics.enabled: true`;
+omission or `{}` does not select it. Both the helper and async factory return deferred instances
+for registration with `useMicrosoftOpenTelemetry`.
+
+| Option                        | Default                                | Behavior                                                                                                                                                                                                                                                  |
+| ----------------------------- | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`                     | Helper: not selected; factory: `false` | Registration enables collection after provider binding. `enable()` starts collection; `disable()` removes this instance's listeners and suppresses manual emissions.                                                                                      |
+| `autoCapture`                 | `true`                                 | Listen on `window` for `mousedown` (left/middle/right) and `keyup` (Enter/Space). Resolve nested targets to the nearest supported element, including label-to-control resolution.                                                                         |
+| `trackElementTypes`           | Unset: `A`, `BUTTON`, `AREA`, `INPUT`  | Comma-separated, trimmed, case-insensitive names **replacing** the defaults, matching upstream capture behavior. An empty string disables all automatic targets. Automatic `INPUT` capture permits only `button`, `checkbox`, `radio`, `reset`, `submit`. |
+| `pageTags`                    | Empty                                  | Application page tags, shallowly merged with callback results and per-capture overrides.                                                                                                                                                                  |
+| `callback.pageName`           | Unset                                  | `() => string`; page name precedence: nonempty capture override, callback result (including an empty string), otherwise `coreData.pageName`, then `document.title`.                                                                                       |
+| `callback.pageActionPageTags` | Unset                                  | `(element?: Element) => ClickAnalyticsProperties`; called for each DOM capture. Precedence: configured `pageTags`, callback, override, then managed `metaTags`. No tags accumulate between captures.                                                      |
+| `callback.contentName`        | Unset                                  | `(element?: Element, useDefaultContentName?: boolean) => string`; invoked with `true` only when HTML fallbacks are opted in. Empty results use the HTML fallback; nonempty blobs bypass it. Callback names are not truncated.                             |
+| `coreData.requestUri`         | Unset                                  | Nonempty value replaces the captured page URI. Otherwise use `location.origin + location.pathname`, optionally followed by hash and query.                                                                                                                |
+| `coreData.referrerUri`        | `document.referrer` fallback           | A nonempty capture `refUri` overrides it; an empty override falls back to this setting.                                                                                                                                                                   |
+| `coreData.pageName`           | Unset                                  | Used after the page-name override/callback and before `document.title`.                                                                                                                                                                                   |
+| `coreData.pageType`           | Unset                                  | Page type precedence: nonempty capture override, this setting, then exact metadata name `pageType`.                                                                                                                                                       |
+| `behaviorValidator`           | `(value) => value \|\| ""`             | Maps/validates behavior; return `""` to reject it. See precedence and helpers below.                                                                                                                                                                      |
+| `defaultRightClickBhvr`       | `""`                                   | Right-click default, used without validation; may be replaced by a validated `bhvr` tag when no behavior override is assigned.                                                                                                                            |
+| `dropInvalidEvents`           | `false`                                | Drop DOM captures only when both name and parent ID are `not_specified` and final content is exactly `[{}]`. Page tags alone do not make a capture valid.                                                                                                 |
+| `urlCollectHash`              | `false`                                | Append `location.hash` to a derived page URI.                                                                                                                                                                                                             |
+| `urlCollectQuery`             | `false`                                | Append `location.search`; if both URL flags are true, preserve upstream's **hash-before-query** order.                                                                                                                                                    |
+| `applyCustomLogRecordData`    | Unset                                  | `(record: LogRecord) => void`; mutate the actual record before built-in URL redaction and emission, including records from either manual method.                                                                                                          |
+
+All callbacks are optional. Callback, serialization and emission failures are caught with a generic
+diagnostic and the affected capture is skipped, rather than breaking the interaction. Each instance
+owns its listeners and bound logger; do not share instances across handles. `setConfig()` replaces
+configuration and restarts an enabled instance's capture; metadata is snapshotted on each enable,
+not read anew for every action. Handle shutdown disables collection. These are instrumentation
+controls, not additional paths supported by the handle's `updateCfg()`.
+
+Behavior starts with the validated override when assigned (not `undefined`, `null` or `""`),
+otherwise `metadata.behavior ?? ""`; an empty override falls back to metadata. A right-click
+then replaces it with `defaultRightClickBhvr ?? ""`, even if an override was supplied. Finally, a
+truthy content `bhvr` replaces it through the validator only when the behavior override is not
+assigned (not `undefined`, `null` or `""`); only then is `bhvr` removed from content. The default
+validator maps numeric `0` to `""`; a custom validator can preserve `0`.
+
+The npm instrumentations export provides:
+
+- `BehaviorMapValidator(map)`: own-key lookup returning the mapped string/number or `""`; a
+  missing key or falsy mapped value, including numeric `0`, is rejected.
+- `BehaviorValueValidator(values)`: exact, case-sensitive string allowlist; numbers are not coerced.
+- `BehaviorEnumValidator(enumObject)`: the same own-key lookup as the map validator, including
+  numeric enum reverse lookup. A name mapped to `0` is rejected, but `0` can reverse-map to its name.
+
+#### Data tags, blobs and privacy
+
+Attribute suffixes below exclude `customDataPrefix`.
+
+| `dataTags` option           | Default     | Behavior                                                                                                                                                                                                                                     |
+| --------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `useDefaultContentNameOrId` | `false`     | Opt into HTML ID/name fallbacks. Default names are limited to 200 characters; callback names are not.                                                                                                                                        |
+| `customDataPrefix`          | `"data-"`   | Prefix removed from collected attribute keys. A value not starting with `data-` falls back to `data-`.                                                                                                                                       |
+| `aiBlobAttributeTag`        | `"ai-blob"` | JSON object attribute, normally `data-ai-blob`; a nonempty blob takes precedence over individual tags and HTML fallbacks.                                                                                                                    |
+| `parentDataTag`             | `""`        | Empty disables ancestor content and inferred parent identity. Nonempty enables traversal through and including the first element with an attribute whose name starts with prefix + suffix. Even an empty boundary attribute stops traversal. |
+| `dntDataTag`                | `"ai-dnt"`  | Automatic capture checks the chosen control and all ancestors, independently of content boundaries. Only a **nonempty value** suppresses capture.                                                                                            |
+| `metaDataPrefix`            | `""`        | Case-sensitive prefix for named `<meta>` elements, retained in collected names. **An empty prefix matches all named metadata**, even with `captureAllMetaDataContent: false`. Last duplicate name wins.                                      |
+| `captureAllMetaDataContent` | `false`     | `true` ignores the metadata prefix filter. To restrict collection, keep this false and set a nonempty prefix.                                                                                                                                |
+
+Content precedence and traversal:
+
+1. A nonempty `data-ai-blob` must parse as a JSON object. Invalid JSON, arrays, `null` and other
+   non-object roots fail closed to empty blob content, **without falling back to individual tags
+   or the element's HTML**. Diagnostics do not include the blob. This does not necessarily drop the
+   action: parent identity can still be resolved and `dropInvalidEvents` defaults to false. An
+   explicitly empty blob instead selects the untagged-element path (HTML fallback if opted in;
+   individual tags only through enabled traversal).
+2. Without a blob attribute, matching data tags are collected with their prefix removed. DOM
+   casing is preserved (normally lowercase in HTML): `data-contentname` becomes `contentname`,
+   **not** the special `contentName` used for naming. A blob can supply exact `contentName` casing.
+3. Opted-in HTML fallback fills an absent/empty tagged ID and supplies `contentName`. Anchor names
+   use text or inner HTML; images/areas use alt text; other elements use value, name, alt, inner
+   text, then ID. It is not a general sensitive-input sanitizer, especially for manual capture.
+4. With `parentDataTag`, non-blob extraction also walks ancestors. The nearest assigned value wins;
+   empty values can be filled from ancestors. Ancestor `id` and blob attributes are excluded from
+   this content merge. Boundary-level attributes are included before traversal stops; the exact
+   boundary key is removed by capture, but suffixed boundary keys remain.
+5. Parent identity is a separate search, not bounded by the content boundary. Existing truthy
+   `parentid`/`parentname` prevents inference. Otherwise only the closest ancestor with matching
+   data attributes is considered: use its blob ID or data ID, then the immediate parent's HTML
+   fallback if opted in. Do not skip a tagged ancestor with no ID to find a farther ID.
+6. Empty strings, nullish values and empty objects are removed from extracted content; numeric
+   zero, `false` and arrays remain. Capture resolves names/parent IDs, removes `id`, `parentid`,
+   `parentname` and the exact boundary key, then merges `contentTags` into a one-object JSON array.
+
+For privacy exclusions, use `data-ai-dnt="true"` (or any explicit nonempty value).
+`data-ai-dnt=""` **does not** suppress automatic capture; `"false"`, `"0"` and whitespace **do**.
+Attribute presence alone is insufficient. Neither DNT nor the HTML-fallback opt-in prevents
+collection of explicitly tagged data or metadata by manual APIs. Captured metadata goes into
+`properties.pageTags.metaTags`, excluding exact `behavior`, `market` and `pageType`; behavior and
+page type feed their dedicated fields, while `market` is omitted.
+
+After `applyCustomLogRecordData`, built-in redaction applies to absolute URLs in `url.full`,
+`url.referrer` and `browser.click.target_url`, including supplied and hook-added values. It redacts
+credentials and the default sensitive query/fragment parameters listed under [page-view options](#page-view-options).
+Malformed absolute URL values are omitted without dropping the click event. Page-view sanitizer
+settings do not apply. Query/hash collection flags affect only the derived page URI. Relative or
+opaque non-URL strings are retained unchanged; content, properties and other fields are not sanitized.
+Review and sanitize those in application code or `applyCustomLogRecordData`.
+
+#### Application Insights parity target and differences
+
+The behavioral parity target is **ApplicationInsights-JS upstream `main` source**, not a claim of
+identical plugin APIs or wire format. References: [configuration defaults](https://github.com/microsoft/ApplicationInsights-JS/blob/main/extensions/applicationinsights-clickanalytics-js/src/ClickAnalyticsPlugin.ts),
+[automatic capture](https://github.com/microsoft/ApplicationInsights-JS/blob/main/extensions/applicationinsights-clickanalytics-js/src/handlers/AutoCaptureHandler.ts),
+[DOM extraction](https://github.com/microsoft/ApplicationInsights-JS/blob/main/extensions/applicationinsights-clickanalytics-js/src/handlers/DomContentHandler.ts),
+[page actions](https://github.com/microsoft/ApplicationInsights-JS/blob/main/extensions/applicationinsights-clickanalytics-js/src/events/PageAction.ts),
+[page tags](https://github.com/microsoft/ApplicationInsights-JS/blob/main/extensions/applicationinsights-clickanalytics-js/src/events/WebEvent.ts)
+and [DNT/validators](https://github.com/microsoft/ApplicationInsights-JS/blob/main/extensions/applicationinsights-clickanalytics-js/src/common/Utils.ts).
+
+- Modern browsers only: `mousedown`/`keyup` listeners and `performance.timeOrigin`; no IE
+  `attachEvent`, legacy mouse-button model or navigation-timing compatibility path.
+- `trackElementTypes` follows upstream `main`'s actual automatic-capture behavior: the configured
+  list **replaces** defaults, despite upstream documentation describing an additive list.
+- Blobs fail closed to object content, untrusted keys cannot mutate prototypes, and diagnostics
+  never echo blob contents. Validator map/enum lookups use only own keys.
+- Built-in absolute-URL credential and sensitive-parameter redaction runs after the log hook for
+  page, referrer and target fields; content and properties remain application-owned.
+- Configured `pageTags` are honored and shallowly merged per capture, without upstream's retained
+  page-tag accumulation/deep merging. The callback receives the element. `targetUri` overrides are
+  honored instead of being overwritten with the element's destination.
+- No Application Insights plugin lifecycle (`initialize`, `processTelemetry`, teardown chain),
+  `getPlugin`, bundled `Behavior` enum, or `ApplicationInsights` dependency is shipped. Supply your
+  own behavior map/enum and use OpenTelemetry instrumentation/provider lifecycle instead.
+- Transport is standard OpenTelemetry logs, with distribution/vendor extension attributes, not
+  official OpenTelemetry Click Analytics semantic conventions or an Application Insights envelope.
+  See the [event schema and exporter mapping](event-catalogue.md#click-analytics-browserclick).
 
 ## Enrichment and filtering
 

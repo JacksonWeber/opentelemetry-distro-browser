@@ -179,7 +179,22 @@ function captureAmdDefine<T>(): { define: AmdDefine; getRegistration: (file: str
   };
 }
 
+async function expectClickAnalyticsUnavailable(bundle: InstrumentationBundle): Promise<void> {
+  for (const name of [
+    "createClickAnalyticsInstrumentation",
+    "BehaviorMapValidator",
+    "BehaviorValueValidator",
+    "BehaviorEnumValidator",
+  ]) {
+    expect(name in bundle).toBe(false);
+  }
+  await expect(bundle.getInstrumentations({ clickAnalytics: { enabled: true } })).rejects.toThrow(
+    "Click Analytics is only available through the npm package.",
+  );
+}
+
 async function exercise(bundle: BrowserBundle): Promise<void> {
+  await expectClickAnalyticsUnavailable(bundle);
   await expect(
     bundle.useMicrosoftOpenTelemetry({
       azureMonitor: {
@@ -197,7 +212,7 @@ async function exercise(bundle: BrowserBundle): Promise<void> {
   ]) {
     expect(name in bundle).toBe(false);
   }
-  // Every instrumentation is inlined, so constructing them all loads nothing else.
+  // Every CDN-supported instrumentation is inlined, so constructing them loads nothing else.
   const instrumentations = await bundle.getInstrumentations({
     console: { enabled: true },
     errors: { enabled: true },
@@ -228,6 +243,7 @@ async function exercise(bundle: BrowserBundle): Promise<void> {
   const telemetry = await bundle.useMicrosoftOpenTelemetry({
     ...pipeline.options,
     pageView: { enabled: false },
+    instrumentations: await bundle.getInstrumentations(),
   });
   try {
     bundle.trace.getTracer("module-format-test").startSpan("module-format").end();
@@ -249,6 +265,48 @@ async function exercise(bundle: BrowserBundle): Promise<void> {
       bundle.propagation.disable();
       bundle.context.disable();
       bundle.diag.disable();
+    }
+  }
+}
+
+async function exerciseDependencies(bundle: InstrumentationBundle): Promise<void> {
+  const pipeline = createInMemoryPipeline();
+  const originalFetch = globalThis.fetch;
+  const recording: boolean[] = [];
+  const handle = await useMicrosoftOpenTelemetry({
+    ...pipeline.options,
+    instrumentations: await bundle.getInstrumentations({
+      xhr: { enabled: false },
+      dependencies: { captureRequestHeaders: true, maxDependenciesPerView: 1 },
+      fetch: {
+        requestHook: (span) => {
+          recording.push(span.isRecording());
+        },
+      },
+    }),
+  });
+  try {
+    for (let i = 0; i < 2; i++) {
+      await (await fetch("/__dependency_format__", { headers: { "x-public": "format" } })).text();
+    }
+    expect(recording).toEqual([true, false]);
+    await vi.waitFor(async () => {
+      await handle.forceFlush();
+      expect(pipeline.spanExporter.getFinishedSpans()).toHaveLength(1);
+    });
+    expect(
+      pipeline.spanExporter.getFinishedSpans()[0].attributes["http.request.header.x-public"],
+    ).toEqual(["format"]);
+  } finally {
+    try {
+      await handle.shutdown();
+    } finally {
+      globalThis.fetch = originalFetch;
+      trace.disable();
+      logs.disable();
+      propagation.disable();
+      context.disable();
+      diag.disable();
     }
   }
 }
@@ -756,13 +814,16 @@ it.each([
   try {
     script = await loadScript(file);
     const bundle = getInstrumentationBundle();
-    expect(typeof bundle?.getInstrumentations).toBe("function");
+    if (!bundle) throw new Error(`${file} did not define Microsoft.OpenTelemetryInstrumentations`);
+    expect(typeof bundle.getInstrumentations).toBe("function");
     expect(
-      await bundle?.getInstrumentations({
+      await bundle.getInstrumentations({
         fetch: { enabled: false },
         xhr: { enabled: false },
       }),
     ).toEqual([]);
+    await exerciseDependencies(bundle);
+    await expectClickAnalyticsUnavailable(bundle);
   } finally {
     script?.remove();
     delete window.Microsoft;
@@ -781,12 +842,15 @@ it.each([
   let script: HTMLScriptElement | undefined;
   try {
     script = await loadScript(file);
+    const bundle = getRegistration(file);
     expect(
-      await getRegistration(file).getInstrumentations({
+      await bundle.getInstrumentations({
         fetch: { enabled: false },
         xhr: { enabled: false },
       }),
     ).toEqual([]);
+    await exerciseDependencies(bundle);
+    await expectClickAnalyticsUnavailable(bundle);
   } finally {
     script?.remove();
     restoreDefine();

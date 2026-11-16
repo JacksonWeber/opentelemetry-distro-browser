@@ -25,8 +25,8 @@ document.querySelector("#log")?.addEventListener("click", () => {
 });
 
 document.querySelector("#request")?.addEventListener("click", async () => {
-  await fetch(`/sample-request?time=${Date.now()}`);
-  show("Fetch completed. The development server returns 404, but the request span is recorded.");
+  const response = await fetch(`/sample-request?time=${Date.now()}`);
+  show(`Fetch completed with HTTP ${response.status}. Inspect the request span in DevTools.`);
 });
 
 document.querySelector("#route")?.addEventListener("click", () => {

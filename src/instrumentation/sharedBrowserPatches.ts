@@ -233,6 +233,14 @@ function subscribe(target: object, name: PropertyKey, subscriber: Subscription):
       state().xhrHeaders = new WeakMap();
     }
     if (Reflect.get(target, name) !== patch.wrapper) {
+      // Retain the shared patch while a failed metadata restoration still depends on it.
+      let dependency = getSharedRegistry().dependencyPatches?.get(target)?.get(name);
+      while (dependency) {
+        if (dependency.previous === patch.wrapper) {
+          conflict("browser-patch-cleanup", `Cannot restore ${String(name)}`);
+        }
+        dependency = dependency.before;
+      }
       methods.delete(name);
       return;
     }
@@ -249,6 +257,7 @@ function isPatchable(value: BrowserInstrumentation): value is Patchable {
     "instrumentationName" in value &&
     typeof value.instrumentationName === "string" &&
     (value.instrumentationName === "@microsoft/opentelemetry-browser/page-view" ||
+      value.instrumentationName === "@microsoft/opentelemetry-browser/click-analytics" ||
       /^@opentelemetry\/browser-instrumentation\/(fetch|xhr|console|navigation)$/.test(
         value.instrumentationName,
       ))
@@ -289,7 +298,12 @@ function adapt(instrumentation: Patchable): void {
       "Construct shared instrumentations with enabled: false",
     );
   }
-  if (adapted) return;
+  // Click Analytics owns event listeners, not shared method patches. Keep its activation-aware rollback.
+  if (
+    adapted ||
+    instrumentation.instrumentationName === "@microsoft/opentelemetry-browser/click-analytics"
+  )
+    return;
   const entries: {
     target: object;
     name: PropertyKey;
@@ -378,10 +392,11 @@ function adapt(instrumentation: Patchable): void {
       if (instrumentation.instrumentationName.endsWith("/xhr")) {
         instrumentation._wrap(XMLHttpRequest.prototype, "setRequestHeader", (original) => original);
       }
-      enable();
-      if (failure.error) throw failure.error;
+      // Reinstall the inner shared layer before an adapter adds its metadata wrappers.
       for (const entry of entries)
         entry.remove ??= subscribe(entry.target, entry.name, entry.subscriber);
+      enable();
+      if (failure.error) throw failure.error;
     } catch (error) {
       failure.error = undefined;
       if (instrumentation._isPatched) instrumentation._isPatched = false;

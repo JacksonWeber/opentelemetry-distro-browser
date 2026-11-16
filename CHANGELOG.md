@@ -12,6 +12,12 @@ All notable changes to this package are documented in this file.
 
 - Add an optional `/debug` entry with an in-page telemetry inspector, bounded snapshots, export
   results, and opt-in SDK User Timing marks and measures.
+- Add opt-in fetch and XHR header capture with sensitive-header exclusions, failed HTTP status
+  text, a shared per-page-view dependency limit, and resource-timing phase durations through
+  `getInstrumentations({ dependencies })`. Dependency collection remains unlimited by default.
+  Failed metadata-patch cleanup remains retryable, and ambiguous timing is omitted for overlapping
+  same-URL requests, including requests started synchronously by span processors, or requests
+  still in flight when tracking pauses.
 - Continue server-provided W3C trace context from HTML meta tags or navigation `Server-Timing`
   for initial page telemetry, with a `pageView.useServerTraceContext` opt-out. SPA routes retain
   independent traces.
@@ -41,6 +47,7 @@ All notable changes to this package are documented in this file.
   modes for sampling and fetch/XHR gates, with local precedence, pause/resume/shutdown controls, and
   safe receiver error callbacks. Synchronization does not use HTTP, storage, cross-document
   delivery, retained history, or automatic publishing of local updates.
+- Add opt-in, npm-only Application Insights-compatible Click Analytics.
 - Support instance-local runtime instrumentation add/remove/replace with explicit IDs,
   provider binding, ownership transfer, network-gate preservation and best-effort rollback.
 - Add instance-local `instrumentations.get(id)` and supported pause/resume via

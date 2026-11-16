@@ -13,6 +13,7 @@ import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import {
   BatchLogRecordProcessor,
   InMemoryLogRecordExporter,
+  LoggerProvider,
   SimpleLogRecordProcessor,
 } from "@opentelemetry/sdk-logs";
 import {
@@ -180,6 +181,121 @@ test("the package exposes ESM and CommonJS entry points", () => {
 test("customer SDK stats expose configuration only, not internal reporting controls", async () => {
   for (const file of ["dist/esm/index.d.ts", "dist/commonjs/index.d.cts"]) {
     const declarations = await readFile(new URL(file, root), "utf8");
+    const source = ts.createSourceFile(file, declarations, ts.ScriptTarget.Latest, true);
+    const options = source.statements.filter(
+      (node) => ts.isInterfaceDeclaration(node) && node.name.text === "AzureMonitorSdkStatsOptions",
+    );
+    assert.equal(options.length, 1, `${file} must declare customer SDK stats options`);
+    assert.equal(options[0].heritageClauses, undefined);
+    assert.deepEqual(
+      options[0].members.map((member) => member.getText(source).replace(/\s+/g, " ")).sort(),
+      ["readonly collectionIntervalMillis?: number;", "readonly enabled?: boolean;"],
+    );
+    assert.doesNotMatch(declarations, /internalReportingControls/);
+  }
+});
+
+test("click analytics exposes a type-only capture interface and matching factory exports", async () => {
+  for (const file of ["dist/esm/instrumentations.d.ts", "dist/commonjs/instrumentations.d.cts"]) {
+    const declarations = await readFile(new URL(file, root), "utf8");
+    assert.match(declarations, /interface ClickAnalyticsInstrumentation\b/);
+    assert.doesNotMatch(declarations, /class ClickAnalyticsInstrumentation\b/);
+  }
+  for (const instrumentations of [
+    await import(new URL("dist/esm/instrumentations.js", root).href),
+    require(fileURLToPath(new URL("dist/commonjs/instrumentations.cjs", root))),
+  ]) {
+    assert.equal(Object.hasOwn(instrumentations, "ClickAnalyticsInstrumentation"), false);
+    for (const name of [
+      "createClickAnalyticsInstrumentation",
+      "BehaviorMapValidator",
+      "BehaviorValueValidator",
+      "BehaviorEnumValidator",
+    ]) {
+      assert.equal(typeof instrumentations[name], "function");
+    }
+    const clicks = await instrumentations.createClickAnalyticsInstrumentation();
+    assert.equal(clicks.getConfig().enabled, false);
+    assert.equal(typeof clicks.capturePageAction, "function");
+    assert.equal(typeof clicks.trackPageAction, "function");
+    const selected = await instrumentations.getInstrumentations({
+      fetch: { enabled: false },
+      xhr: { enabled: false },
+      clickAnalytics: { enabled: true, autoCapture: false },
+    });
+    assert.equal(selected.length, 1);
+    assert.equal(
+      selected[0].instrumentationName,
+      "@microsoft/opentelemetry-browser/click-analytics",
+    );
+    assert.equal(selected[0].getConfig().enabled, false);
+    assert.equal(typeof selected[0].trackPageAction, "function");
+  }
+  const snippetDeclarations = await readFile(new URL("dist/esm/snippet.d.ts", root), "utf8");
+  assert.doesNotMatch(snippetDeclarations, /clickAnalytics|ClickAnalytics/);
+});
+
+test("ESM and CommonJS omit malformed click URLs after hooks without dropping events", async () => {
+  const urls = [
+    "\u0000 \nht\rt\tp\ns://user:password@example.test:invalid/path?token=secret",
+    "1https://user:password@example.test:invalid/path?token=secret",
+    "ht*tp://user:password@example.test/path?token=secret",
+    "://user:password@example.test/path?token=secret",
+  ];
+  for (const instrumentations of [
+    await import(`${pkg.name}/instrumentations`),
+    require(`${pkg.name}/instrumentations`),
+  ]) {
+    const exporter = new InMemoryLogRecordExporter();
+    const provider = new LoggerProvider({
+      processors: [new SimpleLogRecordProcessor({ exporter })],
+    });
+    const clicks = await instrumentations.createClickAnalyticsInstrumentation({
+      autoCapture: false,
+    });
+    try {
+      clicks.setLoggerProvider(provider);
+      clicks.enable();
+      for (const url of urls) {
+        const attributes = Object.freeze({
+          "url.full": url,
+          "url.referrer": url,
+          "browser.click.target_url": url,
+          custom: "kept",
+        });
+        clicks.setConfig({
+          enabled: true,
+          autoCapture: false,
+          applyCustomLogRecordData: (record) => {
+            record.attributes = Object.freeze({ ...record.attributes, ...attributes });
+          },
+        });
+        clicks.trackPageAction({ name: "safe" });
+        for (const key of ["url.full", "url.referrer", "browser.click.target_url"]) {
+          assert.equal(attributes[key], url);
+        }
+      }
+      await provider.forceFlush();
+      const records = exporter.getFinishedLogRecords();
+      assert.equal(records.length, urls.length);
+      for (const record of records) {
+        assert.equal(record.eventName, "browser.click");
+        assert.deepEqual(record.attributes, {
+          "browser.click.name": "safe",
+          "browser.click.properties": "{}",
+          custom: "kept",
+        });
+      }
+    } finally {
+      clicks.disable();
+      await provider.shutdown();
+    }
+  }
+});
+
+test("SDK stats expose root configuration without runtime exports or snippet configuration", async () => {
+  for (const file of ["dist/esm/index.d.ts", "dist/commonjs/index.d.cts"]) {
+    const declarations = await readFile(new URL(file, root), "utf8");
     assert.match(declarations, /sdkStats\?: AzureMonitorSdkStatsOptions/);
     assert.doesNotMatch(declarations, /InternalSdkStats|createCustomerSdkStats|CustomerSdkStats/);
   }
@@ -199,6 +315,8 @@ test("customer SDK stats expose configuration only, not internal reporting contr
 test("the build produces ESM, CommonJS, UMD, and IIFE artifacts", async () => {
   assert.deepEqual((await readdir(new URL("dist/", root))).sort(), ["browser", "commonjs", "esm"]);
   assert.deepEqual((await readdir(new URL("dist/esm/", root))).sort(), [
+    "click-analytics.js",
+    "click-analytics.js.map",
     "debug.d.ts",
     "debug.js",
     "debug.js.map",
@@ -215,6 +333,8 @@ test("the build produces ESM, CommonJS, UMD, and IIFE artifacts", async () => {
     "snippet.js.map",
   ]);
   assert.deepEqual((await readdir(new URL("dist/commonjs/", root))).sort(), [
+    "click-analytics.cjs",
+    "click-analytics.cjs.map",
     "debug.cjs",
     "debug.cjs.map",
     "debug.d.cts",
@@ -928,10 +1048,13 @@ test("the instrumentations subpath imports each instrumentation on demand", asyn
     new URL(pkg.exports["./instrumentations"].import.default, root),
     "utf8",
   );
-  // Static imports would make every instrumentation part of a consumer's bundle even when their
-  // configuration leaves it off, and would evaluate resource-timing's top-level `window` access
-  // outside a browser.
-  assert.equal(/^import\s/m.test(bundle), false);
+  // Enrichment uses the browser-safe API and suppression contract. Instrumentations load on demand, avoiding
+  // resource-timing's top-level window access outside a browser.
+  const staticImports = [...bundle.matchAll(/^import .+ from ['"]([^'"]+)['"]/gm)];
+  assert.deepEqual(staticImports.map((match) => match[1]).sort(), [
+    "@opentelemetry/api",
+    "@opentelemetry/core",
+  ]);
   for (const name of [
     "fetch",
     "xhr",

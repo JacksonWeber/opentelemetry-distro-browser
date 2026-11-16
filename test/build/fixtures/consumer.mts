@@ -24,6 +24,10 @@ import {
   createTelemetryDebugger,
   type TelemetryDebugger,
 } from "@microsoft/opentelemetry-browser/debug";
+import {
+  getInstrumentations,
+  type DependencyInstrumentationOptions,
+} from "@microsoft/opentelemetry-browser/instrumentations";
 
 export function debugPipeline(container: HTMLElement): TelemetryDebugger {
   const debug = createTelemetryDebugger({ container, performance: true });
@@ -33,6 +37,18 @@ export function debugPipeline(container: HTMLElement): TelemetryDebugger {
   debug.wrapLogRecordProcessor(new BatchLogRecordProcessor({ exporter: records }));
   return debug;
 }
+
+export const dependencies: DependencyInstrumentationOptions = {
+  captureRequestHeaders: true,
+  captureResponseHeaders: true,
+  ignoreHeaders: ["x-secret"],
+  includeErrorStatusText: true,
+  maxDependenciesPerView: 500,
+  enableResourceTiming: true,
+};
+void getInstrumentations({ dependencies });
+// @ts-expect-error Dependency limits must be numeric.
+void getInstrumentations({ dependencies: { maxDependenciesPerView: "500" } });
 
 export const version: string = OPENTELEMETRY_BROWSER_VERSION;
 export const session: MicrosoftOpenTelemetryBrowserSessionOptions = {

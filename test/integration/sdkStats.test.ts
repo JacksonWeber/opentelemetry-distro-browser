@@ -32,6 +32,20 @@ const SECOND_KEY = "22222222-2222-2222-2222-222222222222";
 const handles: Pick<MicrosoftOpenTelemetryBrowser, "shutdown">[] = [];
 let referrerPolicy: HTMLMetaElement | undefined;
 
+function stubResourceTimingIdleCallbacks(): void {
+  // These tests cover filtering, not the upstream scheduler's handling of exhausted deadlines.
+  vi.stubGlobal("requestIdleCallback", (callback: IdleRequestCallback) =>
+    window.setTimeout(() => {
+      const start = performance.now();
+      callback({
+        didTimeout: false,
+        timeRemaining: () => Math.max(0, 50 - (performance.now() - start)),
+      });
+    }, 0),
+  );
+  vi.stubGlobal("cancelIdleCallback", (id: number) => window.clearTimeout(id));
+}
+
 it.each(["index.js", "index.min.js"])(
   "shares unload reservations with the separately bundled %s",
   async (file) => {
@@ -449,6 +463,7 @@ it.each(
 );
 
 it("excludes real ingestion resource timing without filtering custom processor branches", async () => {
+  stubResourceTimingIdleCallbacks();
   const moduleUrl = new URL("../../dist/esm/index.js", import.meta.url);
   const distro: typeof import("../../src/index.js") = await import(
     /* @vite-ignore */ moduleUrl.href
@@ -504,9 +519,14 @@ it("excludes real ingestion resource timing without filtering custom processor b
   expect(captured.filter((envelope) => envelope.data.baseType === "MetricData")).toHaveLength(1);
 });
 
-it.each([0, 100])(
-  "excludes peer ingestion across two custom origins at %s percent sampling",
-  async (samplingPercentage) => {
+it.each([
+  { samplingPercentage: 0, streamingResponse: false },
+  { samplingPercentage: 0, streamingResponse: true },
+  { samplingPercentage: 100, streamingResponse: false },
+])(
+  "excludes peer ingestion across two custom origins at $samplingPercentage percent sampling (streaming response: $streamingResponse)",
+  async ({ samplingPercentage, streamingResponse }) => {
+    stubResourceTimingIdleCallbacks();
     const moduleUrl = new URL("../../dist/esm/index.js", import.meta.url);
     const distro: typeof import("../../src/index.js") = await import(
       /* @vite-ignore */ moduleUrl.href
@@ -514,7 +534,7 @@ it.each([0, 100])(
     const nativeFetch = globalThis.fetch.bind(globalThis);
     const transport = vi.fn(nativeFetch);
     vi.stubGlobal("fetch", withoutSdkStats(transport));
-    const runId = crypto.randomUUID();
+    const runId = `${crypto.randomUUID()}${streamingResponse ? "-streaming-response" : ""}`;
     const firstOrigin = new URL(inject("ingestionEndpoint")).origin;
     const secondOrigin = firstOrigin.replace("127.0.0.1", "localhost");
     const start = async (origin: string, key: string) => {
@@ -555,13 +575,14 @@ it.each([0, 100])(
     await Promise.all([first.handle.forceFlush(), second.handle.forceFlush()]);
     if (samplingPercentage === 0) {
       // Sampling sends nothing. Seed real peer timings without sending application records.
+      // Resource timings require completed responses, not just fetch's response headers.
       await Promise.all(
         [firstOrigin, secondOrigin].map((origin) =>
           nativeFetch(`${origin}/ingest/${runId}/v2/track`, {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: "[]",
-          }),
+          }).then((response) => response.text()),
         ),
       );
     }
@@ -570,8 +591,17 @@ it.each([0, 100])(
         const urls = observed
           .filter((record) => record.eventName === "browser.resource_timing")
           .map((record) => record.attributes["url.full"]);
-        expect(urls).toContain(`${firstOrigin}/ingest/${runId}/v2/track`);
-        expect(urls).toContain(`${secondOrigin}/ingest/${runId}/v2/track`);
+        const browserTimings = performance
+          .getEntriesByType("resource")
+          .filter((entry) => entry.name.includes(`/ingest/${runId}/`))
+          .map((entry) => ({
+            url: entry.name,
+            responseEnd: (entry as PerformanceResourceTiming).responseEnd,
+            duration: entry.duration,
+          }));
+        const diagnostic = `Browser resource timings: ${JSON.stringify(browserTimings)}`;
+        expect(urls, diagnostic).toContain(`${firstOrigin}/ingest/${runId}/v2/track`);
+        expect(urls, diagnostic).toContain(`${secondOrigin}/ingest/${runId}/v2/track`);
       });
     }
     for (let index = 0; index < 3; index++) {
