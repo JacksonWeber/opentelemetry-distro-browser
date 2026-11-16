@@ -226,6 +226,14 @@ export function createDependencyEnrichment(options: DependencyInstrumentationOpt
       }
     }
 
+    function releaseTiming(request: RequestData): void {
+      if (!request.timing) return;
+      const key = request.url.split("#", 1)[0];
+      if (--request.timing.count === 0 && pending.get(key) === request.timing) {
+        pending.delete(key);
+      }
+    }
+
     function enrich(span: Span, run: () => void): void {
       if (!span.isRecording()) return;
       try {
@@ -270,19 +278,27 @@ export function createDependencyEnrichment(options: DependencyInstrumentationOpt
                   }
                   budget.count++;
                 }
-                const span = tracer.startSpan(name, options, parent);
-                if (current && span.isRecording()) {
-                  requests.set(span, current);
-                  if (current.timing) {
-                    current.timing.count++;
-                    pending.set(current.url.split("#", 1)[0], current.timing);
-                  }
-                  const headers = current.headers;
-                  if (config.captureRequestHeaders && headers) {
-                    enrich(span, () => captureHeaders(span, "request", headers));
-                  }
+                const request = current;
+                if (request?.timing) {
+                  request.timing.count++;
+                  pending.set(request.url.split("#", 1)[0], request.timing);
                 }
-                return span;
+                let recording = false;
+                try {
+                  // Samplers and processors can synchronously start another request.
+                  const span = tracer.startSpan(name, options, parent);
+                  recording = span.isRecording();
+                  if (request && recording) {
+                    requests.set(span, request);
+                    const headers = request.headers;
+                    if (config.captureRequestHeaders && headers) {
+                      enrich(span, () => captureHeaders(span, "request", headers));
+                    }
+                  }
+                  return span;
+                } finally {
+                  if (request && !recording) releaseTiming(request);
+                }
               },
             };
           },
@@ -339,10 +355,7 @@ export function createDependencyEnrichment(options: DependencyInstrumentationOpt
         const request = requests.get(span);
         requests.delete(span);
         if (request?.timing) {
-          const key = request.url.split("#", 1)[0];
-          if (--request.timing.count === 0 && pending.get(key) === request.timing) {
-            pending.delete(key);
-          }
+          releaseTiming(request);
           enrich(span, () => addDependencyTiming(span, request, initiatorType));
         }
       },

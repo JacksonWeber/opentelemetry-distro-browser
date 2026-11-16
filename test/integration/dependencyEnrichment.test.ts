@@ -203,66 +203,100 @@ describe.each<Transport>(["fetch", "xhr"])("%s dependency enrichment", (transpor
     expect(span.attributes["browser.dependency.response.duration"]).toBeUndefined();
   });
 
-  it("does not use a later same-URL entry when the first request's timing is dropped", async () => {
-    let now = 100;
-    vi.spyOn(performance, "now").mockImplementation(() => now);
-    if (transport === "fetch") {
-      vi.spyOn(globalThis, "fetch").mockImplementation((...args) => {
-        now += 10;
-        return originalFetch(...args);
-      });
-    } else {
-      vi.spyOn(XMLHttpRequest.prototype, "send").mockImplementation(function (
-        this: XMLHttpRequest,
-        body,
-      ) {
-        now += 10;
-        return originalSend.call(this, body);
-      });
-    }
-    const url = `${endpoint}?delay=50`;
-    const entry = {
-      entryType: "resource",
-      name: url,
-      initiatorType: transport === "fetch" ? "fetch" : "xmlhttprequest",
-      startTime: 125,
-      duration: 55,
-      requestStart: 130,
-      responseStart: 160,
-      responseEnd: 180,
-    } as PerformanceResourceTiming;
-    vi.spyOn(performance, "getEntriesByName").mockImplementation((name) =>
-      name === url ? [entry] : [],
-    );
-    const pipeline = await start({ enableResourceTiming: true, captureRequestHeaders: true });
-    const first = send(transport, url, [["x-public", "first"]]);
-    now = 120;
-    const second = send(transport, url, [["x-public", "second"]]);
-    now = 200;
-    await Promise.all([first, second]);
-    const spans = await pipeline.captured(2);
-    const findSpan = (header: string) =>
-      spans.find((span) => {
-        const values = span.attributes["http.request.header.x-public"];
-        return Array.isArray(values) && values[0] === header;
-      })!;
-    const firstSpan = findSpan("first");
-    const secondSpan = findSpan("second");
-    expect(firstSpan).toBeDefined();
-    expect(
-      Object.keys(firstSpan.attributes).filter((name) => name.startsWith("browser.dependency.")),
-    ).toEqual([]);
-    expect(
-      Object.keys(secondSpan.attributes).filter((name) => name.startsWith("browser.dependency.")),
-    ).toEqual([]);
-    Object.assign(entry, { startTime: 215, duration: 15, responseEnd: 230 });
-    now = 210;
-    const third = send(transport, url, [["x-public", "third"]]);
-    now = 250;
-    await third;
-    const completed = await pipeline.captured(3);
-    expect(completed[2].attributes["browser.dependency.duration"]).toBe(15);
-  });
+  it.each(["parallel", "reentrant"])(
+    "does not reuse a lone timing entry for %s same-URL requests",
+    async (overlap) => {
+      let now = 100;
+      vi.spyOn(performance, "now").mockImplementation(() => now);
+      if (transport === "fetch") {
+        vi.spyOn(globalThis, "fetch").mockImplementation((...args) => {
+          now += 10;
+          return originalFetch(...args);
+        });
+      } else {
+        vi.spyOn(XMLHttpRequest.prototype, "send").mockImplementation(function (
+          this: XMLHttpRequest,
+          body,
+        ) {
+          now += 10;
+          return originalSend.call(this, body);
+        });
+      }
+      const url = `${endpoint}?delay=50`;
+      const entry = {
+        entryType: "resource",
+        name: url,
+        initiatorType: transport === "fetch" ? "fetch" : "xmlhttprequest",
+        startTime: 125,
+        duration: 55,
+        requestStart: 130,
+        responseStart: 160,
+        responseEnd: 180,
+      } as PerformanceResourceTiming;
+      vi.spyOn(performance, "getEntriesByName").mockImplementation((name) =>
+        name === url ? [entry] : [],
+      );
+      const pipeline = await start({ enableResourceTiming: true, captureRequestHeaders: true });
+      let second: Promise<void> | undefined;
+      const startSecond = () => {
+        now = 120;
+        return send(transport, url, [["x-public", "second"]]);
+      };
+      if (overlap === "reentrant") {
+        vi.spyOn(pipeline.spanProcessor, "onStart").mockImplementationOnce(() => {
+          second = startSecond();
+        });
+      }
+      const first = send(transport, url, [["x-public", "first"]]);
+      if (overlap === "reentrant") expect(second).toBeDefined();
+      second ??= startSecond();
+      now = 200;
+      await Promise.all([first, second]);
+      const spans = await pipeline.captured(2);
+      const findSpan = (header: string) =>
+        spans.find((span) => {
+          const values = span.attributes["http.request.header.x-public"];
+          return Array.isArray(values) && values[0] === header;
+        })!;
+      const firstSpan = findSpan("first");
+      const secondSpan = findSpan("second");
+      expect(firstSpan).toBeDefined();
+      expect(
+        Object.keys(firstSpan.attributes).filter((name) => name.startsWith("browser.dependency.")),
+      ).toEqual([]);
+      expect(
+        Object.keys(secondSpan.attributes).filter((name) => name.startsWith("browser.dependency.")),
+      ).toEqual([]);
+      Object.assign(entry, { startTime: 215, duration: 15, responseEnd: 230 });
+      now = 210;
+      const third = send(transport, url, [["x-public", "third"]]);
+      now = 250;
+      await third;
+      const completed = await pipeline.captured(3);
+      expect(completed[2].attributes["browser.dependency.duration"]).toBe(15);
+    },
+  );
+
+  it.each(["throws", "does not record"])(
+    "releases pending timing when span creation %s",
+    async (outcome) => {
+      const pipeline = await start({ enableResourceTiming: true });
+      if (outcome === "throws") {
+        vi.spyOn(pipeline.spanProcessor, "onStart").mockImplementationOnce(() => {
+          throw new Error("Test span creation failed");
+        });
+      } else {
+        await pipeline.handle.updateCfg({ samplingPercentage: 0 });
+      }
+      const url = `${endpoint}?span-creation=${outcome}`;
+      await send(transport, url);
+      await pipeline.captured(0);
+      await pipeline.handle.updateCfg({ samplingPercentage: 100 });
+      await send(transport, url);
+      const [span] = await pipeline.captured(1);
+      expect(span.attributes["browser.dependency.duration"]).toEqual(expect.any(Number));
+    },
+  );
 
   it("does not invent response headers or status text for CORS failures", async () => {
     const pipeline = await start({ captureResponseHeaders: true, includeErrorStatusText: true });
