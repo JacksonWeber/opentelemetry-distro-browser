@@ -7,7 +7,9 @@
 import { ConsoleInstrumentationConfig } from '@opentelemetry/browser-instrumentation/experimental/console';
 import { ErrorsInstrumentationConfig } from '@opentelemetry/browser-instrumentation/experimental/errors';
 import { FetchInstrumentationConfig } from '@opentelemetry/browser-instrumentation/experimental/fetch';
+import { InstrumentationConfig } from '@opentelemetry/instrumentation';
 import { LoggerProvider } from '@opentelemetry/api-logs';
+import { LogRecord } from '@opentelemetry/api-logs';
 import { NavigationInstrumentationConfig } from '@opentelemetry/browser-instrumentation/experimental/navigation';
 import { NavigationTimingInstrumentationConfig } from '@opentelemetry/browser-instrumentation/experimental/navigation-timing';
 import { ResourceTimingInstrumentationConfig } from '@opentelemetry/browser-instrumentation/experimental/resource-timing';
@@ -15,6 +17,15 @@ import { TracerProvider } from '@opentelemetry/api';
 import { UserActionInstrumentationConfig } from '@opentelemetry/browser-instrumentation/experimental/user-action';
 import { WebVitalsInstrumentationConfig } from '@opentelemetry/browser-instrumentation/experimental/web-vitals';
 import { XhrInstrumentationConfig } from '@opentelemetry/browser-instrumentation/experimental/xhr';
+
+// @public
+export function BehaviorEnumValidator(values: Readonly<Record<string, string | number>>): (key: string | number) => string | number;
+
+// @public
+export function BehaviorMapValidator(map: Readonly<Record<string, string | number>>): (key: string | number) => string | number;
+
+// @public
+export function BehaviorValueValidator(values: readonly string[]): (key: string | number) => string;
 
 // @public
 export interface BrowserInstrumentation {
@@ -28,10 +39,92 @@ export interface BrowserInstrumentation {
 }
 
 // @public
+export interface ClickAnalyticsInstrumentation extends BrowserInstrumentation {
+    capturePageAction(element: Element, overrides?: ClickAnalyticsPageActionOverrides, customProperties?: ClickAnalyticsProperties, isRightClick?: boolean): void;
+    getConfig(): ClickAnalyticsInstrumentationConfig;
+    readonly instrumentationName: string;
+    setConfig(config: ClickAnalyticsInstrumentationConfig): void;
+    setLoggerProvider(provider: LoggerProvider): void;
+    trackPageAction(action: ClickAnalyticsPageAction, customProperties?: ClickAnalyticsProperties): void;
+}
+
+// @public
+export interface ClickAnalyticsInstrumentationConfig extends InstrumentationConfig {
+    readonly applyCustomLogRecordData?: (record: LogRecord) => void;
+    readonly autoCapture?: boolean;
+    readonly behaviorValidator?: (value: string | number) => string | number;
+    readonly callback?: {
+        readonly pageName?: () => string;
+        readonly pageActionPageTags?: (element?: Element) => ClickAnalyticsProperties;
+        readonly contentName?: (element?: Element, useDefaultContentName?: boolean) => string;
+    };
+    readonly coreData?: {
+        readonly referrerUri?: string;
+        readonly requestUri?: string;
+        readonly pageName?: string;
+        readonly pageType?: string;
+    };
+    readonly dataTags?: {
+        readonly useDefaultContentNameOrId?: boolean;
+        readonly customDataPrefix?: string;
+        readonly aiBlobAttributeTag?: string;
+        readonly metaDataPrefix?: string;
+        readonly captureAllMetaDataContent?: boolean;
+        readonly parentDataTag?: string;
+        readonly dntDataTag?: string;
+    };
+    readonly defaultRightClickBhvr?: string | number;
+    readonly dropInvalidEvents?: boolean;
+    readonly pageTags?: ClickAnalyticsProperties;
+    readonly trackElementTypes?: string;
+    readonly urlCollectHash?: boolean;
+    readonly urlCollectQuery?: boolean;
+}
+
+// @public
+export interface ClickAnalyticsPageAction {
+    actionType?: string;
+    behavior?: string | number;
+    clickCoordinates?: string;
+    content?: string;
+    name: string;
+    pageName?: string;
+    pageType?: string;
+    parentId?: string;
+    properties?: ClickAnalyticsProperties;
+    refUri?: string;
+    targetUri?: string;
+    timeToAction?: number;
+    uri?: string;
+}
+
+// @public
+export interface ClickAnalyticsPageActionOverrides {
+    readonly actionType?: string;
+    readonly behavior?: string | number;
+    readonly clickCoordinateX?: number;
+    readonly clickCoordinateY?: number;
+    readonly contentTags?: ClickAnalyticsProperties;
+    readonly isAuto?: boolean;
+    readonly pageName?: string;
+    readonly pageTags?: ClickAnalyticsProperties;
+    readonly pageType?: string;
+    readonly refUri?: string;
+    readonly targetUri?: string;
+}
+
+// @public
+export type ClickAnalyticsProperties = Record<string, string | number | boolean | string[] | number[] | boolean[] | object | undefined>;
+
+// @public
+export function createClickAnalyticsInstrumentation(config?: ClickAnalyticsInstrumentationConfig): Promise<ClickAnalyticsInstrumentation>;
+
+// @public
 export function getInstrumentations(options?: InstrumentationOptions): Promise<BrowserInstrumentation[]>;
 
 // @public
 export interface InstrumentationOptions {
+    clickAnalytics?: ClickAnalyticsInstrumentationConfig;
     console?: ConsoleInstrumentationConfig;
     errors?: ErrorsInstrumentationConfig;
     fetch?: FetchInstrumentationConfig;

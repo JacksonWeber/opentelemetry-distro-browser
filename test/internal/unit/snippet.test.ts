@@ -287,7 +287,7 @@ const pageViewDataFields = (
 void snippetOptionsMatchTheDistribution;
 void pageViewDataFields;
 const instrumentationNamesMatch = (
-  name: keyof InstrumentationOptions,
+  name: Exclude<keyof InstrumentationOptions, "clickAnalytics">,
 ): SdkLoaderInstrumentationName => name;
 const instrumentationNamesExist = (
   name: SdkLoaderInstrumentationName,
@@ -487,6 +487,23 @@ it.each([
     }),
   ).toThrow(TypeError);
 });
+
+it.each([null, {}, { enabled: false }, { enabled: true }])(
+  "rejects npm-only Click Analytics in the loader: %j",
+  (clickAnalytics) => {
+    expect(() =>
+      getSdkLoaderScript({
+        connectionString: "connection",
+        instrumentationOptions: {
+          // @ts-expect-error Exercise untyped callers.
+          clickAnalytics,
+        },
+      }),
+    ).toThrow(
+      "SdkLoaderConfig.instrumentationOptions.clickAnalytics must be a supported instrumentation.",
+    );
+  },
+);
 
 it("rejects resource attributes when the bundle cannot build a resource", async () => {
   const src = createBundleUrl("return Promise.resolve({})");

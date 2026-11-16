@@ -24,6 +24,7 @@ import {
 } from "../../scripts/measure-bundle-size.mjs";
 
 const instrumentationIds = [
+  "click-analytics",
   "console",
   "errors",
   "fetch",
@@ -136,6 +137,34 @@ test("reports budgets for alpha and makes them blocking starting with beta", () 
       }),
     /Bundle size budgets exceeded: \./,
   );
+});
+
+test("published entry-point and browser budgets still reject each oversized metric", () => {
+  for (const entryPoint of [
+    ...Object.keys(entryPointBudgets),
+    ...Object.keys(browserBundleBudgets),
+  ]) {
+    const budget = entryPointBudgets[entryPoint] ?? browserBundleBudgets[entryPoint];
+    for (const metric of ["rawBytes", "gzipBytes", "brotliBytes"]) {
+      const scenarios = addBudgetResults([
+        {
+          entryPoint,
+          group: Object.hasOwn(entryPointBudgets, entryPoint) ? "entry-point" : "browser-bundle",
+          ...budget,
+          [metric]: budget[metric] + 1,
+        },
+      ]);
+      assert.deepEqual(scenarios[0].exceededMetrics, [metric]);
+      assert.throws(
+        () =>
+          enforceBundleSizeBudgets({
+            budgetPolicy: { mode: "blocking", blockingFrom: "beta" },
+            scenarios,
+          }),
+        /Bundle size budgets exceeded/,
+      );
+    }
+  }
 });
 
 test("always enforces budgets for the emitted browser bundles", () => {
@@ -297,6 +326,29 @@ test("publishes absolute entry-point budgets and their policy in Markdown", () =
   assert.match(markdown, /Alpha releases report violations/);
   assert.match(markdown, /\| \. \| 0\.88 kB \| 0\.98 kB/);
   assert.match(markdown, /\| Pass \|/);
+});
+
+test("documented entry-point and browser budgets match the enforced ceilings", async () => {
+  const documentation = await readFile(new URL("../../docs/packaging.md", import.meta.url), "utf8");
+  const rows = documentation.split("\n").map((line) => line.split("|").map((cell) => cell.trim()));
+  for (const [label, budget] of [
+    ...Object.entries(entryPointBudgets),
+    [
+      "opentelemetry-browser.{iife,umd}.min.js",
+      browserBundleBudgets["dist/browser/opentelemetry-browser.iife.min.js"],
+    ],
+    [
+      "opentelemetry-browser-instrumentations.{iife,umd}.min.js",
+      browserBundleBudgets["dist/browser/opentelemetry-browser-instrumentations.iife.min.js"],
+    ],
+  ]) {
+    const row = rows.find((cells) => cells[1] === `\`${label}\``);
+    assert.deepEqual(
+      row?.slice(2, 5),
+      ["rawBytes", "gzipBytes", "brotliBytes"].map((metric) => `${budget[metric] / 1024} kB`),
+      label,
+    );
+  }
 });
 
 test("publishes generated size diagnostics when budget enforcement fails", async () => {

@@ -17,6 +17,7 @@ import type { WebVitalsInstrumentationConfig } from "@opentelemetry/browser-inst
 import type { XhrInstrumentationConfig } from "@opentelemetry/browser-instrumentation/experimental/xhr";
 import type { AzureMonitorOptions } from "./exporter/base.js";
 import type { PageViewInstrumentationConfig } from "./instrumentation/pageView/types.js";
+import type { ClickAnalyticsInstrumentationConfig } from "./instrumentation/clickAnalytics/types.js";
 import type {
   MicrosoftOpenTelemetryBrowserConfigurationUpdate,
   MicrosoftOpenTelemetryBrowserConfigurationUpdateResult,
@@ -59,6 +60,9 @@ export interface InstrumentationOptions {
 
   /** Configuration for `@opentelemetry/browser-instrumentation/experimental/user-action`. */
   userAction?: UserActionInstrumentationConfig;
+
+  /** npm-only Application Insights-compatible click content. Prefer this or `userAction`, not both. */
+  clickAnalytics?: ClickAnalyticsInstrumentationConfig;
 
   /** Configuration for `@opentelemetry/browser-instrumentation/experimental/web-vitals`. */
   webVitals?: WebVitalsInstrumentationConfig;
