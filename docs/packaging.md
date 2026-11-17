@@ -10,6 +10,8 @@ for the browser:
 | `dist/commonjs/index.cjs`            | CommonJS package entry point                                                  |
 | `dist/esm/instrumentations.js`       | Tree-shakeable ESM instrumentation loader                                     |
 | `dist/commonjs/instrumentations.cjs` | CommonJS instrumentation loader                                               |
+| `dist/esm/debug.js`                  | Optional ESM in-page telemetry debugger                                       |
+| `dist/commonjs/debug.cjs`            | Optional CommonJS in-page telemetry debugger                                  |
 | `dist/esm/index.min.js`              | Minified ESM bundle for browser size checks                                   |
 | `dist/browser/*umd*.js`              | UMD SDK and instrumentation bundles for CommonJS, AMD, RequireJS, and globals |
 | `dist/browser/*iife*.js`             | IIFE SDK and instrumentation bundles for direct classic-script loading        |
@@ -24,6 +26,12 @@ and point to the same files selected by the explicit `require` and `import` cond
 `package.json` metadata subpath remains available. The CommonJS entries `require()` ESM-only
 OpenTelemetry packages, so they target bundlers and Node.js versions with `require(esm)` support;
 CommonJS test runners such as Jest must transform those dependencies.
+
+The development-only `./debug` entry exports `createTelemetryDebugger`. It is not included in the
+root, instrumentation, or CDN bundles. Compose it with standard processor and exporter contracts
+to inspect emitted records and export results in the page, with optional bounded User Timing
+marks and measures. Importing it does not mount a panel or initialize telemetry. See the
+[debugger sample and browser checklist](../samples/README.md#in-page-debugger).
 
 The `opentelemetry-browser.*` SDK bundles are self-contained and expose `Microsoft.OpenTelemetry`.
 They also expose the standard OpenTelemetry APIs used by the bundled SDK, so direct-script
@@ -73,6 +81,7 @@ Every executable published entry point has absolute minified, gzip and Brotli bu
 | -------------------- | -------: | -------: | ------: |
 | `.`                  |   170 kB |  53.5 kB |   47 kB |
 | `./instrumentations` | 78.25 kB | 29.75 kB | 26.5 kB |
+| `./debug`            |    16 kB |     6 kB |    5 kB |
 | `./snippet`          |  6.75 kB |     3 kB | 2.75 kB |
 
 The generated JSON and Markdown reports show the measured values, ceilings and result for each

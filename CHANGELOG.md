@@ -10,6 +10,8 @@ All notable changes to this package are documented in this file.
 
 ### Added
 
+- Add an optional `/debug` entry with an in-page telemetry inspector, bounded snapshots, export
+  results, and opt-in SDK User Timing marks and measures.
 - Add opt-in fetch and XHR header capture with sensitive-header exclusions, failed HTTP status
   text, a shared per-page-view dependency limit, and resource-timing phase durations through
   `getInstrumentations({ dependencies })`. Dependency collection remains unlimited by default.

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>In-page telemetry debugger</title>
+    <style>
+      body {
+        max-width: 1100px;
+        margin: 24px auto;
+        padding: 0 16px;
+        font:
+          16px system-ui,
+          sans-serif;
+      }
+      button {
+        margin: 4px;
+        padding: 8px;
+      }
+      #pipelines {
+        display: grid;
+        gap: 20px;
+      }
+      #error {
+        color: #a00;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>In-page telemetry debugger</h1>
+    <p>
+      Two independent SDK instances export OTLP to this local development server. No Azure resource
+      or credentials are needed. The test sink waits 400 ms and discards received payloads.
+    </p>
+    <p>
+      Emit first, then flush to see the difference between emitted and exported records. Reload to
+      restart. Add <code>?timing=off</code> to disable User Timing.
+    </p>
+    <label><input id="fail" type="checkbox" /> Make the local sink reject exports (HTTP 400)</label>
+    <p id="error" role="alert"></p>
+    <div id="pipelines"></div>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

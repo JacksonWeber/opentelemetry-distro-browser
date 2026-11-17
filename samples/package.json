@@ -9,7 +9,11 @@
   },
   "scripts": {
     "prebuild": "npm run build:local-package",
-    "build": "vite build azure-monitor && vite build console && vite build otlp && node ../scripts/write-telemetry-viewer-build-info.mjs && vite build telemetry-viewer",
+    "build": "vite build azure-monitor && vite build console && vite build otlp && node ../scripts/write-telemetry-viewer-build-info.mjs && vite build telemetry-viewer && vite build debug",
+    "prebuild:debug": "npm run build:local-package",
+    "build:debug": "vite build debug",
+    "predev:debug": "npm run build:local-package",
+    "dev:debug": "vite debug",
     "prebuild:azure-monitor": "npm run build:local-package",
     "build:azure-monitor": "vite build azure-monitor",
     "prebuild:console": "npm run build:local-package",

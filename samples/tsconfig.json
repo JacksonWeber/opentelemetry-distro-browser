@@ -10,5 +10,12 @@
     "types": ["vite/client"],
     "useDefineForClassFields": true
   },
-  "include": ["azure-monitor/src", "console/src", "otlp/src", "telemetry-viewer/src"]
+  "include": [
+    "azure-monitor/src",
+    "console/src",
+    "otlp/src",
+    "telemetry-viewer/src",
+    "debug/src",
+    "debug/vite.config.ts"
+  ]
 }

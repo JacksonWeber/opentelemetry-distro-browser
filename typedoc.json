@@ -4,6 +4,7 @@
   "entryPoints": [
     "src/index.ts",
     "src/instrumentation/browserInstrumentation/index.ts",
+    "src/debug/index.ts",
     "src/snippet.ts"
   ],
   "entryPointStrategy": "resolve",

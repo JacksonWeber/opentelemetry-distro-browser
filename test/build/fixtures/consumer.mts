@@ -21,9 +21,22 @@ import { BatchLogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import {
+  createTelemetryDebugger,
+  type TelemetryDebugger,
+} from "@microsoft/opentelemetry-browser/debug";
+import {
   getInstrumentations,
   type DependencyInstrumentationOptions,
 } from "@microsoft/opentelemetry-browser/instrumentations";
+
+export function debugPipeline(container: HTMLElement): TelemetryDebugger {
+  const debug = createTelemetryDebugger({ container, performance: true });
+  const spans = debug.wrapSpanExporter(new OTLPTraceExporter());
+  const records = debug.wrapLogRecordExporter(new OTLPLogExporter());
+  debug.wrapSpanProcessor(new BatchSpanProcessor(spans));
+  debug.wrapLogRecordProcessor(new BatchLogRecordProcessor({ exporter: records }));
+  return debug;
+}
 
 export const dependencies: DependencyInstrumentationOptions = {
   captureRequestHeaders: true,
