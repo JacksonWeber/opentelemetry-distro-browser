@@ -2,9 +2,6 @@
 // Licensed under the MIT License.
 
 import {
-  diag,
-  DiagConsoleLogger,
-  DiagLogLevel,
   SpanKind,
   type Attributes,
   type ContextManager,
@@ -23,6 +20,7 @@ import type { Sampler } from "@opentelemetry/sdk-trace-base";
 import { TracerProvider, type SpanProcessor } from "@opentelemetry/sdk-trace";
 import { StackContextManager } from "@opentelemetry/sdk-trace-web";
 import { redactUrl } from "../shared/urlRedaction.js";
+import { acquireDiagnostics } from "../diagnostics.js";
 import { addInstance, noopLoggerProvider, noopTracerProvider } from "./instanceRouter.js";
 import {
   addPageCorrelation,
@@ -33,7 +31,6 @@ import {
 import { runLifecycleTasks } from "../shared/lifecycle.js";
 import {
   commitGlobals,
-  getSharedRegistry,
   isReportingSdkStats,
   isConfigurationUrl,
   reportError,
@@ -42,6 +39,7 @@ import {
 
 /** Resolved pipeline configuration for one distribution instance. */
 export interface TelemetryInstanceOptions {
+  readonly diagnostics?: Awaited<ReturnType<typeof acquireDiagnostics>>;
   readonly redactedQueryParams?: readonly string[];
   readonly resourceAttributes: Attributes;
   readonly sampler?: Sampler;
@@ -81,6 +79,7 @@ export async function startTelemetryInstance(
   let loggerProvider: LoggerProvider | undefined;
   let stopped = false;
   let shutdownPromise: Promise<void> | undefined;
+  let diagnostics: Awaited<ReturnType<typeof acquireDiagnostics>> | undefined;
   const shutdownProviders = (): Promise<void> =>
     (shutdownPromise ??= runLifecycleTasks(
       [
@@ -90,6 +89,7 @@ export async function startTelemetryInstance(
         ...(loggerProvider ? [loggerProvider] : []),
       ].map((owner) => () => owner.shutdown()),
       "Telemetry provider shutdown failed",
+      [() => diagnostics?.shutdown() ?? Promise.resolve()],
     ));
   // Processor cleanup is owned here so a synchronous failure cannot skip sibling processors.
   const shutdownProcessor = async (): Promise<void> => {};
@@ -104,11 +104,7 @@ export async function startTelemetryInstance(
     releasePageContext();
   };
   try {
-    const registry = getSharedRegistry();
-    // Matches the upstream browser SDK's once-per-page diagnostic initialization.
-    if (!registry.diagInitialized) {
-      registry.diagInitialized = diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.INFO);
-    }
+    diagnostics = options.diagnostics ?? (await acquireDiagnostics());
     const resource = defaultResource().merge(resourceFromAttributes(options.resourceAttributes));
     if (options.spanProcessors.length) {
       const spanProcessors = options.spanProcessors.map((processor): SpanProcessor => ({

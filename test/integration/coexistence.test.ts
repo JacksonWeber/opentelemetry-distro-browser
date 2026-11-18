@@ -3,7 +3,7 @@
 
 import { context, createContextKey, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
-import { BatchLogRecordProcessor } from "@opentelemetry/sdk-logs";
+import { BatchLogRecordProcessor, type LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { afterEach, beforeEach, expect, inject, it, vi } from "vitest";
 import type { AzureMonitorEnvelope } from "../../src/exporter/telemetryModels.js";
@@ -106,6 +106,45 @@ function createPipeline() {
   const { spanExporter: spans, logExporter: records, options } = createInMemoryPipeline();
   return { spans, records, options: { ...options, pageView: { enabled: false } } };
 }
+
+it.each(["shared", "isolated"])(
+  "shares isolated diagnostics across emitted %s installations until the last shutdown",
+  async (mode) => {
+    const [host, remote] = await loadCopies(mode);
+    const processor = {
+      onEmit: vi.fn<LogRecordProcessor["onEmit"]>(),
+      forceFlush: vi.fn(async () => {}),
+      shutdown: vi.fn(async () => {}),
+    };
+    const options = {
+      spanProcessors: [],
+      logRecordProcessors: [],
+      pageView: { enabled: false },
+      session: { enabled: false },
+      userContext: { enabled: false },
+      storage: { enabled: false },
+      cookieCfg: { enabled: false, disableCookieDefer: true },
+    };
+    const first = await host.useMicrosoftOpenTelemetry({
+      ...options,
+      diagnostics: { consoleLogLevel: 0, telemetryLogLevel: 30, logRecordProcessors: [processor] },
+    });
+    const second = await remote.useMicrosoftOpenTelemetry(options);
+    handles.push(first, second);
+    await first.shutdown();
+    expect(processor.shutdown).not.toHaveBeenCalled();
+    remote.diag.error("remaining instance diagnostic");
+    await second.forceFlush();
+    expect(processor.onEmit.mock.calls.map(([record]) => record.body)).toEqual([
+      "remaining instance diagnostic",
+    ]);
+    expect(processor.onEmit.mock.calls[0]![0].resource.attributes).toEqual({});
+    await second.shutdown();
+    expect(processor.shutdown).toHaveBeenCalledOnce();
+    remote.diag.error("after final shutdown");
+    expect(processor.onEmit).toHaveBeenCalledOnce();
+  },
+);
 
 function probe() {
   let tracerProvider: ReturnType<typeof trace.getTracerProvider> | undefined;

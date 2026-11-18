@@ -44,6 +44,7 @@ import { startTelemetryInstance, type TelemetryInstance } from "./routing/teleme
 import { isTraceSampled, RuntimeSampler } from "./sampling.js";
 import { DEFAULT_QUERY_STRINGS_TO_REDACT } from "./shared/urlRedaction.js";
 import { createExceptionEnrichment } from "./exceptionEnrichment.js";
+import { acquireDiagnostics, captureDiagnostics } from "./diagnostics.js";
 import type {
   MicrosoftOpenTelemetryBrowser,
   MicrosoftOpenTelemetryBrowserOptions,
@@ -159,8 +160,8 @@ function createOwnedInstrumentations(
  * Await completion before emitting telemetry.
  *
  * @remarks
- * First initialization installs an INFO console diagnostic logger, replacing the previous one.
- * Call `diag.setLogger` afterward to override it.
+ * First initialization selects page-wide diagnostics, defaulting to INFO console output.
+ * Call `diag.setLogger` afterward to override it. Later instances do not change these settings.
  *
  * Compatible copies share realm-local routing and page context, not pipelines.
  * Foreign globals stay untouched. Re-entrant registration changes reject startup.
@@ -172,12 +173,21 @@ function createOwnedInstrumentations(
 export async function useMicrosoftOpenTelemetry(
   options: MicrosoftOpenTelemetryBrowserOptions = {},
 ): Promise<MicrosoftOpenTelemetryBrowser> {
+  const diagnostics = captureDiagnostics(options.diagnostics);
+  if (
+    diagnostics.logRecordProcessors?.some((processor) =>
+      options.logRecordProcessors?.includes(processor),
+    )
+  ) {
+    throw new TypeError("Diagnostic processors must not be shared with customer telemetry.");
+  }
   const sdkStats = snapshotSdkStatsOptions(options.azureMonitor?.sdkStats);
   const syncOptions = captureConfigurationSync(options.extensionConfig);
   let stopping = false;
   let configSync: MicrosoftOpenTelemetryBrowser["configSync"];
   let instrumentationRegistry: ReturnType<typeof createInstrumentationRegistry> | undefined;
   const sessionOptions = options.session;
+  const userContextEnabled = options.userContext?.enabled;
   const inactivityTimeout = sessionOptions?.inactivityTimeout;
   const maxDuration = sessionOptions?.maxDuration;
   const sessionRenewalMs = options.sessionRenewalMs;
@@ -296,6 +306,8 @@ export async function useMicrosoftOpenTelemetry(
   let correlation: PageViewCorrelation | undefined;
   let releasePageVisitSlot: (() => void) | undefined;
   let instance: TelemetryInstance | undefined;
+  let diagnosticHandle: Awaited<ReturnType<typeof acquireDiagnostics>> | undefined;
+  let diagnosticStartup: ReturnType<typeof acquireDiagnostics> | undefined;
   let processorsTransferred = false;
   let initialized = false;
   // Upstream stale tracers can still call processors after provider shutdown.
@@ -340,7 +352,10 @@ export async function useMicrosoftOpenTelemetry(
   };
   function flushProcessors(): Promise<void> {
     const processors = [...(spanProcessors ?? []), ...(logRecordProcessors ?? [])];
-    const exporterTasks = azureMonitorExporters.map((exporter) => () => exporter.forceFlush());
+    const exporterTasks = [
+      ...azureMonitorExporters.map((exporter) => () => exporter.forceFlush()),
+      () => diagnosticHandle?.forceFlush() ?? Promise.resolve(),
+    ];
     return runLifecycleTasks(
       processors.map((processor) => () => processor.forceFlush()),
       "Telemetry flush failed",
@@ -422,6 +437,11 @@ export async function useMicrosoftOpenTelemetry(
       } catch (error) {
         errors.push(error);
       }
+      try {
+        await diagnosticHandle?.shutdown();
+      } catch (error) {
+        errors.push(error);
+      }
       if (!processorsTransferred) {
         try {
           await runLifecycleTasks(
@@ -486,6 +506,9 @@ export async function useMicrosoftOpenTelemetry(
   };
 
   try {
+    // Reserve page-wide diagnostics before asynchronous session/resource startup can reorder callers.
+    diagnosticStartup = acquireDiagnostics(diagnostics);
+    void diagnosticStartup.catch(() => {});
     // Reserve before construction or callbacks can re-enter startup, with rollback already armed.
     const owned = createOwnedInstrumentations(
       { pageView, azureMonitor, storage: options.storage, traces: options.traces },
@@ -543,7 +566,7 @@ export async function useMicrosoftOpenTelemetry(
     // Validate destinations before persisting identity. A new user invalidates the previous
     // user's session backup so deleting cookies cannot silently restore their old session.
     userContext = createCookieUserContext(
-      options.userContext?.enabled,
+      userContextEnabled,
       cookies,
       namePrefix,
       () => session?.discardBackup(),
@@ -577,7 +600,11 @@ export async function useMicrosoftOpenTelemetry(
         sessionStorage.removeItem(key);
       },
     );
-    await session?.start();
+    // Capture explicit context, identity policy and processor configuration before yielding.
+    const sessionStartup = session?.start();
+    void sessionStartup?.catch(() => {});
+    diagnosticHandle = await diagnosticStartup;
+    await sessionStartup;
     spanProcessors ??= [];
     logRecordProcessors ??= [];
     await options.resource?.waitForAsyncAttributes?.();
@@ -589,6 +616,7 @@ export async function useMicrosoftOpenTelemetry(
       diag.warn("Trace context options ignored; page context already registered");
     }
     const instanceOptions = {
+      diagnostics: diagnosticHandle,
       redactedQueryParams,
       // Spread last: the caller's attributes win.
       resourceAttributes: {
@@ -645,6 +673,11 @@ export async function useMicrosoftOpenTelemetry(
     initialized = true;
     pageViewInstrumentation?.commitStartup();
   } catch (error) {
+    try {
+      diagnosticHandle ??= await diagnosticStartup;
+    } catch {
+      // Registration already cleaned its processors up; preserve the original startup error.
+    }
     try {
       await shutdown();
     } catch (cleanupError) {

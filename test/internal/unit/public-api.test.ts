@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import type { ContextManager, TextMapPropagator } from "@opentelemetry/api";
+import type { ContextManager, DiagLogLevel, TextMapPropagator } from "@opentelemetry/api";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import type { Resource } from "@opentelemetry/resources";
 import type { SpanProcessor } from "@opentelemetry/sdk-trace-base";
@@ -23,6 +23,7 @@ import {
   type MicrosoftOpenTelemetryBrowserExceptionOptions,
   type MicrosoftOpenTelemetryBrowserCookieConfig,
   type MicrosoftOpenTelemetryBrowserCookieManager,
+  type MicrosoftOpenTelemetryBrowserDiagnosticsOptions,
   type MicrosoftOpenTelemetryBrowserOptions,
   type MicrosoftOpenTelemetryBrowserSessionOptions,
   type MicrosoftOpenTelemetryBrowserTraceOptions,
@@ -55,7 +56,16 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
     | "redactQueryParams"
     | "extensionConfig"
     | "expCfg"
+    | "diagnostics"
   >();
+  expectTypeOf<MicrosoftOpenTelemetryBrowserOptions["diagnostics"]>().toEqualTypeOf<
+    MicrosoftOpenTelemetryBrowserDiagnosticsOptions | undefined
+  >();
+  expectTypeOf<MicrosoftOpenTelemetryBrowserDiagnosticsOptions>().toEqualTypeOf<{
+    consoleLogLevel?: DiagLogLevel;
+    telemetryLogLevel?: DiagLogLevel;
+    logRecordProcessors?: readonly LogRecordProcessor[];
+  }>();
   expectTypeOf<MicrosoftOpenTelemetryBrowserOptions["expCfg"]>().toEqualTypeOf<
     MicrosoftOpenTelemetryBrowserExceptionOptions | undefined
   >();

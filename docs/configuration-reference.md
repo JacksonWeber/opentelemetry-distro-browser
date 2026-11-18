@@ -19,24 +19,79 @@ supports [pause/resume for supported instrumentations](#runtime-instrumentation-
 options remain startup-only. Importing the package has no initialization side effects. Initialize
 only in client-side code, before importing application code to instrument.
 
-| Option                | Type                                            | Default and behavior                                                                                                                                                                                                      |
-| --------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `azureMonitor`        | `AzureMonitorOptions`                           | Omitted: no default Azure Monitor exporters. See [destination](#azure-monitor-destination).                                                                                                                               |
-| `resource`            | OpenTelemetry `Resource`                        | SDK defaults. Supplied attributes merge over defaults; use `service.name` and `service.version` to identify the application. Attributes resolve once; the resource schema URL is not carried through.                     |
-| `samplingPercentage`  | `number`                                        | Omitted: parent-based always-on trace sampling and no percentage sampling of Azure Monitor logs. See [sampling](#sampling).                                                                                               |
-| `session`             | `MicrosoftOpenTelemetryBrowserSessionOptions`   | Enabled and persisted, with 30-minute inactivity expiry and 24-hour maximum lifetime.                                                                                                                                     |
-| `sessionRenewalMs`    | `number`, milliseconds                          | Application Insights alias for `session.inactivityTimeout`. Default: `1800000` (30 minutes); `0` restores this default. See [session options](#session-options).                                                          |
-| `sessionExpirationMs` | `number`, milliseconds                          | Application Insights alias for `session.maxDuration`. Default: `86400000` (24 hours); `0` restores this default. See [session options](#session-options).                                                                 |
-| `storage`             | `{ enabled?: boolean; namePrefix?: string }`    | Enabled, with unprefixed keys. See [browser storage](#browser-storage).                                                                                                                                                   |
-| `cookieCfg`           | `MicrosoftOpenTelemetryBrowserCookieConfig`     | Enabled independently of Web Storage. See [cookie configuration](#cookie-configuration-and-controls).                                                                                                                     |
-| `userContext`         | `{ enabled?: boolean }`                         | Enabled: managed anonymous identity persists in a cookie; authenticated identity is memory-only unless explicitly opted into a cookie.                                                                                    |
-| `traces`              | `MicrosoftOpenTelemetryBrowserTraceOptions`     | Synchronous context tracking, W3C Trace Context and Baggage propagation.                                                                                                                                                  |
-| `spanProcessors`      | `SpanProcessor[]`                               | Additional trace processors. They run before the Azure Monitor default when configured, unless `[]` disables traces. Without Azure Monitor, only supplied processors export. See [enrichment](#enrichment-and-filtering). |
-| `logRecordProcessors` | `LogRecordProcessor[]`                          | Additional log processors. They run before the Azure Monitor default when configured, unless `[]` disables logs. Without Azure Monitor, only supplied processors export. See [enrichment](#enrichment-and-filtering).     |
-| `instrumentations`    | `readonly BrowserInstrumentation[]`             | Empty. Pass instances returned by `getInstrumentations()` or compatible upstream instances. Built-in page views are configured separately.                                                                                |
-| `pageView`            | `PageViewInstrumentationConfig`                 | Collection and page-operation correlation enabled. Requires a log pipeline to export page-view records.                                                                                                                   |
-| `expCfg`              | `MicrosoftOpenTelemetryBrowserExceptionOptions` | Omitted: no exception attachments. Opt in to script URLs and application-supplied recent logs. See [exception attachments](#exception-attachments).                                                                       |
-| `redactQueryParams`   | `readonly string[]`                             | Additional sensitive parameter names for fetch/XHR and page-view URLs/referrers. Extends built-in protection. See [URL redaction](#url-redaction).                                                                        |
+| Option                | Type                                              | Default and behavior                                                                                                                                                                                                      |
+| --------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `azureMonitor`        | `AzureMonitorOptions`                             | Omitted: no default Azure Monitor exporters. See [destination](#azure-monitor-destination).                                                                                                                               |
+| `resource`            | OpenTelemetry `Resource`                          | SDK defaults. Supplied attributes merge over defaults; use `service.name` and `service.version` to identify the application. Attributes resolve once; the resource schema URL is not carried through.                     |
+| `samplingPercentage`  | `number`                                          | Omitted: parent-based always-on trace sampling and no percentage sampling of Azure Monitor logs. See [sampling](#sampling).                                                                                               |
+| `session`             | `MicrosoftOpenTelemetryBrowserSessionOptions`     | Enabled and persisted, with 30-minute inactivity expiry and 24-hour maximum lifetime.                                                                                                                                     |
+| `sessionRenewalMs`    | `number`, milliseconds                            | Application Insights alias for `session.inactivityTimeout`. Default: `1800000` (30 minutes); `0` restores this default. See [session options](#session-options).                                                          |
+| `sessionExpirationMs` | `number`, milliseconds                            | Application Insights alias for `session.maxDuration`. Default: `86400000` (24 hours); `0` restores this default. See [session options](#session-options).                                                                 |
+| `storage`             | `{ enabled?: boolean; namePrefix?: string }`      | Enabled, with unprefixed keys. See [browser storage](#browser-storage).                                                                                                                                                   |
+| `cookieCfg`           | `MicrosoftOpenTelemetryBrowserCookieConfig`       | Enabled independently of Web Storage. See [cookie configuration](#cookie-configuration-and-controls).                                                                                                                     |
+| `userContext`         | `{ enabled?: boolean }`                           | Enabled: managed anonymous identity persists in a cookie; authenticated identity is memory-only unless explicitly opted into a cookie.                                                                                    |
+| `traces`              | `MicrosoftOpenTelemetryBrowserTraceOptions`       | Synchronous context tracking, W3C Trace Context and Baggage propagation.                                                                                                                                                  |
+| `spanProcessors`      | `SpanProcessor[]`                                 | Additional trace processors. They run before the Azure Monitor default when configured, unless `[]` disables traces. Without Azure Monitor, only supplied processors export. See [enrichment](#enrichment-and-filtering). |
+| `logRecordProcessors` | `LogRecordProcessor[]`                            | Additional log processors. They run before the Azure Monitor default when configured, unless `[]` disables logs. Without Azure Monitor, only supplied processors export. See [enrichment](#enrichment-and-filtering).     |
+| `diagnostics`         | `MicrosoftOpenTelemetryBrowserDiagnosticsOptions` | **Unreleased.** Page-wide SDK diagnostics: console `INFO`, telemetry `NONE`. See [SDK diagnostics](#sdk-diagnostics).                                                                                                     |
+| `instrumentations`    | `readonly BrowserInstrumentation[]`               | Empty. Pass instances returned by `getInstrumentations()` or compatible upstream instances. Built-in page views are configured separately.                                                                                |
+| `pageView`            | `PageViewInstrumentationConfig`                   | Collection and page-operation correlation enabled. Requires a log pipeline to export page-view records.                                                                                                                   |
+| `expCfg`              | `MicrosoftOpenTelemetryBrowserExceptionOptions`   | Omitted: no exception attachments. Opt in to script URLs and application-supplied recent logs. See [exception attachments](#exception-attachments).                                                                       |
+| `redactQueryParams`   | `readonly string[]`                               | Additional sensitive parameter names for fetch/XHR and page-view URLs/referrers. Extends built-in protection. See [URL redaction](#url-redaction).                                                                        |
+
+### SDK diagnostics
+
+`diagnostics` controls OpenTelemetry `diag` output separately from application telemetry. These
+settings are not available in `0.1.0-beta.2`.
+
+| Option                            | Default and behavior                                                                                                               |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `diagnostics.consoleLogLevel`     | `DiagLogLevel.INFO`. Independent console threshold; `NONE` disables output.                                                        |
+| `diagnostics.telemetryLogLevel`   | `DiagLogLevel.NONE`, even when processors are supplied. A non-`NONE` level also requires explicit diagnostic processors to export. |
+| `diagnostics.logRecordProcessors` | `readonly LogRecordProcessor[]`, omitted. Dedicated processors; never reuse application processors or share them with providers.   |
+
+Use the native `DiagLogLevel` values: `NONE` (`0`), `ERROR` (`30`), `WARN` (`50`), `INFO` (`60`),
+`DEBUG` (`70`), `VERBOSE` (`80`) and `ALL` (`9999`), not Application Insights numeric levels.
+`DEBUG` and `VERBOSE` are safe troubleshooting verbosity levels, not throw modes. Legacy
+`enableDebug` throws SDK errors; there is no alias or throw-mode equivalent. `diagnosticLogInterval`,
+`disableDataLossAnalysis`, `enablePerfMgr`, `createPerfMgr` and `perfEvtsSendAll` are unsupported,
+with no polling, data-loss analyzer or performance-manager equivalent.
+
+The first initialization in the page selects settings and takes ownership of its diagnostic
+processors. Later settings are ignored, and later processors remain caller-owned. All initialized
+handles share the diagnostic lifetime. Only the last handle's shutdown stops the accepted
+processors; diagnostic export then stays off for the rest of the page, including later
+initializations. The first console settings remain. An application `diag.setLogger()` override
+after initialization is preserved. Handle `forceFlush()` includes diagnostic processors.
+
+Copies predating diagnostic lifetime tracking use registry protocol version 1 and cannot share
+a page with this revision's version 2 registry. Mixed copies reject initialization with
+`distribution-version-conflict` in either order; use compatible copies throughout the page.
+Current standalone exporters can read existing version 1 page-correlation metadata without
+initializing a distribution. Older standalone exporters do not recognize version 2 metadata;
+they also cannot set its diagnostic feedback guard. Upgrade those exporters too when sharing
+a page with the current distribution.
+
+Diagnostic telemetry uses a separate, non-global `LoggerProvider`, without application processors,
+the application's resource, or managed user/session/page enrichment. Records use `ROOT_CONTEXT`
+without span correlation and contain message text, including a leading string argument used by
+OpenTelemetry component loggers. Other diagnostic arguments are excluded;
+`VERBOSE` maps to log severity `TRACE`. Each message is truncated to 4096 characters before
+deduplication by severity and text, with at most 100 unique diagnostic messages per page.
+Synchronous reentry and SDK Stats suppression skip diagnostic telemetry. These guards and limits
+do not change the independent console filter. Message text is not redacted: opt in only with a
+destination permitted to receive potentially sensitive SDK messages. No custom diagnostic timer,
+exporter or browser storage is installed; supplied processors own batching and transport.
+Standard OpenTelemetry processors suppress their export-time traces when an active context manager
+is installed. For logs-only initialization, or custom asynchronous transports without context
+propagation, exclude diagnostic destinations through the fetch/XHR instrumentation's `ignoreUrls`.
+Also exclude diagnostic export URLs (including redirects) through the resource timing
+instrumentation's `ignoreUrls`, because its delayed callbacks do not retain suppression context.
+The SDK does not inspect custom processors to discover their destinations.
+
+The generated CDN loader accepts only `diagnostics.consoleLogLevel`. Other diagnostic keys,
+including `telemetryLogLevel` and `logRecordProcessors`, reject generation. Use npm or direct bundle
+initialization for diagnostic telemetry.
 
 ### Exception attachments
 
@@ -1130,6 +1185,7 @@ It generates a script; it does not itself initialize telemetry in the current pa
 | `cdnFallback`                                                                | `false`. Retry backup Azure Monitor CDN hosts; requires a recognized CDN source URL.                                                                              |
 | `reportLoadFailure`                                                          | `false`. Report an `SDKLoadFailed` exception after bundle load attempts fail.                                                                                     |
 | `samplingPercentage`, `azureMonitor.disableBeacon`, `session`, `userContext` | Same meanings as initialization options above.                                                                                                                    |
+| `diagnostics.consoleLogLevel`                                                | **Unreleased.** Native `DiagLogLevel` values only; omitted uses `INFO`. Other diagnostic keys are rejected. See [SDK diagnostics](#sdk-diagnostics).              |
 | `storage`                                                                    | Same `enabled` and `namePrefix` settings as initialization options above.                                                                                         |
 | `redactQueryParams`                                                          | Same additional sensitive parameter names as initialization options above.                                                                                        |
 | `cookieCfg`                                                                  | Data-only settings: `enabled`, `domain`, `path`, `ignoreCookies`, `blockedCookies`, `disableCookieDefer`. Cookie hooks are not supported by the snippet.          |

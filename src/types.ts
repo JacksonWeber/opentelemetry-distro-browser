@@ -1,7 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import type { ContextManager, TextMapPropagator, TracerProvider } from "@opentelemetry/api";
+import type {
+  ContextManager,
+  DiagLogLevel,
+  TextMapPropagator,
+  TracerProvider,
+} from "@opentelemetry/api";
 import type { LoggerProvider } from "@opentelemetry/api-logs";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import type { Resource } from "@opentelemetry/resources";
@@ -314,11 +319,37 @@ export interface MicrosoftOpenTelemetryBrowserExceptionOptions {
   maxLogs?: number;
 }
 
+/** Startup-only, page-wide SDK diagnostics. The first initialization selects these settings.
+ * @public
+ */
+export interface MicrosoftOpenTelemetryBrowserDiagnosticsOptions {
+  /** OpenTelemetry diagnostic console threshold. Defaults to INFO; NONE disables console output. */
+  consoleLogLevel?: DiagLogLevel;
+  /** Independent diagnostic telemetry threshold. Defaults to NONE, even when processors are supplied. */
+  telemetryLogLevel?: DiagLogLevel;
+  /**
+   * Explicit diagnostic processors, separate from customer telemetry. No automatic exporter or
+   * user/session/page enrichment is installed. Message text includes a leading string argument
+   * (the message for OpenTelemetry component loggers), but excludes other diagnostic arguments.
+   * Custom exporters must suppress their transport traces and exclude their URLs from resource
+   * timing instrumentation. Standard OpenTelemetry processors suppress export-time traces when
+   * a context manager is active; otherwise also exclude their URLs from fetch/XHR collection.
+   * Ownership transfers only on the first diagnostic initialization; later settings are ignored.
+   * Do not share processors with customer pipelines or other providers. The last participating
+   * handle shuts them down; diagnostic export then stays off for the rest of the page lifetime.
+   * Diagnostic telemetry is deduplicated by severity/message and limited to 100 messages per page,
+   * each truncated to 4096 characters. Message text may contain sensitive data; opt in deliberately.
+   */
+  logRecordProcessors?: readonly LogRecordProcessor[];
+}
+
 /**
  * Microsoft browser distribution configuration for traces and logs.
  * @public
  */
 export interface MicrosoftOpenTelemetryBrowserOptions {
+  /** Page-wide diagnostic controls. Defaults to INFO console output and no diagnostic export. */
+  diagnostics?: MicrosoftOpenTelemetryBrowserDiagnosticsOptions;
   /**
    * Opt-in exceptionScripts (JSON script metadata) and exceptionLog (newline-separated text).
    * Each attachment is limited to 8 KiB UTF-8. Script URLs use built-in and redactQueryParams

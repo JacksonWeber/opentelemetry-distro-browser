@@ -4,6 +4,8 @@
 
 ```ts
 
+import { DiagLogLevel } from '@opentelemetry/api';
+
 // @public
 export function getSdkLoaderScript(config: SdkLoaderConfig): string;
 
@@ -23,6 +25,9 @@ export interface SdkLoaderConfig {
         readonly disableCookieDefer?: boolean;
     };
     readonly crossOrigin?: string;
+    readonly diagnostics?: {
+        readonly consoleLogLevel?: DiagLogLevel;
+    };
     readonly instrumentationOptions?: {
         readonly [name in SdkLoaderInstrumentationName]?: SdkLoaderJsonObject & {
             readonly enabled?: boolean;

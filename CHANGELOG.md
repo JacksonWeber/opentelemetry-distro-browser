@@ -6,6 +6,8 @@ All notable changes to this package are documented in this file.
 
 ### Fixed
 
+- Reject mixed pre-diagnostics and current distribution registry protocols in either initialization
+  order, preventing an older instance from bypassing shared diagnostic lifetime tracking.
 - Preserve attributes added by later log processors when Azure Monitor sampling adds metadata.
 
 ### Added
@@ -18,6 +20,10 @@ All notable changes to this package are documented in this file.
   Failed metadata-patch cleanup remains retryable, and ambiguous timing is omitted for overlapping
   same-URL requests, including requests started synchronously by span processors, or requests
   still in flight when tracking pauses.
+- Add page-wide `diagnostics` with native OpenTelemetry console and telemetry thresholds, defaulting
+  to `INFO` and `NONE`. Explicit diagnostic processors stay isolated from application telemetry;
+  the first initialization selects settings and the last handle shuts down diagnostic export for
+  the rest of the page. The loader accepts only `diagnostics.consoleLogLevel`.
 - Continue server-provided W3C trace context from HTML meta tags or navigation `Server-Timing`
   for initial page telemetry, with a `pageView.useServerTraceContext` opt-out. SPA routes retain
   independent traces.

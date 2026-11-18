@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 import { afterEach, expect, it } from "vitest";
+import { DiagLogLevel } from "@opentelemetry/api";
 import {
   getSdkLoaderScript,
   type SdkLoaderConfig,
@@ -271,6 +272,7 @@ const snippetOptionsMatchTheDistribution = (
 ): Pick<
   Options,
   | "samplingPercentage"
+  | "diagnostics"
   | "session"
   | "userContext"
   | "storage"
@@ -284,8 +286,12 @@ const snippetOptionsMatchTheDistribution = (
 const pageViewDataFields = (
   config: Required<PageViewInstrumentationConfig>,
 ): Required<NonNullable<SdkLoaderConfig["pageView"]>> => config;
+const diagnosticFieldsAreConsoleOnly = (
+  field: keyof NonNullable<SdkLoaderConfig["diagnostics"]>,
+): "consoleLogLevel" => field;
 void snippetOptionsMatchTheDistribution;
 void pageViewDataFields;
+void diagnosticFieldsAreConsoleOnly;
 const instrumentationNamesMatch = (
   name: Exclude<keyof InstrumentationOptions, "dependencies" | "clickAnalytics">,
 ): SdkLoaderInstrumentationName => name;
@@ -297,6 +303,7 @@ void instrumentationNamesExist;
 
 const configuredOptions = {
   samplingPercentage: 25,
+  diagnostics: { consoleLogLevel: DiagLogLevel.DEBUG },
   redactQueryParams: ["tenant_secret"],
   azureMonitor: { disableBeacon: true },
   session: { enabled: true, persist: false, inactivityTimeout: 60, maxDuration: 600 },
@@ -330,6 +337,82 @@ it("leaves optional settings out of the default loader", () => {
   expect(generated).toMatch(
     /\(window,document,\{"src":"https:\/\/example\.test\/sdk\.js","crossOrigin":"anonymous","cfg":\{"azureMonitor":\{"connectionString":"connection"\}\}\}\);$/,
   );
+});
+
+it.each([
+  DiagLogLevel.NONE,
+  DiagLogLevel.ERROR,
+  DiagLogLevel.WARN,
+  DiagLogLevel.INFO,
+  DiagLogLevel.DEBUG,
+  DiagLogLevel.VERBOSE,
+  DiagLogLevel.ALL,
+])("serializes diagnostic console level %s", (consoleLogLevel) => {
+  expect(
+    getSdkLoaderScript({ connectionString: "connection", diagnostics: { consoleLogLevel } }),
+  ).toContain(`"diagnostics":{"consoleLogLevel":${consoleLogLevel}}`);
+});
+
+it.each([{}, { consoleLogLevel: undefined }])(
+  "leaves an omitted diagnostic console level for the SDK to default %#",
+  (diagnostics) => {
+    expect(getSdkLoaderScript({ connectionString: "connection", diagnostics })).toContain(
+      '"diagnostics":{}',
+    );
+  },
+);
+
+it.each(
+  [-1, 1, 2, 3, 31, 50.5, 9998, 10000, Number.NaN, Infinity, "70", null, true, {}, []].map(
+    (consoleLogLevel) => ({ consoleLogLevel }),
+  ),
+)("rejects invalid diagnostic console levels %#", (diagnostics) => {
+  expect(() =>
+    getSdkLoaderScript({
+      connectionString: "connection",
+      diagnostics: diagnostics as SdkLoaderConfig["diagnostics"],
+    }),
+  ).toThrow(TypeError);
+});
+
+it.each([
+  { telemetryLogLevel: DiagLogLevel.NONE },
+  { telemetryLogLevel: undefined },
+  { logRecordProcessors: [] },
+  { logRecordProcessors: undefined },
+  { extra: true },
+  Object.defineProperty({}, "telemetryLogLevel", { value: DiagLogLevel.WARN }),
+  Object.defineProperty({}, Symbol("extra"), { value: true }),
+])("rejects unsupported diagnostic loader settings %#", (diagnostics) => {
+  expect(() =>
+    getSdkLoaderScript({
+      connectionString: "connection",
+      diagnostics: diagnostics as SdkLoaderConfig["diagnostics"],
+    }),
+  ).toThrow("SdkLoaderConfig.diagnostics must be an object containing only consoleLogLevel.");
+});
+
+it("preserves a non-enumerable diagnostic console level in the loaded configuration", async () => {
+  const diagnostics = Object.defineProperty({}, "consoleLogLevel", { value: DiagLogLevel.NONE });
+  expect(Object.keys(diagnostics)).toEqual([]);
+  const src = createBundleUrl("return Promise.resolve({})");
+  const { inlineScript, initialization } = executeLoader({
+    src,
+    connectionString: "InstrumentationKey=test",
+    diagnostics,
+  });
+  try {
+    await initialization;
+    expect(loaderWindow.snippetOptions).toEqual({
+      azureMonitor: { connectionString: "InstrumentationKey=test" },
+      diagnostics: { consoleLogLevel: DiagLogLevel.NONE },
+      instrumentations: [],
+    });
+  } finally {
+    inlineScript.remove();
+    removeLoadedScript(src);
+    URL.revokeObjectURL(src);
+  }
 });
 
 it("preserves non-enumerable cookie disablement and rejects cookie hooks", () => {
@@ -417,6 +500,7 @@ it("passes configured options to the bundle", async () => {
     ).toEqual(configuredOptions.instrumentationOptions);
     expect(loaderWindow.snippetOptions).toEqual({
       samplingPercentage: 25,
+      diagnostics: configuredOptions.diagnostics,
       redactQueryParams: configuredOptions.redactQueryParams,
       azureMonitor: { connectionString: "InstrumentationKey=test", disableBeacon: true },
       session: configuredOptions.session,
@@ -530,6 +614,13 @@ it.each([
   ["samplingPercentage", "50", "a number from 0 through 100 when provided"],
   ["azureMonitor", null, "a JSON object when provided"],
   ["azureMonitor", { disableBeacon: "yes" }, undefined],
+  ["diagnostics", null, "a JSON object when provided"],
+  ["diagnostics", true, "a JSON object when provided"],
+  ["diagnostics", 70, "a JSON object when provided"],
+  ["diagnostics", "DEBUG", "a JSON object when provided"],
+  ["diagnostics", [], "a JSON object when provided"],
+  ["diagnostics", new Date(), "a JSON object when provided"],
+  ["diagnostics", { consoleLogLevel: () => 70 }, "a JSON object when provided"],
   ["session", true, "a JSON object when provided"],
   ["session", [], "a JSON object when provided"],
   ["userContext", "enabled", "a JSON object when provided"],

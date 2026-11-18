@@ -20,7 +20,15 @@ import { addPageCorrelation } from "../../../src/routing/pageContext.js";
 import { getRegisteredGlobal, getSharedRegistry } from "../../../src/shared/globalOwnership.js";
 import { startTelemetryInstance } from "../../../src/routing/telemetryInstance.js";
 import { USER_STORAGE_KEY } from "../../../src/user/constants.js";
-import { createInMemoryPipeline } from "../../fixtures/telemetry.js";
+import { logToEnvelope } from "../../../src/exporter/logUtils.js";
+import { spanToEnvelope } from "../../../src/exporter/spanUtils.js";
+import { TEST_INSTRUMENTATION_KEY } from "../../fixtures/azureMonitor.js";
+import {
+  createInMemoryPipeline,
+  createReadableLogRecord,
+  createReadableSpan,
+  createSpanContext,
+} from "../../fixtures/telemetry.js";
 
 const apiKey = Symbol.for("opentelemetry.js.api.1");
 const distroKey = Symbol.for("@microsoft/opentelemetry-browser");
@@ -82,11 +90,11 @@ it("does not initialize the shared registry for exporter-only operation-name rea
   expect(realm[distroKey]).toBeUndefined();
 });
 
-it("reuses a version 1 operation-name registry across package copies", () => {
+it("reuses a version 2 operation-name registry across package copies", () => {
   const legacyRecord = {};
   const currentRecord = {};
   const operationNames = new WeakMap<object, string>([[legacyRecord, "Legacy"]]);
-  realm[distroKey] = { version: 1, operationNames };
+  realm[distroKey] = { version: 2, operationNames };
 
   setManagedOperationName(currentRecord, "Current");
 
@@ -94,6 +102,40 @@ it("reuses a version 1 operation-name registry across package copies", () => {
   expect(getManagedOperationName(currentRecord)).toBe("Current");
   expect(operationNames.has(currentRecord)).toBe(true);
 });
+
+it.each([1, 2, 3])(
+  "reads stable exporter correlation without initializing or mutating a version %s registry",
+  (version) => {
+    const page = createSpanContext();
+    const explicitParent = { ...page, spanId: "0000000000000002" };
+    const span = createReadableSpan({ parentSpanContext: page });
+    const log = createReadableLogRecord({ spanContext: page });
+    const operationNames = new WeakMap<object, string>([
+      [span, "Products"],
+      [log, "Products"],
+    ]);
+    const registry = Object.freeze({
+      version,
+      pageContexts: new WeakSet([page]),
+      operationNames,
+    });
+    realm[distroKey] = registry;
+    const compatible = version === 1 || version === 2;
+    for (const envelope of [
+      spanToEnvelope(span, TEST_INSTRUMENTATION_KEY),
+      logToEnvelope(log, TEST_INSTRUMENTATION_KEY),
+    ]) {
+      expect(envelope.tags["ai.operation.name"]).toBe(compatible ? "Products" : undefined);
+      expect(envelope.tags["ai.operation.parentId"]).toBe(compatible ? undefined : page.spanId);
+    }
+    const explicit = createReadableSpan({ parentSpanContext: explicitParent });
+    expect(spanToEnvelope(explicit, TEST_INSTRUMENTATION_KEY).tags["ai.operation.parentId"]).toBe(
+      explicitParent.spanId,
+    );
+    expect(realm[distroKey]).toBe(registry);
+    expect(Object.keys(registry)).toEqual(["version", "pageContexts", "operationNames"]);
+  },
+);
 
 it.each(["trace", "logs", "context", "propagation"] as const)(
   "preserves a pre-existing %s registration while collecting into its own pipelines",
@@ -193,7 +235,7 @@ it.each(["1.8.0", "1.9.0", "1.9.2", "1.10.0"])(
 );
 
 it("rejects an incompatible distribution registry before accessing storage or caller resources", async () => {
-  const registry = { version: 2 };
+  const registry = { version: 3 };
   realm[distroKey] = registry;
   const access = vi.spyOn(Storage.prototype, "getItem");
   await expect(
@@ -205,6 +247,71 @@ it("rejects an incompatible distribution registry before accessing storage or ca
   expect(realm[distroKey]).toBe(registry);
   expect(access).not.toHaveBeenCalled();
 });
+
+it.each(["older-first", "newer-first"])(
+  "rejects mixed diagnostic lifetime protocols without disturbing the first copy: %s",
+  async (order) => {
+    // The pre-diagnostics copy accepts only version 1, before it registers any providers.
+    const initializeOlderCopy = () => {
+      const existing = realm[distroKey];
+      if (existing !== undefined) {
+        if (
+          typeof existing !== "object" ||
+          existing === null ||
+          !("version" in existing) ||
+          existing.version !== 1
+        ) {
+          throw Object.assign(new Error("Incompatible browser distribution registry"), {
+            code: "distribution-version-conflict",
+          });
+        }
+        return existing;
+      }
+      return (realm[distroKey] = { version: 1, diagInitialized: true });
+    };
+    const processor = {
+      onEmit: vi.fn(),
+      forceFlush: vi.fn(async () => {}),
+      shutdown: vi.fn(async () => {}),
+    };
+    const options = {
+      spanProcessors: [],
+      logRecordProcessors: [],
+      pageView: { enabled: false },
+      session: { enabled: false },
+      userContext: { enabled: false },
+      storage: { enabled: false },
+      cookieCfg: { enabled: false, disableCookieDefer: true },
+      diagnostics: {
+        consoleLogLevel: 0,
+        telemetryLogLevel: 30,
+        logRecordProcessors: [processor],
+      },
+    };
+    if (order === "older-first") {
+      const registry = initializeOlderCopy();
+      const setLogger = vi.spyOn(diag, "setLogger");
+      await expect(useMicrosoftOpenTelemetry(options)).rejects.toMatchObject({
+        code: "distribution-version-conflict",
+      });
+      expect(realm[distroKey]).toBe(registry);
+      expect(setLogger).not.toHaveBeenCalled();
+      expect(processor.shutdown).not.toHaveBeenCalled();
+      return;
+    }
+    const handle = await useMicrosoftOpenTelemetry(options);
+    cleanup.push(() => handle.shutdown());
+    const registry = getSharedRegistry();
+    expect(initializeOlderCopy).toThrow("Incompatible browser distribution registry");
+    expect(realm[distroKey]).toBe(registry);
+    diag.error("newer copy remains active");
+    await handle.forceFlush();
+    expect(processor.onEmit).toHaveBeenCalledOnce();
+    expect(processor.shutdown).not.toHaveBeenCalled();
+    await handle.shutdown();
+    expect(processor.shutdown).toHaveBeenCalledOnce();
+  },
+);
 
 it.each(["trace", "logs"] as const)(
   "emits %s with an older page-correlation owner that has no operation name method",

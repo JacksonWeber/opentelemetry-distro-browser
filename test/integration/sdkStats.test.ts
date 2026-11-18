@@ -130,7 +130,7 @@ it.each(
     const key = Symbol.for("@microsoft/opentelemetry-browser");
     const realm = globalThis as typeof globalThis & { [key: symbol]: unknown };
     const previous = Object.getOwnPropertyDescriptor(realm, key);
-    const incompatible = { version: 2 };
+    const incompatible = { version: 3 };
     realm[key] = incompatible;
     const transport = vi.fn<typeof fetch>(async () => new Response(null));
     vi.stubGlobal("fetch", transport);

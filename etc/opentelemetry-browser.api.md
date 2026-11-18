@@ -6,6 +6,7 @@
 
 import { ContextManager } from '@opentelemetry/api';
 import { DetectedResource } from '@opentelemetry/resources';
+import { DiagLogLevel } from '@opentelemetry/api';
 import { ExportResult } from '@opentelemetry/core';
 import { LoggerProvider } from '@opentelemetry/api-logs';
 import { LogRecord } from '@opentelemetry/api-logs';
@@ -156,6 +157,13 @@ export interface MicrosoftOpenTelemetryBrowserCookieManager {
 }
 
 // @public
+export interface MicrosoftOpenTelemetryBrowserDiagnosticsOptions {
+    consoleLogLevel?: DiagLogLevel;
+    logRecordProcessors?: readonly LogRecordProcessor[];
+    telemetryLogLevel?: DiagLogLevel;
+}
+
+// @public
 export interface MicrosoftOpenTelemetryBrowserExceptionOptions {
     expLog?: () => {
         logs: readonly string[];
@@ -177,6 +185,7 @@ export interface MicrosoftOpenTelemetryBrowserInstrumentations {
 export interface MicrosoftOpenTelemetryBrowserOptions {
     azureMonitor?: AzureMonitorOptions<string | Promise<string>>;
     cookieCfg?: MicrosoftOpenTelemetryBrowserCookieConfig;
+    diagnostics?: MicrosoftOpenTelemetryBrowserDiagnosticsOptions;
     expCfg?: MicrosoftOpenTelemetryBrowserExceptionOptions;
     extensionConfig?: {
         AppInsightsCfgSyncPlugin?: MicrosoftOpenTelemetryBrowserConfigurationSyncOptions;

@@ -90,6 +90,10 @@ it("prepends session enrichment without changing the caller's processor arrays",
   const handle = await useMicrosoftOpenTelemetry(Object.freeze(options));
   handles.add(handle);
   expect(startTelemetryInstance).toHaveBeenCalledExactlyOnceWith({
+    diagnostics: expect.objectContaining({
+      forceFlush: expect.any(Function),
+      shutdown: expect.any(Function),
+    }),
     redactedQueryParams: DEFAULT_QUERY_STRINGS_TO_REDACT,
     resourceAttributes: {
       "telemetry.distro.name": "@microsoft/opentelemetry-browser",
@@ -1071,6 +1075,10 @@ it.each(["both", "context manager", "propagators", "no propagators"] as const)(
     handles.add(handle);
 
     expect(startTelemetryInstance).toHaveBeenCalledExactlyOnceWith({
+      diagnostics: expect.objectContaining({
+        forceFlush: expect.any(Function),
+        shutdown: expect.any(Function),
+      }),
       redactedQueryParams: DEFAULT_QUERY_STRINGS_TO_REDACT,
       resourceAttributes: {
         "telemetry.distro.name": "@microsoft/opentelemetry-browser",
