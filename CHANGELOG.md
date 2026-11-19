@@ -6,6 +6,8 @@ All notable changes to this package are documented in this file.
 
 ### Fixed
 
+- Capture startup errors and unhandled rejections when the CDN loader's `errors` instrumentation
+  is enabled. Previously only errors raised after initialization were reported.
 - Reject mixed pre-diagnostics and current distribution registry protocols in either initialization
   order, preventing an older instance from bypassing shared diagnostic lifetime tracking.
 - Preserve attributes added by later log processors when Azure Monitor sampling adds metadata.

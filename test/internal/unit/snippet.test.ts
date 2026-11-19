@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { DiagLogLevel } from "@opentelemetry/api";
 import {
   getSdkLoaderScript,
@@ -185,16 +185,26 @@ it("rejects when the bundle cannot construct its instrumentations", async () => 
   }
 });
 
-it("rejects when the integrity hash does not match", async () => {
+it("removes early listeners when the integrity hash does not match", async () => {
+  const added = vi.spyOn(window, "addEventListener");
+  const removed = vi.spyOn(window, "removeEventListener");
   const { inlineScript, initialization } = executeLoader({
     src: fixtureUrl,
     connectionString: "InstrumentationKey=test",
     integrity: `sha384-${"A".repeat(64)}`,
+    instrumentationOptions: { errors: { enabled: true } },
   });
 
   try {
     await expect(initialization).rejects.toThrow("OpenTelemetry browser bundle failed to load");
+    for (const name of ["error", "unhandledrejection"]) {
+      const handler = added.mock.calls.find(([type]) => type === name)?.[1];
+      expect(handler).toBeTypeOf("function");
+      expect(removed).toHaveBeenCalledWith(name, handler);
+    }
   } finally {
+    added.mockRestore();
+    removed.mockRestore();
     inlineScript.remove();
     removeLoadedScript(fixtureUrl);
   }
@@ -337,6 +347,28 @@ it("leaves optional settings out of the default loader", () => {
     /\(window,document,\{"src":"https:\/\/example\.test\/sdk\.js","crossOrigin":"anonymous","cfg":\{"azureMonitor":\{"connectionString":"connection"\}\}\}\);$/,
   );
 });
+
+it.each([undefined, { enabled: false }, Object.defineProperty({}, "enabled", { value: true })])(
+  "installs no early listeners without a serialized errors opt-in %#",
+  async (errors) => {
+    const added = vi.spyOn(window, "addEventListener");
+    const { inlineScript, initialization } = executeLoader({
+      src: fixtureUrl,
+      connectionString: "InstrumentationKey=test",
+      instrumentationOptions: { errors },
+    });
+    try {
+      await initialization;
+      const eventTypes = added.mock.calls.map(([type]) => type);
+      expect(eventTypes).not.toContain("error");
+      expect(eventTypes).not.toContain("unhandledrejection");
+    } finally {
+      added.mockRestore();
+      inlineScript.remove();
+      removeLoadedScript(fixtureUrl);
+    }
+  },
+);
 
 it.each([
   DiagLogLevel.NONE,

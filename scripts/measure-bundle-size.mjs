@@ -35,9 +35,9 @@ export const entryPointBudgets = {
   // The generator validates its options and assembles optional loader steps. It runs where the
   // page is rendered; the snippet it emits only contains the steps a page enables.
   "./snippet": {
-    rawBytes: 7 * 1024,
-    gzipBytes: 3 * 1024,
-    brotliBytes: 2.75 * 1024,
+    rawBytes: 7.75 * 1024,
+    gzipBytes: 3.25 * 1024,
+    brotliBytes: 2.875 * 1024,
   },
 };
 

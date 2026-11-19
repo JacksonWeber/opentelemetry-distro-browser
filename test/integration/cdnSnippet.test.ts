@@ -21,6 +21,7 @@ const openSnippetPage = async (
 interface CapturedEnvelope {
   name?: string;
   tags?: Record<string, string>;
+  data?: { baseData?: { exceptions?: { typeName: string; message: string }[] } };
 }
 
 async function waitForEnvelopes(
@@ -79,6 +80,9 @@ it("loads the CDN bundle into a plain HTML page under CSP and sends page view, s
       httpDependency("snippet-xhr"),
     ]),
   );
+  expect(envelopes).not.toContainEqual(
+    expect.objectContaining({ name: "Microsoft.ApplicationInsights.Exception" }),
+  );
 });
 
 it("applies snippet configuration: opt-in instrumentations and resource attributes", async () => {
@@ -91,17 +95,21 @@ it("applies snippet configuration: opt-in instrumentations and resource attribut
       captured.some(({ name }) => name === "Microsoft.ApplicationInsights.Exception") &&
       captured.some(({ name }) => name === "Microsoft.ApplicationInsights.PageView"),
   )) as CapturedEnvelope[];
-  expect(envelopes).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({
-        name: "Microsoft.ApplicationInsights.Exception",
-        data: expect.objectContaining({
-          baseData: expect.objectContaining({
-            exceptions: [expect.objectContaining({ message: "cdn snippet failure" })],
-          }),
-        }),
-      }),
-    ]),
+  const exceptions = envelopes.filter(
+    ({ name }) => name === "Microsoft.ApplicationInsights.Exception",
+  );
+  const details = exceptions.map(({ data }) => data?.baseData?.exceptions?.[0]);
+  // The first 20 startup events and the live error appear once. The last startup event is dropped.
+  expect(details.map((item) => item?.message).sort()).toEqual(
+    [
+      "startup failure",
+      "startup rejection",
+      ...Array.from({ length: 18 }, (_, i) => `startup message ${i}`),
+      "cdn snippet failure",
+    ].sort(),
+  );
+  expect(details).toContainEqual(
+    expect.objectContaining({ typeName: "TypeError", message: "startup failure" }),
   );
   expect(envelopes.length).toBeGreaterThan(0);
   for (const envelope of envelopes) {
