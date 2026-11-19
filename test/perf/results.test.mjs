@@ -444,7 +444,7 @@ test("only exact upstream merged revisions qualify, including reviewed fork, squ
       const event = mergeEvent();
       event.pull_request.head.repo.full_name = headRepository;
       event.pull_request.merge_commit_sha = sha.repeat(40);
-      assert.equal(mergedRevision(event, repository, "pull_request_target"), sha.repeat(40));
+      assert.equal(mergedRevision(event, repository, "pull_request"), sha.repeat(40));
     }
   }
   for (const change of [
@@ -459,24 +459,24 @@ test("only exact upstream merged revisions qualify, including reviewed fork, squ
   ]) {
     const event = mergeEvent();
     change(event);
-    assert.throws(() => mergedRevision(event, repository, "pull_request_target"));
+    assert.throws(() => mergedRevision(event, repository, "pull_request"));
   }
-  for (const name of ["push", "workflow_dispatch", "pull_request", "workflow_run"]) {
+  for (const name of ["push", "workflow_dispatch", "pull_request_target", "workflow_run"]) {
     assert.throws(() => mergedRevision(mergeEvent(), repository, name));
   }
-  assert.throws(() => mergedRevision(mergeEvent(), "contributor/fork", "pull_request_target"));
+  assert.throws(() => mergedRevision(mergeEvent(), "contributor/fork", "pull_request"));
 });
 
-test("workflow binds exact merged commit and explicit variable, without extra uploads or broad triggers", async () => {
+test("workflow binds exact merged commit and fork-accessible endpoint, without extra uploads or broad triggers", async () => {
   const workflow = await readFile(
     new URL("../../.github/workflows/performance.yml", import.meta.url),
     "utf8",
   );
-  assert.match(workflow, /on:\s+pull_request_target:/);
+  assert.match(workflow, /on:\s+pull_request:/);
   assert.match(workflow, /types: \[closed\]/);
   assert.match(workflow, /branches: \[main\]/);
   assert.match(workflow, /github\.repository == 'microsoft\/opentelemetry-distro-browser'/);
-  assert.match(workflow, /github\.event_name == 'pull_request_target'/);
+  assert.match(workflow, /github\.event_name == 'pull_request'/);
   assert.match(workflow, /github\.event\.action == 'closed'/);
   assert.match(workflow, /github\.event\.pull_request\.merged == true/);
   assert.match(workflow, /github\.event\.pull_request\.base\.ref == 'main'/);
@@ -486,17 +486,24 @@ test("workflow binds exact merged commit and explicit variable, without extra up
   );
   assert.match(workflow, /github\.event\.pull_request\.merge_commit_sha != ''/);
   assert.match(workflow, /ref: \$\{\{ github\.event\.pull_request\.merge_commit_sha \}\}/);
-  assert.match(
-    workflow,
-    /allow-unsafe-pr-checkout: \$\{\{ github\.event\.pull_request\.merged == true \}\}/,
-  );
   assert.match(workflow, /persist-credentials: false/);
   assert.match(workflow, /permissions:\s+contents: read\s+jobs:/);
-  assert.match(workflow, /vars.SDK_PERF_COLLECTOR_ENDPOINT/);
+  const publish = workflow.slice(
+    workflow.indexOf("      - name: Publish measured performance results"),
+  );
+  const endpoint = publish.match(/^ {10}SDK_PERF_COLLECTOR_ENDPOINT: (https:\/\/\S+)$/m);
+  assert.ok(
+    endpoint,
+    "Publishing must use a literal non-secret endpoint available to fork PR runs",
+  );
+  const url = new URL(endpoint[1]);
+  assert.equal(url.pathname, "/otlp/v1/logs");
+  assert.equal(url.username + url.password + url.search + url.hash, "");
+  assert.match(publish, /--endpoint "\$SDK_PERF_COLLECTOR_ENDPOINT"/);
   assert.match(workflow, /run: npm run perf -- --cdn\n/);
   assert.doesNotMatch(
     workflow,
-    /pull_request:|workflow_dispatch|upload-artifact|secrets\.|push:|pull_request\.head|refs\/pull\//,
+    /pull_request_target|allow-unsafe-pr-checkout|workflow_dispatch|upload-artifact|secrets\.|vars\.|push:|pull_request\.head|refs\/pull\//,
   );
   assert.equal([...workflow.matchAll(/uses: .*@[0-9a-f]{40}/g)].length, 2);
 });
@@ -722,7 +729,7 @@ test("CLI never exports by default and rejects unmerged CI before touching netwo
               env: {
                 ...process.env,
                 GITHUB_ACTIONS: "true",
-                GITHUB_EVENT_NAME: "pull_request_target",
+                GITHUB_EVENT_NAME: "pull_request",
                 GITHUB_REPOSITORY: "microsoft/opentelemetry-distro-browser",
                 GITHUB_EVENT_PATH: eventFile,
               },
@@ -765,7 +772,7 @@ test("CLI preserves exact request bytes and receipt, and prevents a second submi
   }
 });
 
-test("CLI publishes a merged fork target event only for clean results at the exact merged SHA", async () => {
+test("CLI publishes a merged fork PR event only for clean results at the exact merged SHA", async () => {
   const directory = await mkdtemp(join(tmpdir(), "browser-perf-merged-"));
   try {
     const eventFile = join(directory, "event.json");
@@ -774,7 +781,7 @@ test("CLI publishes a merged fork target event only for clean results at the exa
     const env = {
       ...process.env,
       GITHUB_ACTIONS: "true",
-      GITHUB_EVENT_NAME: "pull_request_target",
+      GITHUB_EVENT_NAME: "pull_request",
       GITHUB_REPOSITORY: "microsoft/opentelemetry-distro-browser",
       GITHUB_EVENT_PATH: eventFile,
     };

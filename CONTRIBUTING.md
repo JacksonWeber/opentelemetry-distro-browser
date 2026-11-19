@@ -67,22 +67,25 @@ PR validation runs `npm run perf` after building the bundles in the Node.js 22 a
 jobs. These measurements and `npm run test:perf` are offline and do not require collector
 configuration or publish telemetry.
 
-The `Merged PR performance` workflow uses `pull_request_target: closed` so merged fork
-contributions can access the upstream repository's Actions variables. The job runs only for
-confirmed merges into `main` in `microsoft/opentelemetry-distro-browser`. It checks out the exact
-`merge_commit_sha`, including the final squash or rebase commit, never the unmerged PR head.
+The `Merged PR performance` workflow uses `pull_request: closed`, which does not require
+privileged execution or access to secrets, including for merged fork contributions. The job
+runs only for confirmed merges into `main` in `microsoft/opentelemetry-distro-browser`. It checks
+out the exact `merge_commit_sha`, including the final squash or rebase commit, never the
+unmerged PR head.
 
-The workflow uses read-only repository permissions and does not persist checkout credentials.
-Checkout v7 also guards already-merged fork SHAs, so its `allow-unsafe-pr-checkout` opt-in is
-restricted to this merged-only job. The exporter independently requires the same
-`pull_request_target` merge event and rejects dirty results or a source SHA that differs from
+The workflow uses read-only repository permissions, does not persist checkout credentials,
+and does not opt out of checkout safety checks. The exporter independently requires the same
+`pull_request` merge event and rejects dirty results or a source SHA that differs from
 the exact merged revision.
 
-A repository administrator must set `SDK_PERF_COLLECTOR_ENDPOINT` under **Settings > Secrets
-and variables > Actions > Variables** to the approved HTTPS collector URL ending in
-`/otlp/v1/logs`. This must be an Actions variable, not a secret. Missing configuration,
-measurement failures, and export failures fail the post-merge job explicitly. The workflow
-does not publish from unmerged PRs, fork repositories, direct pushes, or manual dispatches.
+The approved, non-secret HTTPS collector URL ending in `/otlp/v1/logs` is committed as
+`SDK_PERF_COLLECTOR_ENDPOINT` in the publishing step of `.github/workflows/performance.yml`.
+Update that workflow through review when changing the collector. Do not use repository or
+organization Actions variables for this endpoint: they are unavailable to fork-origin
+`pull_request` runs, even after merge. No administrator configuration or secrets are required.
+Invalid endpoints, measurement failures, and export failures fail the post-merge job explicitly.
+The workflow does not publish from unmerged PRs, fork repositories, direct pushes, or manual
+dispatches.
 
 The measurement step writes a GitHub job summary with the run UUID, measured commit, SDK
 version, and bundle sizes before publishing. Use the UUID in the **MOT for Browser** page's

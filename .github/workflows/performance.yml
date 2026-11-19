@@ -1,7 +1,7 @@
 name: Merged PR performance
 
 on:
-  pull_request_target:
+  pull_request:
     types: [closed]
     branches: [main]
 
@@ -12,7 +12,7 @@ jobs:
   performance:
     if: >-
       github.repository == 'microsoft/opentelemetry-distro-browser' &&
-      github.event_name == 'pull_request_target' &&
+      github.event_name == 'pull_request' &&
       github.event.action == 'closed' &&
       github.event.pull_request.merged == true &&
       github.event.pull_request.base.ref == 'main' &&
@@ -25,8 +25,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.merge_commit_sha }}
-          # Checkout v7 also guards already-merged fork SHAs; this job only runs after merge.
-          allow-unsafe-pr-checkout: ${{ github.event.pull_request.merged == true }}
           persist-credentials: false
 
       - name: Set up Node.js
@@ -35,15 +33,6 @@ jobs:
           node-version: ">=24.22.1 <25"
           check-latest: true
           cache: npm
-
-      - name: Check collector configuration
-        env:
-          SDK_PERF_COLLECTOR_ENDPOINT: ${{ vars.SDK_PERF_COLLECTOR_ENDPOINT }}
-        run: |
-          if [ -z "$SDK_PERF_COLLECTOR_ENDPOINT" ]; then
-            echo "::error::Configure the SDK_PERF_COLLECTOR_ENDPOINT Actions variable before publishing performance results."
-            exit 1
-          fi
 
       - name: Install dependencies
         run: npm ci
@@ -63,6 +52,7 @@ jobs:
 
       - name: Publish measured performance results
         env:
-          SDK_PERF_COLLECTOR_ENDPOINT: ${{ vars.SDK_PERF_COLLECTOR_ENDPOINT }}
+          # Fork-origin PR runs cannot read upstream Actions variables.
+          SDK_PERF_COLLECTOR_ENDPOINT: https://perftest-collector-tst.jollyfield-f95f40a3.westus2.azurecontainerapps.io/otlp/v1/logs
           BENCHMARK_RUN_ID: ${{ steps.measure.outputs.run-id }}
         run: npm run perf:export -- --input "artifacts/performance/$BENCHMARK_RUN_ID" --endpoint "$SDK_PERF_COLLECTOR_ENDPOINT"
