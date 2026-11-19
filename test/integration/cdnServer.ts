@@ -308,10 +308,23 @@ async function writeSnippetPage(
   const snippet = `window.onerror = () => { window.applicationErrors++; return true; };
 window.applicationErrors = 0;
 ${loader}
-window.dispatchEvent(new ErrorEvent("error", { error: new TypeError("startup failure") }));
-window.dispatchEvent(new PromiseRejectionEvent("unhandledrejection", {
-  promise: Promise.resolve(), reason: new Error("startup rejection")
-}));
+const originalNow = Date.now;
+const failure = new TypeError("startup failure");
+try {
+  Date.now = () => Date.UTC(2026, 0, 1, 0, 0, 1);
+  failure.stack = "first startup stack";
+  window.dispatchEvent(new ErrorEvent("error", { error: failure }));
+  Date.now = () => Date.UTC(2026, 0, 1, 0, 0, 21);
+  failure.name = "RangeError";
+  failure.message = "startup rejection";
+  failure.stack = "second startup stack";
+  window.dispatchEvent(new PromiseRejectionEvent("unhandledrejection", {
+    promise: Promise.resolve(), reason: failure
+  }));
+  failure.message = "changed after dispatch";
+} finally {
+  Date.now = originalNow;
+}
 for (let i = 0; i < 19; i++)
   window.dispatchEvent(new ErrorEvent("error", { message: "startup message " + i }));`;
   // Reported only when the snippet enabled the opt-in errors instrumentation.

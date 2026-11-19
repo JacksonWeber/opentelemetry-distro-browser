@@ -477,26 +477,24 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
     loadDelay === undefined
       ? "l(c.src)"
       : "setTimeout(function(){try{l(c.src)}catch(e){reject(e)}},c.loadDelay)";
-  // The registry already uses upstream's _onErrorHandler to identify the live listener.
-  // It is reserved across minified bundles. Replay directly into this instance, never on window.
   // Use the settings the bundle actually receives (JSON omits non-enumerable properties).
   const early =
     instrumentationOptions !== undefined &&
     (JSON.parse(serialized) as SdkLoaderConfig).instrumentationOptions?.errors?.enabled === true;
   const buffer = early
-    ? 'var q=[],errors,k="_onErrorHandler";function capture(e){' +
-      "if(q.length>=20||errors?.[k])return;" +
-      'var v="reason" in e?e.reason:e.error??(e.message||null);if(v!=null)q.push({error:v})}'
+    ? 'var q=[],emit;function text(v,k){try{var s=v[k];if(typeof s==="string")return s}catch{}}' +
+      'function capture(e){if(q.length>=20)return;var v="reason" in e?e.reason:e.error??(e.message||null);' +
+      'if(v!=null&&q.length<20){var a=[Date.now()];q.push(a);a.push(text(v,"name"),typeof v==="string"?v:text(v,"message"),text(v,"stack"))}}' +
+      'function stop(){w.removeEventListener("error",capture);w.removeEventListener("unhandledrejection",capture)}'
     : "";
   const listen = early
     ? 'w.addEventListener("error",capture);w.addEventListener("unhandledrejection",capture);'
     : "";
-  const bind = early
-    ? 'errors=i.find(x=>x.instrumentationName==="@opentelemetry/browser-instrumentation/errors");'
-    : "";
+  const handoff = early ? ",send=>{stop();emit=send}" : "";
   const finish = early
-    ? ".then(h=>{if(errors?.[k])q.forEach(errors[k]);return h}).finally(()=>{" +
-      'w.removeEventListener("error",capture);w.removeEventListener("unhandledrejection",capture);q.length=0;errors=null})'
+    ? '.then(h=>{if(q.length){if(!emit)w.console.warn("OpenTelemetry bundle does not support startup error replay");' +
+      'else for(var item of q)try{emit(item)}catch{w.console.warn("OpenTelemetry startup error replay failed")}}return h})' +
+      ".finally(()=>{stop();q.length=0;emit=null})"
     : "";
-  return `!(function(w,d,c){${buffer}w.microsoftOpenTelemetry=new Promise(function(resolve,reject){function l(u){var s=d.createElement("script");s.src=u;s.crossOrigin=c.crossOrigin;if(c.integrity)s.integrity=c.integrity;s.onload=function(){var sdk=w.Microsoft&&w.Microsoft.OpenTelemetry;if(!sdk||typeof sdk.useMicrosoftOpenTelemetry!=="function"){reject(new Error("OpenTelemetry browser bundle did not expose Microsoft.OpenTelemetry"));return}Promise.resolve().then(function(){return typeof sdk.getInstrumentations==="function"?sdk.getInstrumentations(c.instrumentationOptions):[]}).then(function(i){var o=c.cfg;o.instrumentations=i;${bind}if(c.resourceAttributes)o.resource=sdk.resourceFromAttributes(c.resourceAttributes);return sdk.useMicrosoftOpenTelemetry(o)}).then(resolve,reject)};s.onerror=function(){${fallback}${reportFailure}reject(new Error("${loadFailure}"+u))};d.head.appendChild(s)}${listen}${start}})${finish}})(window,document,${serialized});`;
+  return `!(function(w,d,c){${buffer}w.microsoftOpenTelemetry=new Promise(function(resolve,reject){function l(u){var s=d.createElement("script");s.src=u;s.crossOrigin=c.crossOrigin;if(c.integrity)s.integrity=c.integrity;s.onload=function(){var sdk=w.Microsoft&&w.Microsoft.OpenTelemetry;if(!sdk||typeof sdk.useMicrosoftOpenTelemetry!=="function"){reject(new Error("OpenTelemetry browser bundle did not expose Microsoft.OpenTelemetry"));return}Promise.resolve().then(function(){return typeof sdk.getInstrumentations==="function"?sdk.getInstrumentations(c.instrumentationOptions${handoff}):[]}).then(function(i){var o=c.cfg;o.instrumentations=i;if(c.resourceAttributes)o.resource=sdk.resourceFromAttributes(c.resourceAttributes);return sdk.useMicrosoftOpenTelemetry(o)}).then(resolve,reject)};s.onerror=function(){${fallback}${reportFailure}reject(new Error("${loadFailure}"+u))};d.head.appendChild(s)}${listen}${start}})${finish}})(window,document,${serialized});`;
 }

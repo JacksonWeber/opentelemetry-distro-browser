@@ -210,6 +210,30 @@ it("removes early listeners when the integrity hash does not match", async () =>
   }
 });
 
+it("warns about dropped early errors without breaking an older bundle's lifecycle", async () => {
+  const added = vi.spyOn(window, "addEventListener");
+  const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const { inlineScript, initialization } = executeLoader({
+    src: fixtureUrl,
+    connectionString: "InstrumentationKey=test",
+    instrumentationOptions: { errors: { enabled: true } },
+  });
+  try {
+    const capture = added.mock.calls.find(([type]) => type === "error")?.[1];
+    if (typeof capture !== "function") throw new Error("Missing early error listener");
+    capture.call(window, new ErrorEvent("error", { message: "private application detail" }));
+    await expect(initialization).resolves.toMatchObject({ forceFlush: expect.any(Function) });
+    expect(warning).toHaveBeenCalledWith(
+      "OpenTelemetry bundle does not support startup error replay",
+    );
+  } finally {
+    warning.mockRestore();
+    added.mockRestore();
+    inlineScript.remove();
+    removeLoadedScript(fixtureUrl);
+  }
+});
+
 it("rejects network failures", async () => {
   const src = new URL(`/missing-snippet-${crypto.randomUUID()}.js`, location.origin).href;
   const { inlineScript, initialization } = executeLoader({

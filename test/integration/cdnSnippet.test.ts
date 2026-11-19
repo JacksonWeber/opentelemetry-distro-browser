@@ -20,8 +20,9 @@ const openSnippetPage = async (
 
 interface CapturedEnvelope {
   name?: string;
+  time?: string;
   tags?: Record<string, string>;
-  data?: { baseData?: { exceptions?: { typeName: string; message: string }[] } };
+  data?: { baseData?: { exceptions?: { typeName: string; message: string; stack?: string }[] } };
 }
 
 async function waitForEnvelopes(
@@ -108,9 +109,16 @@ it("applies snippet configuration: opt-in instrumentations and resource attribut
       "cdn snippet failure",
     ].sort(),
   );
-  expect(details).toContainEqual(
-    expect.objectContaining({ typeName: "TypeError", message: "startup failure" }),
-  );
+  for (const [message, typeName, stack, time] of [
+    ["startup failure", "TypeError", "first startup stack", "2026-01-01T00:00:01.000Z"],
+    ["startup rejection", "RangeError", "second startup stack", "2026-01-01T00:00:21.000Z"],
+  ]) {
+    const event = exceptions.find(
+      ({ data }) => data?.baseData?.exceptions?.[0]?.message === message,
+    );
+    expect(event?.time).toBe(time);
+    expect(event?.data?.baseData?.exceptions?.[0]).toMatchObject({ typeName, stack });
+  }
   expect(envelopes.length).toBeGreaterThan(0);
   for (const envelope of envelopes) {
     expect(envelope.tags?.["ai.cloud.role"], envelope.name).toBe("cdn-snippet-service");
