@@ -59,12 +59,15 @@ Use the snippet when the customer wants Azure Monitor telemetry with page views 
 and XHR dependency collection and does not need custom initialization options.
 
 Add exactly one loader snippet per page. Import the ESM-only snippet helper from the package version
-used by the application:
+used by the application. This example assumes `@microsoft/opentelemetry-browser@0.1.0-beta.2` is
+installed. For another installed version, use that release's published bundle URL and matching
+integrity manifest instead of the beta.2 URL:
 
 ```javascript
 import { getSdkLoaderScript } from "@microsoft/opentelemetry-browser/snippet";
 
 const loader = getSdkLoaderScript({
+  src: "https://js.monitor.azure.com/next/otel/opentelemetry-browser.0.1.0-beta.2.min.js",
   connectionString: "InstrumentationKey=...;IngestionEndpoint=...",
 });
 
@@ -72,14 +75,19 @@ console.log(`<script>${loader}</script>`);
 ```
 
 Place the generated `<script>` as the first script in the page `<head>`, before application code
-that makes requests or emits telemetry. With no `src`, the helper selects the immutable CDN IIFE
-bundle matching the installed package version. Stable versions use the `b` CDN channel;
-prereleases use their identifier, such as `alpha`, `beta`, or `rc`.
+that makes requests or emits telemetry. The published `0.1.0-beta.2` helper still defaults to the
+obsolete `/scripts/otel/beta/` path, so set `src` explicitly as above when using that package.
+The corrected default requires a release containing the CDN-path fix. In that release, with no `src`,
+the helper selects the immutable CDN IIFE bundle matching the installed package version from
+`https://js.monitor.azure.com/next/otel/`.
+The full version, including any prerelease suffix, stays in the filename; do not add a release-channel
+subdirectory. The public destination is `https://js.monitor.azure.com/scripts/otel/`.
 
 For an application without npm, use the generated copy/paste block under **Snippet setup** in this
 [package README](https://github.com/microsoft/opentelemetry-distro-browser#snippet-setup). Replace
-`CHANNEL`, `VERSION`, `YOUR_CONNECTION_STRING`, and `YOUR_INTEGRITY` with values from one package
-release. Keep the bundle version and integrity manifest version identical.
+`YOUR_CONNECTION_STRING` and `YOUR_INTEGRITY`; the example uses the published `0.1.0-beta.2`
+preview bundle. Keep the bundle version and integrity manifest version identical when selecting
+another release. Do not substitute a major-only URL until its alias has been activated and verified.
 
 Basic `getSdkLoaderScript()` fields:
 
@@ -95,10 +103,14 @@ artifact does not set this global when an AMD loader is present, so the snippet 
 environment.
 
 For Subresource Integrity, read the `@min.js` entry from the release's
-`opentelemetry-browser.<version>.integrity.json` file and pass its `integrity` value:
+`opentelemetry-browser.<version>.integrity.json` file and pass its `integrity` value. This example
+also assumes the installed package is beta.2 and uses its published bundle URL; replace `sha384-...`
+with that bundle's integrity value. For another installed version, use its published bundle URL
+and matching manifest together:
 
 ```javascript
 const loader = getSdkLoaderScript({
+  src: "https://js.monitor.azure.com/next/otel/opentelemetry-browser.0.1.0-beta.2.min.js",
   connectionString: "InstrumentationKey=...;IngestionEndpoint=...",
   integrity: "sha384-...",
 });

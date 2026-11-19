@@ -152,18 +152,20 @@ await telemetry.shutdown();
 ### Snippet setup
 
 If the application does not use npm or a bundler, paste this snippet as the first script in each
-page's `<head>`, replacing `CHANNEL`, `VERSION`, `YOUR_CONNECTION_STRING`, and `YOUR_INTEGRITY`:
+page's `<head>`, replacing `YOUR_CONNECTION_STRING` and `YOUR_INTEGRITY`:
 
 <!-- prettier-ignore -->
 ```html
 <script>
-!(function(w,d,c){w.microsoftOpenTelemetry=new Promise(function(resolve,reject){function l(u){var s=d.createElement("script");s.src=u;s.crossOrigin=c.crossOrigin;if(c.integrity)s.integrity=c.integrity;s.onload=function(){var sdk=w.Microsoft&&w.Microsoft.OpenTelemetry;if(!sdk||typeof sdk.useMicrosoftOpenTelemetry!=="function"){reject(new Error("OpenTelemetry browser bundle did not expose Microsoft.OpenTelemetry"));return}Promise.resolve().then(function(){return typeof sdk.getInstrumentations==="function"?sdk.getInstrumentations(c.instrumentationOptions):[]}).then(function(i){var o=c.cfg;o.instrumentations=i;if(c.resourceAttributes)o.resource=sdk.resourceFromAttributes(c.resourceAttributes);return sdk.useMicrosoftOpenTelemetry(o)}).then(resolve,reject)};s.onerror=function(){reject(new Error("OpenTelemetry browser bundle failed to load: "+u))};d.head.appendChild(s)}l(c.src)})})(window,document,{"src":"https://js.monitor.azure.com/scripts/otel/CHANNEL/opentelemetry-browser.VERSION.min.js","crossOrigin":"anonymous","integrity":"YOUR_INTEGRITY","cfg":{"azureMonitor":{"connectionString":"YOUR_CONNECTION_STRING"}}});
+!(function(w,d,c){w.microsoftOpenTelemetry=new Promise(function(resolve,reject){function l(u){var s=d.createElement("script");s.src=u;s.crossOrigin=c.crossOrigin;if(c.integrity)s.integrity=c.integrity;s.onload=function(){var sdk=w.Microsoft&&w.Microsoft.OpenTelemetry;if(!sdk||typeof sdk.useMicrosoftOpenTelemetry!=="function"){reject(new Error("OpenTelemetry browser bundle did not expose Microsoft.OpenTelemetry"));return}Promise.resolve().then(function(){return typeof sdk.getInstrumentations==="function"?sdk.getInstrumentations(c.instrumentationOptions):[]}).then(function(i){var o=c.cfg;o.instrumentations=i;if(c.resourceAttributes)o.resource=sdk.resourceFromAttributes(c.resourceAttributes);return sdk.useMicrosoftOpenTelemetry(o)}).then(resolve,reject)};s.onerror=function(){reject(new Error("OpenTelemetry browser bundle failed to load: "+u))};d.head.appendChild(s)}l(c.src)})})(window,document,{"src":"https://js.monitor.azure.com/next/otel/opentelemetry-browser.0.1.0-beta.2.min.js","crossOrigin":"anonymous","integrity":"YOUR_INTEGRITY","cfg":{"azureMonitor":{"connectionString":"YOUR_CONNECTION_STRING"}}});
 </script>
 ```
 
-For example, `0.1.0-beta.2` uses channel `beta`, and its `YOUR_INTEGRITY` is the
+This example uses the published `0.1.0-beta.2` bundle. Its `YOUR_INTEGRITY` is the
 `ext["@min.js"].integrity` value in
-[`opentelemetry-browser.0.1.0-beta.2.integrity.json`](https://js.monitor.azure.com/scripts/otel/beta/opentelemetry-browser.0.1.0-beta.2.integrity.json).
+[`opentelemetry-browser.0.1.0-beta.2.integrity.json`](https://js.monitor.azure.com/next/otel/opentelemetry-browser.0.1.0-beta.2.integrity.json).
+To use another release, change the full version in the bundle URL and use that release's integrity
+value. CDN paths have no `alpha`, `beta`, `rc` or `b` subdirectory; prerelease suffixes stay in filenames.
 The snippet enables Azure Monitor export, page views, and `fetch` and XHR dependency collection.
 To change that, add JSON settings to the configuration object at the end of the snippet. Settings in
 `cfg` use the same names as the npm options and are passed to `useMicrosoftOpenTelemetry` as is;

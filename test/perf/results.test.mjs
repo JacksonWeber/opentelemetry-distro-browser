@@ -116,13 +116,13 @@ function fixture() {
 
 const attrs = (list) => Object.fromEntries(list.map(({ key, value }) => [key, value]));
 
-function fixtureWithCdn(status = "ok") {
+function fixtureWithCdn(status = "ok", targets) {
   const run = fixture();
   run.package.version = "0.1.0-beta.1";
   run.bundleSizeReport.package.version = run.package.version;
   run.cdn = {
     version: run.package.version,
-    observations: getCdnRequests(run.package.version).map((target) => ({
+    observations: (targets ?? getCdnRequests(run.package.version)).map((target) => ({
       ...target,
       fetchedAt: "2026-10-16T00:00:00.123Z",
       stage: target.encoding === "identity" ? "identity" : "encoding",
@@ -136,6 +136,45 @@ function fixtureWithCdn(status = "ok") {
   };
   return run;
 }
+
+function fixtureWithLegacyCdn(status = "ok") {
+  return fixtureWithCdn(
+    status,
+    [
+      [
+        "https://js.monitor.azure.com/scripts/otel/beta/opentelemetry-browser.0.1.0-beta.1.min.js",
+        "iife",
+      ],
+      [
+        "https://js.monitor.azure.com/scripts/otel/beta/opentelemetry-browser.0.1.0-beta.1.umd.min.js",
+        "umd",
+      ],
+    ].flatMap(([url, format]) =>
+      ["identity", "gzip", "br"].map((encoding) => ({
+        url,
+        path: new URL(url).pathname,
+        format,
+        encoding,
+      })),
+    ),
+  );
+}
+
+test("saved CDN runs retain historical channel URLs when serialized", () => {
+  for (const status of ["ok", "unavailable", "error"]) {
+    const run = fixtureWithLegacyCdn(status);
+    const records = createPayload(run).resourceLogs[2].scopeLogs[0].logRecords;
+    for (const [index, record] of records.entries()) {
+      const fields = attrs(record.attributes);
+      assert.deepEqual(fields["benchmark.artifact.url"], {
+        stringValue: run.cdn.observations[index].url,
+      });
+      assert.deepEqual(fields["benchmark.artifact.path"], {
+        stringValue: run.cdn.observations[index].path,
+      });
+    }
+  }
+});
 
 test("CDN events preserve legacy records, typed identity, and value-free failure outcomes", () => {
   for (const status of ["ok", "unavailable", "error"]) {
@@ -201,6 +240,20 @@ test("CDN serialization rejects invalid sizes, identity, timestamps and incomple
     (r) => (r.cdn.observations[0].bytes = Infinity),
     (r) => (r.cdn.observations[0].bytes = 1.5),
     (r) => (r.cdn.observations[0].url = "https://example.com/0.1.0-beta.1.min.js"),
+    (r) => (r.cdn.observations[0].path = "/unexpected.js"),
+    (r) => {
+      r.cdn.observations[0].url = r.cdn.observations[0].url.replace(
+        "js.monitor.azure.com",
+        "example.com",
+      );
+    },
+    (r) => {
+      const result = r.cdn.observations[0];
+      result.path = "/scripts/otel/alpha/opentelemetry-browser.0.1.0-beta.1.min.js";
+      result.url = `https://js.monitor.azure.com${result.path}`;
+    },
+    (r) => (r.cdn.observations[0].encoding = "deflate"),
+    (r) => (r.cdn.observations[0].format = "esm"),
     (r) => (r.cdn.observations[0].sha256 = "bad"),
     (r) => (r.cdn.observations[1].sha256 = r.cdn.observations[3].sha256),
     (r) => (r.cdn.observations[1].contentEncoding = "identity"),
@@ -210,9 +263,11 @@ test("CDN serialization rejects invalid sizes, identity, timestamps and incomple
     (r) => (r.cdn.observations[1].status = "unavailable"),
     (r) => r.results[0].samples[0]++,
   ]) {
-    const run = fixtureWithCdn();
-    mutate(run);
-    assert.throws(() => createPayload(run), undefined, String(mutate));
+    for (const fixture of [fixtureWithCdn, fixtureWithLegacyCdn]) {
+      const run = fixture();
+      mutate(run);
+      assert.throws(() => createPayload(run), undefined, String(mutate));
+    }
   }
 });
 

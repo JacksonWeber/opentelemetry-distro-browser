@@ -140,22 +140,17 @@ npm run cdn:publish -- --account <storage-account> --destination public
 npm run cdn:publish -- --account <storage-account> --destination next
 ```
 
-Both copies retain the full package version, including its beta suffix. For `0.1.0-beta.1`, the
+Both copies retain the full package version, including its beta suffix. For `0.1.0-beta.2`, the
 default SDK URLs are
-`https://js.monitor.azure.com/next/otel/opentelemetry-browser.0.1.0-beta.1.min.js` and
-`https://js.monitor.azure.com/scripts/otel/opentelemetry-browser.0.1.0-beta.1.min.js`.
+`https://js.monitor.azure.com/next/otel/opentelemetry-browser.0.1.0-beta.2.min.js` and
+`https://js.monitor.azure.com/scripts/otel/opentelemetry-browser.0.1.0-beta.2.min.js`.
 Instrumentation bundles, UMD variants, source maps, size badges and integrity metadata accompany
 the SDK in each destination. Publishing adapts the integrity URLs to the selected destination in
 temporary local files without changing the prepared `cdn/` files or bundle bytes.
 
-Omitting `--destination` retains the legacy version-derived channel location:
-
-```text
-https://js.monitor.azure.com/scripts/otel/<channel>/<module>.<version>.<format>
-```
-
-The channel is `b` for stable releases and the prerelease identifier (`alpha`, `beta` or `rc`)
-otherwise. Each module (`opentelemetry-browser` and `opentelemetry-browser-instrumentations`) is
+Omitting `--destination` selects `next/otel/` for versioned files, without activating major aliases.
+Release channels (`alpha`, `beta`, `rc` or stable) never add a CDN subdirectory and do not select
+the destination. Each module (`opentelemetry-browser` and `opentelemetry-browser-instrumentations`) is
 published as `min.js` and `js` (IIFE), and `umd.min.js` and `umd.js` (UMD), each with its source
 map, plus `<module>.<version>.integrity.json`. The integrity file lists every file's CDN URL and
 its SHA-256, SHA-384 and SHA-512 Subresource Integrity values. `<module>.<version>.size.svg` is a
@@ -174,7 +169,7 @@ Publishing never deletes or rewrites existing legacy channel assets.
 
 ### Major-version aliases and promotion
 
-Customers can use `opentelemetry-browser.0.min.js` to receive updates within major version `0`.
+After activation, customers can use `opentelemetry-browser.0.min.js` to receive updates within major version `0`.
 These aliases deliberately omit the beta suffix. The same major-only naming applies to both
 modules, every IIFE/UMD format, source maps, size badges and integrity files:
 
@@ -182,6 +177,10 @@ modules, every IIFE/UMD format, source maps, size badges and integrity files:
 https://js.monitor.azure.com/next/otel/opentelemetry-browser.0.min.js
 https://js.monitor.azure.com/scripts/otel/opentelemetry-browser.0.min.js
 ```
+
+These are activation targets, not the current onboarding URLs. The `0.1.0-beta.2` versioned assets
+are published, but major aliases were not activated when the release stopped on an initial CDN
+propagation 404. Use the full versioned URLs above until alias activation and verification succeed.
 
 Major aliases use `public, max-age=1800, no-transform` caching. Their source map references and
 map `file` fields use the major-only names; their integrity metadata records the full activated
@@ -201,7 +200,7 @@ This command requires fresh `cdn/` files for the selected full version, not stal
 For scheduled promotion without local build artifacts, download the immutable release from storage:
 
 ```sh
-node scripts/activate-cdn.mjs --account <storage-account> --destination public --version 0.1.0-beta.1 --from-storage
+node scripts/activate-cdn.mjs --account <storage-account> --destination public --version <full-version> --from-storage
 ```
 
 `--version` defaults to `package.json`; `--from-storage` uses that exact published version and
@@ -234,29 +233,38 @@ unless each returns 200 with the expected `Content-Type`, the immutable `Cache-C
 `Access-Control-Allow-Origin: *`, bytes identical to `cdn/`, and integrity files whose hashes match
 the served bundles. Local integrity URLs are adapted for comparison to the selected destination.
 Use `npm run cdn:verify -- --destination next` or `--destination public` to verify that destination;
-omitting the option verifies the legacy channel. `--remote-only` skips the local comparison to
-audit an earlier release.
+omitting the option verifies versioned files under `next/otel/`. `--remote-only` skips the local
+comparison to audit an earlier release.
 Use `--major --destination public --version <full-version>` to audit promoted aliases after CDN
 caches expire; it checks their short cache policy, full activated version and alias-specific hashes.
+Major-alias audits require an explicit `--destination next|public`; the versioned-file default
+does not apply.
 
-The `./snippet` helper generates the copy/paste loader. Without `src`, it loads the `min.js` IIFE
-bundle for the package version from the legacy channel, so the snippet and the bundle versions
-always match. Set `src` to an explicit preview/public versioned or major-alias URL to load a new
-destination. A fixed `integrity` value pins the current bytes; omit it for an auto-updating alias
+The `./snippet` helper generates the copy/paste loader. The published `0.1.0-beta.2` helper still
+defaults to the obsolete `/scripts/otel/beta/` path. When using that package, set
+`src: "https://js.monitor.azure.com/next/otel/opentelemetry-browser.0.1.0-beta.2.min.js"`
+explicitly. The corrected default requires a release containing the CDN-path fix: without `src`,
+that helper loads the `min.js` IIFE bundle for its package version from `next/otel/`, retaining
+the full version including prerelease suffixes. Set `src` to an explicit public versioned URL or a
+verified, activated major-alias URL to override it.
+A fixed `integrity` value pins the current bytes; omit it for an auto-updating alias
 or update it together with the alias. It enables the
 same defaults as `getInstrumentations()`, `fetch` and XHR, alongside Azure Monitor export and page
 views. The loader reads the `Microsoft.OpenTelemetry` global, which a UMD bundle does not set when an AMD loader is
-present. Add the generated script to the page `<head>` and replace `CHANNEL`, `VERSION`,
-`YOUR_CONNECTION_STRING` and `YOUR_INTEGRITY` in the configuration object at its end:
+present. This example uses the published `0.1.0-beta.2` preview bundle. Add the generated script
+to the page `<head>` and replace `YOUR_CONNECTION_STRING` and `YOUR_INTEGRITY` in the configuration
+object at its end:
 
 <!-- prettier-ignore -->
 ```html
 <script>
-!(function(w,d,c){w.microsoftOpenTelemetry=new Promise(function(resolve,reject){function l(u){var s=d.createElement("script");s.src=u;s.crossOrigin=c.crossOrigin;if(c.integrity)s.integrity=c.integrity;s.onload=function(){var sdk=w.Microsoft&&w.Microsoft.OpenTelemetry;if(!sdk||typeof sdk.useMicrosoftOpenTelemetry!=="function"){reject(new Error("OpenTelemetry browser bundle did not expose Microsoft.OpenTelemetry"));return}Promise.resolve().then(function(){return typeof sdk.getInstrumentations==="function"?sdk.getInstrumentations(c.instrumentationOptions):[]}).then(function(i){var o=c.cfg;o.instrumentations=i;if(c.resourceAttributes)o.resource=sdk.resourceFromAttributes(c.resourceAttributes);return sdk.useMicrosoftOpenTelemetry(o)}).then(resolve,reject)};s.onerror=function(){reject(new Error("OpenTelemetry browser bundle failed to load: "+u))};d.head.appendChild(s)}l(c.src)})})(window,document,{"src":"https://js.monitor.azure.com/scripts/otel/CHANNEL/opentelemetry-browser.VERSION.min.js","crossOrigin":"anonymous","integrity":"YOUR_INTEGRITY","cfg":{"azureMonitor":{"connectionString":"YOUR_CONNECTION_STRING"}}});
+!(function(w,d,c){w.microsoftOpenTelemetry=new Promise(function(resolve,reject){function l(u){var s=d.createElement("script");s.src=u;s.crossOrigin=c.crossOrigin;if(c.integrity)s.integrity=c.integrity;s.onload=function(){var sdk=w.Microsoft&&w.Microsoft.OpenTelemetry;if(!sdk||typeof sdk.useMicrosoftOpenTelemetry!=="function"){reject(new Error("OpenTelemetry browser bundle did not expose Microsoft.OpenTelemetry"));return}Promise.resolve().then(function(){return typeof sdk.getInstrumentations==="function"?sdk.getInstrumentations(c.instrumentationOptions):[]}).then(function(i){var o=c.cfg;o.instrumentations=i;if(c.resourceAttributes)o.resource=sdk.resourceFromAttributes(c.resourceAttributes);return sdk.useMicrosoftOpenTelemetry(o)}).then(resolve,reject)};s.onerror=function(){reject(new Error("OpenTelemetry browser bundle failed to load: "+u))};d.head.appendChild(s)}l(c.src)})})(window,document,{"src":"https://js.monitor.azure.com/next/otel/opentelemetry-browser.0.1.0-beta.2.min.js","crossOrigin":"anonymous","integrity":"YOUR_INTEGRITY","cfg":{"azureMonitor":{"connectionString":"YOUR_CONNECTION_STRING"}}});
 </script>
 ```
 
-`YOUR_INTEGRITY` is the `@min.js` `integrity` value from the release's `integrity.json`.
+`YOUR_INTEGRITY` is the `ext["@min.js"].integrity` value from
+[`opentelemetry-browser.0.1.0-beta.2.integrity.json`](https://js.monitor.azure.com/next/otel/opentelemetry-browser.0.1.0-beta.2.integrity.json).
+When changing releases, update the full version in the bundle URL and the integrity value together.
 Initialization is asynchronous: `window.microsoftOpenTelemetry` resolves to the lifecycle handle,
 or rejects when the bundle fails to load, fails its integrity check or fails to initialize. Under a
 Content Security Policy, allow the snippet's hash or nonce and the CDN origin in `script-src`, and

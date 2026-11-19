@@ -17,10 +17,9 @@ export interface SdkLoaderConfig {
    *
    * @remarks
    * Defaults to this package version's immutable CDN bundle,
-   * `https://js.monitor.azure.com/scripts/otel/<channel>/opentelemetry-browser.<version>.min.js`,
-   * where the channel is `b` for stable releases and the prerelease identifier, such as `alpha`,
-   * otherwise. The package's ESM output is not compatible with this loader. A UMD bundle only
-   * sets the global when no AMD loader is present.
+   * `https://js.monitor.azure.com/next/otel/opentelemetry-browser.<version>.min.js`,
+   * retaining the full version, including any prerelease suffix. The package's ESM output is not
+   * compatible with this loader. A UMD bundle only sets the global when no AMD loader is present.
    */
   readonly src?: string;
   /** Azure Monitor connection string passed to the distribution initializer. */
@@ -247,9 +246,7 @@ const optionFields: Record<string, Record<string, FieldKind>> = {
 const loadFailure = "OpenTelemetry browser bundle failed to load: ";
 
 const defaultSrc = (): string =>
-  `https://js.monitor.azure.com/scripts/otel/${
-    /^[^-+]+-([a-z]+)/.exec(OPENTELEMETRY_BROWSER_VERSION)?.[1] ?? "b"
-  }/opentelemetry-browser.${OPENTELEMETRY_BROWSER_VERSION}.min.js`;
+  `https://js.monitor.azure.com/next/otel/opentelemetry-browser.${OPENTELEMETRY_BROWSER_VERSION}.min.js`;
 
 const inlineJson = (value: unknown): string =>
   JSON.stringify(value).replace(

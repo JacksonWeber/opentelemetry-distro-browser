@@ -4,6 +4,7 @@
 import { createHash } from "node:crypto";
 import { appendFile } from "node:fs/promises";
 import { brotliCompressSync, constants, gzipSync } from "node:zlib";
+import { getCdnChannel } from "../cdn.mjs";
 import { cdnEncodings, getCdnRequests } from "./cdn.mjs";
 
 export const artifactPath = "dist/esm/index.min.js";
@@ -329,6 +330,13 @@ export function createPayload(run) {
   }
   if (run.cdn !== undefined) {
     const expected = getCdnRequests(run.package.version);
+    const legacy = expected.map((target) => {
+      const path = target.path.replace(
+        "/next/otel/",
+        `/scripts/otel/${getCdnChannel(run.package.version)}/`,
+      );
+      return { ...target, path, url: new URL(path, target.url).href };
+    });
     if (
       run.cdn.version !== run.package.version ||
       run.cdn.observations?.length !== expected.length
@@ -340,7 +348,11 @@ export function createPayload(run) {
       stringValue: "node-cdn",
     };
     resource.scopeLogs[0].logRecords = run.cdn.observations.map((result, index) => {
-      if (Object.entries(expected[index]).some(([key, value]) => result[key] !== value)) {
+      if (
+        ![expected[index], legacy[index]].some((target) =>
+          Object.entries(target).every(([key, value]) => result[key] === value),
+        )
+      ) {
         throw new Error("Unexpected CDN artifact or encoding");
       }
       const measured = result.status === "ok";

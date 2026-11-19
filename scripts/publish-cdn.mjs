@@ -48,8 +48,8 @@ export async function runCdnCommand(command) {
 const usage = `Usage: npm run cdn:publish -- --account <storage-account> [--container cdn] [--destination next|public] [--dry-run]
 
 Uploads the files prepared in cdn/ by \`npm run build\` to
-<container>/next/otel/ or <container>/scripts/otel/ when a destination is selected;
-omitting --destination retains <container>/scripts/otel/<channel>/.
+<container>/next/otel/ (default) or <container>/scripts/otel/ (--destination public).
+Next alias activation requires an explicit --destination next.
 Full versioned filenames and immutable caching are preserved. Existing files are never overwritten;
 an identical existing file is skipped and a different one fails the publish. After uploading, it
 runs \`npm run cdn:verify\` against the selected public CDN URLs, except for the isolated tst container.
@@ -388,7 +388,7 @@ export async function publishCdn({
         throw new Error(`Unable to check ${upload.url}: ${existing.stderr.trim()}`);
       }
 
-      if (destination !== undefined && upload.file.endsWith(".integrity.json")) {
+      if (upload.file.endsWith(".integrity.json")) {
         temporaryDirectory ??= await mkdtemp(resolve(tmpdir(), "otel-cdn-"));
         path = resolve(temporaryDirectory, upload.file);
         await writeFile(path, bytes);

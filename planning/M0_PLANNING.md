@@ -4,7 +4,7 @@ Ship a thin distribution: configure the upstream `@opentelemetry/browser-sdk`, a
 Azure Monitor exporter, adopt the upstream browser instrumentations, and publish. M0 is
 single-instance and ES2022 ESM-only, and does not build its own SDK.
 
-Status: complete. `0.1.0-beta.1` is published to npm and the CDN at `js.monitor.azure.com/scripts/otel/beta/` (#125). Follow-up work is tracked in M2 and M3.
+Status: complete. `0.1.0-beta.1` was published to npm and the CDN (#125). For current versioned CDN destinations, see [packaging](../docs/packaging.md#cdn-and-loader-snippet). Follow-up work is tracked in M2 and M3.
 
 ## Shipped
 

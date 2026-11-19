@@ -74,7 +74,7 @@ test("counts actual chunked identity/gzip/Brotli bodies for publisher URLs witho
     assert.equal(result.fetchedAt, new Date(result.fetchedAt).toISOString());
     assert.ok(
       result.url.startsWith(
-        "https://js.monitor.azure.com/scripts/otel/beta/opentelemetry-browser.0.1.0-beta.1.",
+        "https://js.monitor.azure.com/next/otel/opentelemetry-browser.0.1.0-beta.1.",
       ),
     );
   }

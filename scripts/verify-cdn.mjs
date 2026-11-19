@@ -25,8 +25,9 @@ const usage = `Usage: npm run cdn:verify -- [--destination next|public] [--major
 Fetches every published CDN file for this package version and checks the status, Content-Type,
 Cache-Control and CORS headers, that each integrity.json hash matches the served bundle and, unless
 --remote-only is set, that the served bytes equal the files prepared in cdn/ by \`npm run build\`,
-with integrity URLs adapted to the selected destination. Omission retains legacy channel routing.
---major audits mutable major aliases instead, after their 30-minute CDN cache has expired.`;
+with integrity URLs adapted to the selected destination. Versioned-file verification defaults to
+next/otel/. --major audits mutable major aliases instead, after their 30-minute CDN cache has
+expired, and requires an explicit --destination next|public.`;
 
 const directives = (value) =>
   (value ?? "")

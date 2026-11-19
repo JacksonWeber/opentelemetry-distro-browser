@@ -9,6 +9,8 @@ All notable changes to this package are documented in this file.
 - Reject mixed pre-diagnostics and current distribution registry protocols in either initialization
   order, preventing an older instance from bypassing shared diagnostic lifetime tracking.
 - Preserve attributes added by later log processors when Azure Monitor sampling adds metadata.
+- Use versioned `next/otel/` URLs for the default loader, generated CDN metadata and tooling,
+  without release-channel subdirectories. Correct snippet setup and CDN guidance.
 
 ### Added
 

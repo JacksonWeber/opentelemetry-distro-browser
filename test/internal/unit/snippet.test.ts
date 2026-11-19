@@ -74,9 +74,8 @@ afterEach(() => {
 });
 
 it("defaults to the versioned CDN bundle and validates explicit values", () => {
-  const channel = /-([a-z]+)/.exec(OPENTELEMETRY_BROWSER_VERSION)?.[1] ?? "b";
   expect(getSdkLoaderScript({ connectionString: "connection" })).toContain(
-    `"src":"https://js.monitor.azure.com/scripts/otel/${channel}/opentelemetry-browser.${OPENTELEMETRY_BROWSER_VERSION}.min.js"`,
+    `"src":"https://js.monitor.azure.com/next/otel/opentelemetry-browser.${OPENTELEMETRY_BROWSER_VERSION}.min.js"`,
   );
   expect(() => getSdkLoaderScript({ src: "", connectionString: "connection" })).toThrow(
     "SdkLoaderConfig.src must be a non-empty string when provided.",
@@ -727,22 +726,22 @@ it("accepts an empty crossOrigin value", () => {
 
 it("falls back from the canonical CDN URL the browser requests", () => {
   const generated = getSdkLoaderScript({
-    src: "https://user:pass@JS.monitor.azure.com\\scripts\\otel\\b\\sdk.js",
+    src: "https://user:pass@JS.monitor.azure.com\\next\\otel\\sdk.js",
     connectionString: "connection",
     cdnFallback: true,
   });
   const src = /"src":"([^"]+)"/.exec(generated)?.[1] ?? "";
 
-  expect(src).toBe("https://user:pass@js.monitor.azure.com/scripts/otel/b/sdk.js");
+  expect(src).toBe("https://user:pass@js.monitor.azure.com/next/otel/sdk.js");
   expect(src.replace(/\/\/[^/]+/, "//js.cdn.applicationinsights.io")).toBe(
-    "https://js.cdn.applicationinsights.io/scripts/otel/b/sdk.js",
+    "https://js.cdn.applicationinsights.io/next/otel/sdk.js",
   );
 });
 
 it("accepts fully qualified CDN host names for cdnFallback", () => {
   expect(
     getSdkLoaderScript({
-      src: "https://js.monitor.azure.com./scripts/otel/b/sdk.js",
+      src: "https://js.monitor.azure.com./next/otel/sdk.js",
       connectionString: "connection",
       cdnFallback: true,
     }),
@@ -768,7 +767,7 @@ it("rejects unsupported instrumentation names", () => {
 it("accepts CDN hosts in any case for cdnFallback", () => {
   expect(
     getSdkLoaderScript({
-      src: "https://JS.MONITOR.AZURE.COM/scripts/otel/b/sdk.js",
+      src: "https://JS.MONITOR.AZURE.COM/next/otel/sdk.js",
       connectionString: "connection",
       cdnFallback: true,
     }),
@@ -901,7 +900,7 @@ const interceptCdnScripts = (
   };
 };
 
-const cdnPath = "/scripts/otel/alpha/opentelemetry-browser.0.0.0-alpha.0.min.js";
+const cdnPath = "/next/otel/opentelemetry-browser.0.0.0-alpha.0.min.js";
 
 it("retries the bundle from backup CDN hosts", async () => {
   const cdn = interceptCdnScripts("js0.cdn.applicationinsights.io");
