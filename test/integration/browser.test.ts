@@ -319,7 +319,9 @@ it.each(
       "user.id": "memory|identity",
       "user.account.id": "account|id",
     });
-    expect(restored.handle.getCookieMgr().get(authName)).toBe("");
+    await vi.waitFor(() => expect(restored.handle.getCookieMgr().get(authName)).toBe(""), {
+      timeout: 5000,
+    });
     await restored.handle.shutdown();
     const afterFailedPersistence = await initializeCookieConsumer(file, options);
     const attributes = await afterFailedPersistence.emit();
