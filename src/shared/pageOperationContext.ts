@@ -4,6 +4,9 @@
 import type { SpanContext } from "@opentelemetry/api";
 import { getPageContexts, getSharedRegistry } from "./globalOwnership.js";
 
+/** A delayed log must not inherit a page operation that started after it was captured. */
+export const SKIP_PAGE_FALLBACK = /* @__PURE__ */ Symbol.for("ms.otel.skipPageFallback");
+
 /**
  * Contexts used only for page correlation, not application spans.
  * Weak membership follows buffered telemetry without retaining completed page operations.

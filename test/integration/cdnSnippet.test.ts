@@ -100,6 +100,10 @@ it("applies snippet configuration: opt-in instrumentations and resource attribut
     ({ name }) => name === "Microsoft.ApplicationInsights.Exception",
   );
   const details = exceptions.map(({ data }) => data?.baseData?.exceptions?.[0]);
+  const pageOperation = envelopes.find(
+    ({ name }) => name === "Microsoft.ApplicationInsights.PageView",
+  )?.tags?.["ai.operation.id"];
+  expect(pageOperation).toMatch(/^[a-f0-9]{32}$/);
   // The first 20 startup events and the live error appear once. The last startup event is dropped.
   expect(details.map((item) => item?.message).sort()).toEqual(
     [
@@ -118,6 +122,15 @@ it("applies snippet configuration: opt-in instrumentations and resource attribut
     );
     expect(event?.time).toBe(time);
     expect(event?.data?.baseData?.exceptions?.[0]).toMatchObject({ typeName, stack });
+    expect(event?.tags).not.toHaveProperty(["ai.operation.id"]);
+    expect(event?.tags).not.toHaveProperty(["ai.operation.name"]);
+    expect(event?.tags).not.toHaveProperty(["ai.operation.parentId"]);
+  }
+  for (const message of ["startup message 0", "cdn snippet failure"]) {
+    const event = exceptions.find(
+      ({ data }) => data?.baseData?.exceptions?.[0]?.message === message,
+    );
+    expect(event?.tags?.["ai.operation.id"]).toBe(pageOperation);
   }
   expect(envelopes.length).toBeGreaterThan(0);
   for (const envelope of envelopes) {

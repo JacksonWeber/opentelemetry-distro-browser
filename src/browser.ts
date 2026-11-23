@@ -12,6 +12,6 @@ export { AzureMonitorLogRecordExporter } from "./exporter/log.js";
 export { AzureMonitorSpanExporter } from "./exporter/trace.js";
 export { useMicrosoftOpenTelemetry } from "./useMicrosoftOpenTelemetry.js";
 // CDN-supported instrumentations are inlined; npm-only factories are not exported.
-export { getInstrumentations } from "./instrumentation/browserInstrumentation/browser.js";
+export { getInstrumentations } from "./instrumentation/browserInstrumentation/loader.js";
 // Lets the loader snippet turn JSON `resourceAttributes` into a resource. Already bundled.
 export { resourceFromAttributes } from "@opentelemetry/resources";

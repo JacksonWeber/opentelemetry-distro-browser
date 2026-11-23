@@ -1,9 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+import type { Context } from "@opentelemetry/api";
 import type { LogRecordProcessor, ReadWriteLogRecord } from "@opentelemetry/sdk-logs";
 import type { Span, SpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { isNonEmptyString } from "../shared/isNonEmptyString.js";
+import { SKIP_PAGE_FALLBACK } from "../shared/pageOperationContext.js";
 import { setManagedOperationName } from "./operationName.js";
 import {
   ATTR_ENDUSER_ID,
@@ -27,8 +29,14 @@ function enrich(
   setAttribute: (name: string, value: string) => void,
   provider: BrowserContextProvider,
   traceId?: string,
+  context?: Context,
 ): void {
-  setManagedOperationName(record, provider.getOperationName(traceId));
+  setManagedOperationName(
+    record,
+    !traceId && context?.getValue(SKIP_PAGE_FALLBACK)
+      ? undefined
+      : provider.getOperationName(traceId),
+  );
   // Context configured on the record or its resource belongs to the application.
   const hasAttribute = (name: string): boolean =>
     isNonEmptyString(attributes[name]) || isNonEmptyString(resourceAttributes[name]);
@@ -88,7 +96,7 @@ export class BrowserContextLogRecordProcessor implements LogRecordProcessor {
     return false;
   }
 
-  public onEmit(record: ReadWriteLogRecord): void {
+  public onEmit(record: ReadWriteLogRecord, context?: Context): void {
     enrich(
       record,
       record.attributes,
@@ -96,6 +104,7 @@ export class BrowserContextLogRecordProcessor implements LogRecordProcessor {
       (name, value) => record.setAttribute(name, value),
       this.provider,
       record.spanContext?.traceId,
+      context,
     );
   }
 

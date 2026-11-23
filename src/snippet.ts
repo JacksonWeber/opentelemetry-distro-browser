@@ -481,10 +481,12 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
   const early =
     instrumentationOptions !== undefined &&
     (JSON.parse(serialized) as SdkLoaderConfig).instrumentationOptions?.errors?.enabled === true;
+  // Keep the entry identity local. Only the same-page decision reaches the bundle.
   const buffer = early
-    ? 'var q=[],emit;function text(v,k){try{var s=v[k];if(typeof s==="string")return s}catch{}}' +
+    ? 'var q=[],emit;function warn(s){w.console.warn("OpenTelemetry "+s)}function page(){return w.navigation?.currentEntry?.id||w.location.href}function text(v,k){try{var s=v[k];if(typeof s==="string")return s}catch{}}' +
       'function capture(e){if(q.length>=20)return;var v="reason" in e?e.reason:e.error??(e.message||null);' +
-      'if(v!=null&&q.length<20){var a=[Date.now()];q.push(a);a.push(text(v,"name"),typeof v==="string"?v:text(v,"message"),text(v,"stack"))}}' +
+      'if(v!=null&&q.length<20){var a=[Date.now()],ctx;q.push([a,page()]);try{ctx=w[Symbol.for("opentelemetry.js.api.1")]?.context?.active()}catch{warn("startup context unavailable")}' +
+      'a.push(text(v,"name"),typeof v==="string"?v:text(v,"message"),text(v,"stack"),ctx)}}' +
       'function stop(){w.removeEventListener("error",capture);w.removeEventListener("unhandledrejection",capture)}'
     : "";
   const listen = early
@@ -492,8 +494,8 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
     : "";
   const handoff = early ? ",send=>{stop();emit=send}" : "";
   const finish = early
-    ? '.then(h=>{if(q.length){if(!emit)w.console.warn("OpenTelemetry bundle does not support startup error replay");' +
-      'else for(var item of q)try{emit(item)}catch{w.console.warn("OpenTelemetry startup error replay failed")}}return h})' +
+    ? '.then(h=>{if(q.length){if(!emit)warn("bundle does not support startup error replay");' +
+      'else for(var [item,p] of q)try{emit(item,p===page())}catch{warn("startup error replay failed")}}return h})' +
       ".finally(()=>{stop();q.length=0;emit=null})"
     : "";
   return `!(function(w,d,c){${buffer}w.microsoftOpenTelemetry=new Promise(function(resolve,reject){function l(u){var s=d.createElement("script");s.src=u;s.crossOrigin=c.crossOrigin;if(c.integrity)s.integrity=c.integrity;s.onload=function(){var sdk=w.Microsoft&&w.Microsoft.OpenTelemetry;if(!sdk||typeof sdk.useMicrosoftOpenTelemetry!=="function"){reject(new Error("OpenTelemetry browser bundle did not expose Microsoft.OpenTelemetry"));return}Promise.resolve().then(function(){return typeof sdk.getInstrumentations==="function"?sdk.getInstrumentations(c.instrumentationOptions${handoff}):[]}).then(function(i){var o=c.cfg;o.instrumentations=i;if(c.resourceAttributes)o.resource=sdk.resourceFromAttributes(c.resourceAttributes);return sdk.useMicrosoftOpenTelemetry(o)}).then(resolve,reject)};s.onerror=function(){${fallback}${reportFailure}reject(new Error("${loadFailure}"+u))};d.head.appendChild(s)}${listen}${start}})${finish}})(window,document,${serialized});`;

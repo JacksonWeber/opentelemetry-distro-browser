@@ -311,6 +311,7 @@ ${loader}
 const originalNow = Date.now;
 const failure = new TypeError("startup failure");
 try {
+  history.replaceState(null, "", "/checkout");
   Date.now = () => Date.UTC(2026, 0, 1, 0, 0, 1);
   failure.stack = "first startup stack";
   window.dispatchEvent(new ErrorEvent("error", { error: failure }));
@@ -325,6 +326,7 @@ try {
 } finally {
   Date.now = originalNow;
 }
+history.replaceState(null, "", "/login");
 for (let i = 0; i < 19; i++)
   window.dispatchEvent(new ErrorEvent("error", { message: "startup message " + i }));`;
   // Reported only when the snippet enabled the opt-in errors instrumentation.

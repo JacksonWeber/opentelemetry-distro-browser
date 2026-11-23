@@ -3,7 +3,7 @@
 
 import { isSpanContextValid, trace, type Context, type SpanContext } from "@opentelemetry/api";
 import type { LogRecordProcessor, ReadWriteLogRecord } from "@opentelemetry/sdk-logs";
-import { isPageContext } from "../../shared/pageOperationContext.js";
+import { isPageContext, SKIP_PAGE_FALLBACK } from "../../shared/pageOperationContext.js";
 import { getPageContexts } from "../../shared/globalOwnership.js";
 import { NAME_SOURCE_EXPLICIT, NAME_SOURCE_ROUTE } from "./semconv.js";
 import type { PageView, PageViewSource } from "./types.js";
@@ -85,9 +85,11 @@ export class PageViewCorrelation implements LogRecordProcessor {
     return false;
   }
 
-  onEmit(record: ReadWriteLogRecord): void {
+  onEmit(record: ReadWriteLogRecord, context?: Context): void {
     const operation =
-      (!record.spanContext || !isSpanContextValid(record.spanContext)) && this.getOperation?.();
+      (!record.spanContext || !isSpanContextValid(record.spanContext)) &&
+      !context?.getValue(SKIP_PAGE_FALLBACK) &&
+      this.getOperation?.();
     if (operation) record.spanContext = operation;
   }
 

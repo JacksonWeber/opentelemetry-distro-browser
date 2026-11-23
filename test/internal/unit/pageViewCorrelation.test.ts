@@ -10,6 +10,7 @@ import {
   isSpanContextValid,
   propagation,
   trace,
+  type Context,
 } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { NavigationInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/navigation";
@@ -23,6 +24,7 @@ import type {
 import { logToEnvelope } from "../../../src/exporter/logUtils.js";
 import { spanToEnvelope } from "../../../src/exporter/spanUtils.js";
 import { PageViewCorrelation } from "../../../src/instrumentation/pageView/pageViewCorrelation.js";
+import { getInstrumentations } from "../../../src/instrumentation/browserInstrumentation/loader.js";
 import { createPageViewContext } from "../../../src/instrumentation/pageView/pageViewContext.js";
 import { createInMemoryPipeline } from "../../fixtures/telemetry.js";
 
@@ -263,6 +265,34 @@ it("keeps a delayed page callback's operation name aligned with its operation ID
     expect(envelope.tags["ai.operation.id"]).toBe(firstOperation.traceId);
     expect(envelope.tags["ai.operation.name"]).toBe(firstName);
   }
+});
+
+it("replays a startup exception with its original operation or none after navigation", async () => {
+  let replay!: (original?: Context) => void;
+  const instrumentations = await getInstrumentations(
+    { errors: { enabled: true }, fetch: { enabled: false }, xhr: { enabled: false } },
+    (emit) => {
+      replay = (original) => emit([Date.now(), "Error", "startup", undefined, original], false);
+    },
+  );
+  const pipeline = await start({
+    instrumentations,
+    pageView: { routeResolver: () => location.pathname },
+  });
+  const original = context.active();
+  const originalName = location.pathname;
+  history.pushState(null, "", "/login");
+  replay(original);
+  replay();
+
+  const [known, unknown] = pipeline.onLog.mock.calls
+    .map(([record]) => record)
+    .filter((record) => record.eventName === "exception")
+    .map((record) => logToEnvelope(record, "key").tags);
+  expect(known["ai.operation.id"]).toBe(trace.getSpanContext(original)!.traceId);
+  expect(known["ai.operation.name"]).toBe(originalName);
+  expect(unknown["ai.operation.id"]).toBeUndefined();
+  expect(unknown["ai.operation.name"]).toBeUndefined();
 });
 
 it("keeps the route name captured before page settlement", async () => {
