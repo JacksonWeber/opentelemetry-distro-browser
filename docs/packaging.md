@@ -77,12 +77,12 @@ in each Node job's check summary and uploads all three files as build artifacts.
 
 Every executable published entry point has absolute minified, gzip and Brotli budgets:
 
-| Entry point          | Minified |     Gzip |    Brotli |
-| -------------------- | -------: | -------: | --------: |
-| `.`                  |   174 kB |    55 kB |     48 kB |
-| `./instrumentations` | 78.25 kB | 29.75 kB |   26.5 kB |
-| `./debug`            |    16 kB |     6 kB |      5 kB |
-| `./snippet`          |     8 kB |   3.5 kB | 3.0625 kB |
+| Entry point          |  Minified |     Gzip |   Brotli |
+| -------------------- | --------: | -------: | -------: |
+| `.`                  |    174 kB |    55 kB |    48 kB |
+| `./instrumentations` |  78.25 kB | 29.75 kB |  26.5 kB |
+| `./debug`            |     16 kB |     6 kB |     5 kB |
+| `./snippet`          | 8.0625 kB |   3.5 kB | 3.125 kB |
 
 The generated JSON and Markdown reports show the measured values, ceilings and result for each
 entry point. During alpha releases, violations are report-only so the baselines can stabilize.
@@ -289,8 +289,9 @@ package.
 With `instrumentationOptions.errors.enabled: true`, the loader keeps the first 20 unhandled
 errors and promise rejections while the SDK starts, including during `loadDelay` and CDN retries.
 It snapshots the time, type, message, and stack at capture. Replay uses the original OpenTelemetry
-context when a context manager is already registered. If the page changed and no original operation is
-known, the exception is reported without an operation rather than attributed to the new page.
+context when a context manager is already registered. State-only history updates keep the current
+page operation. If the loader observes a URL change and no original operation is known, it reports
+the exception without an operation rather than attributing it to the new page.
 The loader does not add the capture URL to telemetry. Use a matching loader and CDN bundle.
 A custom or older bundle that does not support replay can still initialize and collect live errors.
 The loader warns if it has queued errors that such a bundle cannot replay.

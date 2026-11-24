@@ -315,6 +315,7 @@ try {
   Date.now = () => Date.UTC(2026, 0, 1, 0, 0, 1);
   failure.stack = "first startup stack";
   window.dispatchEvent(new ErrorEvent("error", { error: failure }));
+  history.replaceState(null, "", "/login");
   Date.now = () => Date.UTC(2026, 0, 1, 0, 0, 21);
   failure.name = "RangeError";
   failure.message = "startup rejection";
@@ -326,9 +327,14 @@ try {
 } finally {
   Date.now = originalNow;
 }
+// Revisit /login without capturing an error on the intervening route.
+history.replaceState(null, "", "/checkout");
 history.replaceState(null, "", "/login");
-for (let i = 0; i < 19; i++)
-  window.dispatchEvent(new ErrorEvent("error", { message: "startup message " + i }));`;
+for (let i = 0; i < 19; i++) {
+  window.dispatchEvent(new ErrorEvent("error", { message: "startup message " + i }));
+  if (i === 0) history.pushState({ step: 1 }, "");
+  if (i === 1) history.replaceState({ step: 2 }, "");
+}`;
   // Reported only when the snippet enabled the opt-in errors instrumentation.
   const reportError =
     scenario === "configured"

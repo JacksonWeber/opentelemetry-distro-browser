@@ -126,11 +126,12 @@ it("applies snippet configuration: opt-in instrumentations and resource attribut
     expect(event?.tags).not.toHaveProperty(["ai.operation.name"]);
     expect(event?.tags).not.toHaveProperty(["ai.operation.parentId"]);
   }
-  for (const message of ["startup message 0", "cdn snippet failure"]) {
+  // State-only pushState and replaceState calls on /login do not start a new page operation.
+  for (const message of ["startup message 0", "startup message 1", "cdn snippet failure"]) {
     const event = exceptions.find(
       ({ data }) => data?.baseData?.exceptions?.[0]?.message === message,
     );
-    expect(event?.tags?.["ai.operation.id"]).toBe(pageOperation);
+    expect(event?.tags?.["ai.operation.id"], message).toBe(pageOperation);
   }
   expect(envelopes.length).toBeGreaterThan(0);
   for (const envelope of envelopes) {
